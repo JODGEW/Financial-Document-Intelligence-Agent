@@ -1,0 +1,81 @@
+"""Tests for the runtime grounding validator.
+
+The core contract: the runtime validator must agree with eval_runner's rule-based
+grounding on identical inputs. These tests pin the two implementations together so
+the copied primitives in governance/grounding_validator.py cannot drift from
+eval_runner.py without failing the suite.
+"""
+
+import eval_runner
+from governance.grounding_validator import validate
+
+# Each chunk mirrors the parsed source dict the agent passes at runtime.
+_CHUNKS = [
+    {
+        "source_name": "compliance-policy-personal-trading.md",
+        "source": "docs/compliance-policy-personal-trading.md",
+        "page": None,
+        "excerpt": "Employees may not trade during the 30 day blackout window.",
+    },
+    {
+        "source_name": "acme-corp-10k-excerpt-2025.pdf",
+        "source": "docs/acme-corp-10k-excerpt-2025.pdf",
+        "page": 2,
+        "excerpt": "Total revenue was $5 million for fiscal year 2025.",
+    },
+]
+
+# A spread of answers: fully grounded, miscited, and an unsupported numeric claim.
+_ANSWERS = [
+    "Employees may not trade during the 30 day blackout window "
+    "[compliance-policy-personal-trading.md].",
+    "Total revenue was $5 million [acme-corp-10k-excerpt-2025.pdf p.2].",
+    "Revenue grew 42% last year [ghost-report.pdf].",
+    "The policy covers preclearance and reporting [compliance-policy-personal-trading.md].",
+]
+
+
+def test_citation_coverage_matches_eval_runner():
+    """citation_coverage must equal eval_runner.citation_accuracy on each answer."""
+    for answer in _ANSWERS:
+        result = validate(answer, _CHUNKS)
+        expected = round(eval_runner.citation_accuracy(answer, _CHUNKS), 4)
+        assert result["citation_coverage"] == expected, answer
+
+
+def test_unsupported_claim_rate_matches_eval_runner():
+    """The validator's unsupported share must equal eval_runner's claim rate."""
+    evidence = eval_runner.evidence_text(_CHUNKS)
+    for answer in _ANSWERS:
+        result = validate(answer, _CHUNKS)
+        claims = eval_runner.extract_claim_tokens(answer)
+        runtime_rate = (
+            result["unsupported_claim_count"] / len(claims) if claims else 0.0
+        )
+        expected_rate = eval_runner.unsupported_claim_rate(answer, evidence)
+        assert runtime_rate == expected_rate, answer
+
+
+def test_fully_grounded_answer_scores_one():
+    """A cited, fully supported answer scores 1.0 with no unsupported claims."""
+    answer = (
+        "Employees may not trade during the 30 day blackout window "
+        "[compliance-policy-personal-trading.md]."
+    )
+    result = validate(answer, _CHUNKS)
+    assert result["citation_coverage"] == 1.0
+    assert result["grounding_score"] == 1.0
+    assert result["unsupported_claims"] == []
+    assert result["unsupported_claim_count"] == 0
+
+
+def test_ungrounded_answer_flags_unsupported_claim_and_low_score():
+    """A miscited answer with an unsupported number scores low and lists the claim."""
+    answer = "Revenue grew 42% last year [ghost-report.pdf]."
+    result = validate(answer, _CHUNKS)
+    assert result["citation_coverage"] == 0.0
+    # eval_runner's claim regex extracts the bare number "42" (the trailing "%"
+    # falls outside its word boundary); the runtime validator mirrors that.
+    assert "42" in result["unsupported_claims"]
+    assert result["unsupported_claim_count"] == 1
+    assert result["grounding_score"] < 0.5

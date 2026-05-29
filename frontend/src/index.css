@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  background: #ffffff;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.markdown-answer {
+  overflow-wrap: anywhere;
+}
+
+.markdown-answer h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.markdown-answer p {
+  margin: 0.5rem 0;
+}
+
+.markdown-answer ul {
+  margin: 0.5rem 0 0.5rem 1.25rem;
+  list-style: disc;
+}
+
+.markdown-answer li {
+  margin: 0.35rem 0;
+}
+
+.markdown-answer a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-answer strong {
+  font-weight: 700;
+}
+
+.markdown-answer code {
+  border-radius: 4px;
+  background: #f4f4f5;
+  padding: 0.1rem 0.25rem;
+  font-size: 0.86em;
+}

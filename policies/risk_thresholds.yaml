@@ -1,0 +1,21 @@
+# Risk scorer configuration for the governance layer.
+#
+# Governance as policy, not code: the risk score and its bucketing live here, not
+# hard-coded in risk_scorer.py. Edit these numbers to retune risk without a code
+# change. If this file is missing, risk_scorer.py falls back to identical defaults
+# so the agent still runs.
+#
+# risk_score is "badness" in 0..1 (higher = riskier). The score is a weighted sum
+# of three signals, each mapped to a 0..1 risk contribution:
+#   - grounding:  1 - grounding_score        (a poorly grounded answer is risky)
+#   - guardrail:  blocked=1.0, anonymized=0.5, passed=0.0
+#   - external:   external_context_used ? 1.0 : 0.0
+risk_thresholds:
+  auto_return_below: 0.50          # risk < 0.50         -> low
+  return_with_warning_below: 0.75  # 0.50 <= risk < 0.75 -> medium
+  require_review_at_or_above: 0.75 # risk >= 0.75        -> high, human review
+
+signal_weights:
+  grounding_score_weight: 0.5
+  guardrail_outcome_weight: 0.3
+  external_context_weight: 0.2

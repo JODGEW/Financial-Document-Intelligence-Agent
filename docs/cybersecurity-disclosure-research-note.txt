@@ -1,0 +1,176 @@
+ACME CORPORATION — INTERNAL RESEARCH NOTE
+Cybersecurity Risk Disclosure Trends in Financial Technology Filings
+Prepared by: Research & Analytics Team
+Date: November 18, 2025
+Classification: Internal Use Only
+
+------------------------------------------------------------------------
+
+SUMMARY
+
+This note reviews cybersecurity risk disclosure patterns across 42 financial
+technology companies that filed 10-K annual reports with the SEC between
+January and October 2025. The review was prompted by the SEC's December 2023
+cybersecurity disclosure rules (Release No. 33-11216), which require public
+companies to disclose material cybersecurity incidents within four business
+days of determining materiality, and to provide annual disclosures about
+cybersecurity risk management, strategy, and governance.
+
+The findings are intended to inform Acme's own disclosure drafting and
+governance practices ahead of the fiscal year 2025 annual report filing.
+
+------------------------------------------------------------------------
+
+SECTION 1: REGULATORY BACKGROUND
+
+The SEC adopted its cybersecurity disclosure rules in July 2023, effective for
+annual reports filed after December 15, 2023. The rules impose two primary
+disclosure obligations on public companies:
+
+1. INCIDENT DISCLOSURE (Form 8-K, Item 1.05)
+   Companies must disclose material cybersecurity incidents within four
+   business days of determining that the incident is material. The disclosure
+   must describe the material aspects of the incident's nature, scope, and
+   timing, and its material impact or reasonably likely material impact.
+
+2. ANNUAL RISK MANAGEMENT DISCLOSURE (Form 10-K, Item 1C)
+   Companies must describe their processes for assessing, identifying, and
+   managing material risks from cybersecurity threats, the material effects of
+   cybersecurity risks and incidents on the company's business strategy and
+   financial condition, and the board's oversight of cybersecurity risks.
+
+The rules do not prescribe specific security controls or require disclosure of
+technical vulnerability details that could themselves create security risks.
+
+------------------------------------------------------------------------
+
+SECTION 2: DISCLOSURE PATTERNS OBSERVED
+
+2.1 Board Oversight
+
+Of the 42 companies reviewed, 38 (90%) disclosed that the Audit Committee or
+a dedicated Risk Committee of the Board has primary oversight responsibility
+for cybersecurity risks. Four companies disclosed that full board oversight
+was retained rather than delegated to a committee.
+
+The most common disclosure pattern describes:
+  - Frequency of CISO or senior management briefings to the board committee
+    (typically quarterly, with ad hoc briefings for material incidents)
+  - Board member qualifications or experience relevant to cybersecurity
+  - Process by which management escalates cybersecurity issues to the board
+
+2.2 Incident History Disclosures
+
+Twenty-one companies (50%) disclosed at least one cybersecurity incident or
+attempted intrusion in their fiscal year 2025 filings. Of these:
+
+  - 17 disclosed incidents that were determined not to be material
+  - 3 disclosed incidents that were determined material and filed Form 8-K
+  - 1 disclosed an incident under investigation with materiality pending
+
+No company in the review sample disclosed a material incident that involved
+confirmed compromise of client financial data. Three companies disclosed
+incidents involving unauthorized access to employee credentials or internal
+systems with no client data affected.
+
+2.3 Insurance Coverage Disclosures
+
+Thirty-one companies (74%) disclosed the existence of cyber liability insurance.
+Of those, 18 disclosed the aggregate coverage amount, which ranged from
+$10 million to $200 million per incident. The median disclosed coverage amount
+was $50 million. Coverage amounts above $100 million were limited to companies
+with annual revenues exceeding $500 million.
+
+2.4 Third-Party and Supply Chain Risk
+
+The most significant growth in disclosure depth year over year was in
+third-party and supply chain risk language. Forty companies (95%) included
+explicit disclosure of risks from third-party vendors or service providers,
+compared with 71% in the prior year review. The shift reflects increased
+regulatory and investor focus following widely reported supply chain
+vulnerabilities in 2024.
+
+Common language describes:
+  - Vendor security assessment and onboarding procedures
+  - Contractual security requirements imposed on vendors
+  - Ongoing monitoring and right-to-audit provisions
+  - Concentration risk from reliance on major cloud infrastructure providers
+
+------------------------------------------------------------------------
+
+SECTION 3: GOVERNANCE OBSERVATIONS
+
+3.1 CISO Reporting Structure
+
+Among companies disclosing the CISO's reporting line, 24 reported to the
+Chief Technology Officer, 11 reported directly to the CEO, and 7 reported
+to the Chief Risk Officer or General Counsel. Direct-to-CEO reporting was
+more common at companies that had experienced a material incident in the
+prior three years.
+
+3.2 Tabletop Exercises and Testing
+
+Thirty companies disclosed the use of tabletop exercises, penetration testing,
+or red team engagements. Disclosure of third-party penetration testing was
+more common among companies with market capitalizations above $1 billion.
+
+------------------------------------------------------------------------
+
+SECTION 4: IMPLICATIONS FOR ACME'S FISCAL YEAR 2025 DISCLOSURE
+
+Based on the patterns reviewed, the following are areas where Acme's
+Item 1C disclosure may benefit from additional specificity:
+
+1. BOARD BRIEFING FREQUENCY
+   Disclosing the specific cadence of CISO briefings to the Audit and Risk
+   Committee (quarterly, as currently practiced) is now a market standard.
+   Consider adding explicit language to this effect in Item 1C.
+
+2. INCIDENT REMEDIATION LANGUAGE
+   For the two attempted intrusions detected in FY2025, disclosure should
+   clearly state the outcome (no data compromised), describe containment
+   measures, and confirm that neither was determined to be material under
+   the SEC's four-day reporting standard.
+
+3. INSURANCE COVERAGE
+   Acme discloses $50 million in aggregate cyber liability coverage. This is
+   at the median for the peer group by coverage amount. Consider whether
+   disclosure of the coverage amount serves Acme's disclosure objectives
+   or is better omitted, given that it also signals coverage limits to
+   potential adversaries.
+
+4. THIRD-PARTY RISK
+   Acme's current Item 1C language is brief on vendor risk management. Given
+   the 95% disclosure rate among peers and increased investor focus on supply
+   chain risk, expanding this section is recommended before the final filing.
+
+5. ZERO-TRUST ARCHITECTURE
+   Acme implemented zero-trust network architecture in Q3 2025. This is a
+   specific, verifiable control. Disclosing named architectural approaches
+   is a disclosure choice, not a requirement. Discuss with outside counsel
+   whether including it is appropriate given the detail it provides about
+   internal controls.
+
+------------------------------------------------------------------------
+
+SECTION 5: SOURCES AND METHODOLOGY
+
+This review analyzed Item 1C disclosures from 42 public financial technology
+companies with annual revenues between $50 million and $2 billion that filed
+Form 10-K with the SEC between January 1, 2025 and October 31, 2025. Filings
+were retrieved from the SEC EDGAR database. Companies were selected to
+represent a peer group comparable to Acme by revenue, business model, and
+regulatory profile.
+
+This note does not constitute legal advice. Disclosure decisions should be
+made in consultation with outside securities counsel.
+
+------------------------------------------------------------------------
+
+Prepared by: Research & Analytics Team, Acme Corporation
+Questions: research-analytics@acme-corp.com
+Document ID: RN-2025-047
+Retention: 7 years per Records Management Policy RM-2024-002
+
+------------------------------------------------------------------------
+END OF DOCUMENT

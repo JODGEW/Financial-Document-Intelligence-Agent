@@ -1,0 +1,84 @@
+{
+  "summary": {
+    "case_count": 5,
+    "retrieval_hit_rate": 1,
+    "grounded_answer_rate": 0.8,
+    "unsupported_claim_rate": 0.0,
+    "citation_accuracy": 1.0,
+    "tool_routing_accuracy": 1,
+    "local_refusal_accuracy": 1,
+    "guardrail_block_accuracy": 1,
+    "latency_by_workflow_type": {
+      "guardrail_block": 0.7271762079981272,
+      "local_only": 7.641423264334056,
+      "missing_company_fallback": 10.933311374999903
+    }
+  },
+  "results": [
+    {
+      "case_id": "acme_revenue",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.027359916999558
+    },
+    {
+      "case_id": "personal_trading_blackout",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.162656167001842
+    },
+    {
+      "case_id": "cybersecurity_comparison",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 11.734253709000768
+    },
+    {
+      "case_id": "nvidia_missing_company",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": true,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 10.933311374999903
+    },
+    {
+      "case_id": "denied_personal_advice",
+      "workflow_type": "guardrail_block",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": "blocked",
+      "guardrail_outcome_correct": true,
+      "latency_seconds": 0.7271762079981272
+    }
+  ]
+}

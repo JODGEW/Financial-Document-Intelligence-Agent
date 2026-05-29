@@ -1,0 +1,21 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+chroma_db/
+.DS_Store
+WALKTHROUGH.md
+.gradio/
+audit_logs/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+
+# Local-only dev notes (kept out of the public repo)
+GOVERNANCE_PROGRESS.md
+MULTI_FORMAT_PROGRESS.md
+Governance_layer.md
+docs-internal/
