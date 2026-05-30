@@ -115,17 +115,15 @@ python eval_runner.py            # run evaluation dataset
 ```text
 ## Result Summary
 
-**Internal Corpus Answer:** Available in local corpus.
+**Internal Corpus Answer:** Available in current local corpus.
 
-According to Acme Corporation's Personal Trading and Securities Disclosure
-Policy (CP-2026-003, effective January 1, 2026), all covered persons must
-obtain pre-clearance from the Compliance Department before executing any
-trade in Acme Corporation securities, securities on the Restricted List,
-or any security about which the covered person possesses material nonpublic
-information (MNPI). Pre-clearance requests must be submitted at least 24
-hours before the intended trade date. Approvals are valid for 48 hours.
-
-Source: /docs/compliance-policy-personal-trading.txt
+According to Acme Corporation's personal trading policy, all covered persons
+must obtain pre-clearance from the Compliance Department before executing any
+trade in Acme Corporation securities, securities on the Restricted List, or any
+security about which they possess material nonpublic information (MNPI).
+Pre-clearance requests must be submitted at least 24 hours before the intended
+trade date, and approvals are valid for 48 hours.
+[compliance-policy-personal-trading.md]
 
 **External Context:** Unavailable.
 ```
@@ -284,7 +282,7 @@ The agent retrieves local evidence first, then uses web search for clearly separ
 ## Project Structure
 
 ```text
-doc-agent/
+ReAct-RAG/
 ├── config.py        # central config (Bedrock models, chunking, paths)
 ├── ingest.py        # load → chunk → embed → persist (Chroma)
 ├── loaders/         # format-handler registry + per-format loaders
@@ -344,7 +342,12 @@ doc-agent/
 | `AWS_ACCESS_KEY_ID`     | Yes*     | For local development if not using a profile or IAM role |
 | `AWS_SECRET_ACCESS_KEY` | Yes*     | For local development if not using a profile or IAM role |
 | `AWS_REGION`            | Yes      | Example: `us-east-1`                                     |
+| `CHAT_MODEL_ID`         | No       | Bedrock chat model. Default `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `EMBEDDING_MODEL_ID`    | No       | Bedrock embedding model. Default `amazon.titan-embed-text-v2:0` |
 | `TAVILY_API_KEY`        | No       | Needed only for web search                               |
+| `BEDROCK_GUARDRAIL_ID`  | No       | Enables Bedrock Guardrails when set; unset means guardrails are off |
+| `BEDROCK_GUARDRAIL_VERSION` | No   | Guardrail version to apply. Required alongside `BEDROCK_GUARDRAIL_ID` |
+| `BEDROCK_GUARDRAIL_TRACE` | No     | Guardrail trace level. Default `ENABLED`                 |
 | `CHROMA_COLLECTION`     | No       | Defaults to `documents`                                  |
 | `AUDIT_LOG_PATH`        | No       | Defaults to `audit_logs/query_audit.jsonl`               |
 | `PII_REDACT_AT_INGEST`  | No       | Global PII redaction on load. Default `false`            |
