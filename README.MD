@@ -16,13 +16,13 @@ To make the browser visualization work, run these two commands in two separate
 terminals:
 
 ```bash
-# Terminal 1: backend API, run from anywhere
-cd /Users/wenhaohe/Desktop/ReAct-RAG && python -m uvicorn api:app --reload
+# Terminal 1: backend API, from the repo root
+python -m uvicorn api:app --reload
 ```
 
 ```bash
-# Terminal 2: frontend UI, run from anywhere
-cd /Users/wenhaohe/Desktop/ReAct-RAG/frontend && npm run dev
+# Terminal 2: frontend UI, from the repo root
+cd frontend && npm run dev
 ```
 
 Then open `http://localhost:5173` in your browser. The frontend needs the
