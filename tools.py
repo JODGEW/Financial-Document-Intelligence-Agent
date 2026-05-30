@@ -7,9 +7,11 @@ from pathlib import Path
 
 from langchain_aws import BedrockEmbeddings
 from langchain_chroma import Chroma
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 import config
+from governance.context_policy import POLICY, AdmissionSummary, admit_chunks
 from ingest import _metadata_key, company_metadata_key, infer_company
 
 _vectorstore = None
@@ -182,8 +184,57 @@ def _retrieve_documents(query: str):
     return get_retriever().invoke(query)
 
 
+def _doc_to_chunk(doc) -> dict:
+    """Shape a retrieved Document into the chunk dict admit_chunks reads."""
+    metadata = dict(doc.metadata or {})
+    return {
+        "content": doc.page_content,
+        "metadata": metadata,
+        "score": metadata.get("score"),
+        "document_status": metadata.get("document_status"),
+    }
+
+
+def _format_local_chunk(chunk: dict, rank: int) -> str:
+    """Render one admitted local chunk in the [Source N: ...] block format."""
+    metadata = chunk.get("metadata", {})
+    source = metadata.get("source", "unknown")
+    page = metadata.get("page")
+    section = metadata.get("section_title")
+    company = metadata.get("company")
+    filing_type = metadata.get("filing_type")
+    year = metadata.get("year")
+    header = f"[Source {rank}: {source}"
+    if page is not None:
+        header += f", page {page}"
+    if section:
+        header += f", section: {section}"
+    if company:
+        header += f", company: {company}"
+    if filing_type:
+        header += f", type: {filing_type}"
+    if year:
+        header += f", year: {year}"
+    header += "]"
+    return f"{header}\n{chunk['content']}"
+
+
+def _record_admission(run_config, selected, drops, *, is_external) -> None:
+    """Fold admission results into the per-query stash carried on the run config.
+
+    The agent puts an AdmissionSummary in ``configurable.admission_stash`` so the
+    report can read selected/dropped counts and tokens after the run. Passing the
+    object by reference through the config is correct under both the synchronous
+    and streaming paths, where ambient (thread/context) state does not survive.
+    """
+    configurable = (run_config or {}).get("configurable") or {}
+    stash = configurable.get("admission_stash")
+    if isinstance(stash, AdmissionSummary):
+        stash.record(selected, drops, is_external=is_external)
+
+
 @tool
-def local_search(query: str) -> str:
+def local_search(query: str, run_config: RunnableConfig) -> str:
     """Search the local document corpus for relevant information.
 
     Use this tool as the primary source of truth. It searches internal
@@ -194,33 +245,19 @@ def local_search(query: str) -> str:
     if not docs:
         return "No relevant documents found in the local corpus."
 
-    results = []
-    for i, doc in enumerate(docs, 1):
-        source = doc.metadata.get("source", "unknown")
-        page = doc.metadata.get("page", None)
-        section = doc.metadata.get("section_title")
-        company = doc.metadata.get("company")
-        filing_type = doc.metadata.get("filing_type")
-        year = doc.metadata.get("year")
-        header = f"[Source {i}: {source}"
-        if page is not None:
-            header += f", page {page}"
-        if section:
-            header += f", section: {section}"
-        if company:
-            header += f", company: {company}"
-        if filing_type:
-            header += f", type: {filing_type}"
-        if year:
-            header += f", year: {year}"
-        header += "]"
-        results.append(f"{header}\n{doc.page_content}")
+    chunks = [_doc_to_chunk(doc) for doc in docs]
+    selected, drops = admit_chunks(chunks, POLICY, is_external=False)
+    _record_admission(run_config, selected, drops, is_external=False)
 
+    if not selected:
+        return "No local documents passed the context policy for this query."
+
+    results = [_format_local_chunk(chunk, i) for i, chunk in enumerate(selected, 1)]
     return "\n\n---\n\n".join(results)
 
 
 @tool
-def web_search(query: str) -> str:
+def web_search(query: str, run_config: RunnableConfig) -> str:
     """Search the public web for supplemental context.
 
     Use this tool only when the local document corpus does not contain
@@ -250,8 +287,18 @@ def web_search(query: str) -> str:
                 continue
         return raw  # return as-is if no format matched
 
+    # External results pass through the same context policy as local chunks, so
+    # the external token budget caps how much web context reaches the prompt.
+    chunks = [
+        {"content": item.get("content", ""), "item": item}
+        for item in response.get("results", [])
+    ]
+    selected, drops = admit_chunks(chunks, POLICY, is_external=True)
+    _record_admission(run_config, selected, drops, is_external=True)
+
     results = []
-    for i, item in enumerate(response.get("results", []), 1):
+    for chunk in selected:
+        item = chunk["item"]
         title = item.get("title", "No title")
         url = item.get("url", "")
         content = item.get("content", "")

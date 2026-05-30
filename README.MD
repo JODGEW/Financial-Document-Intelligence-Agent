@@ -63,7 +63,8 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Tracks document version metadata and supports retrieval filters by company, filing type, and year
 - [x] Writes JSONL audit logs for queries, retrieved sources, and response traces
 - [x] Includes a deterministic evaluation runner for retrieval, citations, grounding, unsupported claims, routing, and latency
-- [x] 113 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, and thread safety
+- [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
+- [x] 150 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, and thread safety
 
 ## Best-fit use cases
 
@@ -158,6 +159,32 @@ Ingestion:   /docs ──▶ loader ──▶ splitter ──▶ embed ──▶
 Query:       question ──▶ agent ──▶ tool(s) ──▶ observe ──▶ answer
 ```
 
+The governance layer wraps that agent loop. Context policy decides what reaches
+the model before retrieval returns; grounding, risk, and the report run after the
+answer is generated:
+
+```text
+question
+   │
+   ▼
+[context policy] ── admits/drops chunks by token budget, freshness, source
+   │
+   ▼
+   agent loop (local_search / web_search ──▶ Bedrock model)
+   │
+   ▼
+[grounding validation] ── citation coverage, grounding score, unsupported claims
+   │
+   ▼
+[risk scorer] ── 3-signal score; blocked answers scored categorically (risk=high)
+   │
+   ▼
+[governance report] ── audit ID, source usage, validation, risk, decision
+   │
+   ▼
+answer  +  governance report  (API, React, CLI summary)  +  JSONL audit log
+```
+
 ### Components
 
 **Agent Executor**
@@ -171,6 +198,35 @@ Uses Tavily for supplemental public-web context. In finance-oriented workflows, 
 
 **Governance path**
 Amazon Bedrock Guardrails are wired end-to-end. The policy ([policies/guardrails-policy.md](policies/guardrails-policy.md)) defines denied topics (personalized investment advice, legal opinions, MNPI requests), PII anonymization (email, phone, SSN, card, address), and contextual grounding/relevance thresholds. Provision once with [scripts/setup_guardrail.py](scripts/setup_guardrail.py), then set `BEDROCK_GUARDRAIL_ID` and `BEDROCK_GUARDRAIL_VERSION` in the environment. When the guardrail intervenes, the agent surfaces a structured "blocked by policy" answer, suppresses the external-web fallback, and writes `guardrail_outcome="blocked"` into the audit log. The eval runner scores `guardrail_block_accuracy` from a denied-topic probe case so regressions in enforcement are visible.
+
+---
+
+## AI Governance Layer
+
+The project wraps the document agent in a governance layer. It controls what information enters the model, validates whether each answer is grounded in retrieved evidence, scores risk, and produces an audit-ready report for every answer. The report is visible in the API response, the React panel, and a one-line CLI summary, and the full record is written to the JSONL audit log.
+
+The point is to make each answer defensible: you can see which chunks were admitted or dropped and why, how well the answer is grounded, what the risk decision was, and which past answers depend on a document that just changed.
+
+Currently supports:
+
+- governance report per answer (audit ID, source usage, validation, risk, decision)
+- context policy admission with drop reasons and token budgets
+- runtime grounding validation (citation coverage, grounding score, unsupported claims)
+- categorical block scoring (blocked answers report risk=high, validation=N/A)
+- document change impact analysis CLI (`scripts/document_impact.py`)
+- internal-first retrieval policy
+- external context separation
+- document version and chunk traceability
+- Bedrock Guardrails for denied topics and PII handling
+- JSONL audit logs for query and retrieval traces
+- deterministic evaluation for grounding, citations, routing, and drift
+
+Planned extensions:
+
+- human review queue for high-risk outputs (Phase 5)
+- document-level permissions (Phase 6)
+
+The governance modules live in [governance/](governance/); the design doc is [Governance_layer.md](Governance_layer.md) and the build log is [GOVERNANCE_PROGRESS.md](GOVERNANCE_PROGRESS.md).
 
 ---
 
@@ -251,9 +307,15 @@ doc-agent/
 ├── frontend/        # React + TypeScript + Tailwind chat UI
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
-├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py)
+├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py)
 ├── chroma_db/       # persistent vector store
-├── tests/           # 113 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, thread safety)
+├── governance/      # governance layer (report, grounding, risk, context policy, impact)
+│   ├── governance_report.py  # per-answer report assembly
+│   ├── grounding_validator.py # runtime citation + claim grounding
+│   ├── risk_scorer.py        # 3-signal risk score + categorical block override
+│   ├── context_policy.py     # chunk admission, token budgets, drop reasons
+│   └── impact.py             # document change diff + audit log scan
+├── tests/           # 150 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -261,6 +323,11 @@ doc-agent/
 │   ├── test_api.py
 │   ├── test_eval_runner.py
 │   ├── test_guardrails.py
+│   ├── test_governance_report.py
+│   ├── test_grounding_validator.py
+│   ├── test_risk_scorer.py
+│   ├── test_context_policy.py
+│   ├── test_document_impact.py
 │   ├── test_loaders_registry.py
 │   ├── test_pii_redaction.py
 │   └── test_loader_{docx,excel,html,csv,pptx,email,json}.py
@@ -341,7 +408,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-113 tests, all passing. Run with:
+150 tests, all passing. Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -350,12 +417,17 @@ python -m pytest tests/ -v
 | File | Tests | What they cover |
 | --- | --- | --- |
 | `test_ingest.py` | 18 | Document loading (.txt, .md, .pdf), unsupported file skip, empty dir, chunking, metadata preservation, stable chunk-id derivation, idempotent re-splitting, markdown header-aware section titles, SEC `PART/ITEM` section detection, cross-page section carry-forward, table text formatting, document version/filter metadata, company/type inference precedence |
-| `test_tools.py` | 11 | Local search retrieval, source metadata, metadata-filter inference, no-match handling, web search graceful degradation, markdown link output, no "date unavailable" noise, retriever documents, Chroma singleton, concurrent parallel search (thread safety) |
+| `test_tools.py` | 13 | Local search retrieval, source metadata, metadata-filter inference, no-match handling, web search graceful degradation, markdown link output, no "date unavailable" noise, retriever documents, Chroma singleton, concurrent parallel search (thread safety), context policy admission and drop decisions reaching the report |
 | `test_agent.py` | 12 | Agent build, query output, local search routing, chat history, Result Summary format, company mismatch rejection, missing-company web fallback prompt rule, source display gating, deterministic external fallback |
-| `test_audit.py` | 6 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization |
-| `test_api.py` | 4 | Chat API returns answer metadata and audit id for the React answer view; streaming API returns incremental NDJSON events; `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format (Hotfix-2 regressions) |
+| `test_audit.py` | 7 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization, governance report nested in the audit record |
+| `test_api.py` | 8 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format |
 | `test_eval_runner.py` | 10 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy, tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
+| `test_governance_report.py` | 6 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
+| `test_grounding_validator.py` | 4 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling |
+| `test_risk_scorer.py` | 4 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, human-review trigger |
+| `test_context_policy.py` | 6 | YAML loading and default fallback, internal token-budget drop, low retrieval-score drop, expired-document drop (stale_document_version), draft-document drop (unapproved_document) |
+| `test_document_impact.py` | 10 | load_current_chunks filters by document_id, compute_new_chunks is pure (no Chroma write), diff added/removed/modified, audit-log scan match and no-match, report shape, end-to-end modified-doc flags a past query, CLI text + json exit 0, document-id-not-found edge |
 | `test_loaders_registry.py` | 6 | Built-in handlers registered, case-insensitive `handler_for`, unknown-extension returns None, register-overwrite idempotency, sorted `supported_extensions()`, PDF handler dispatch into `ingest._split_pdf` |
 | `test_pii_redaction.py` | 7 | Email/SSN/phone/card redaction with per-type counts, no-PII passthrough, global-flag override, tabular-flag scoping (tabular only), both-flags-off no-op, `None`-handler safety |
 | `test_loader_docx.py` | 3 | Heading-aware section load, table append into `[Extracted Tables]`, full pipeline + `filing_type` (board_minutes / committee_charter) |
@@ -524,6 +596,7 @@ Checked items are partially addressed in the current build. Unchecked items are 
 * [x] Document versioning
 * [x] Deduplication across repeated filings (stable content-hash chunk IDs + Chroma upsert)
 * [x] Metadata filters by company, filing type, and year
+* [x] Document change impact analysis CLI (`scripts/document_impact.py`) — given a document change, reports which past queries used now-stale chunks via excerpt-fingerprint matching against the audit log
 
 After changing document-handling code or adding new corpus files, rerun
 `python ingest.py` so Chroma receives the latest table text and metadata.
@@ -531,6 +604,9 @@ After changing document-handling code or adding new corpus files, rerun
 ### 4. Safer workflow controls
 
 * [x] Bedrock Guardrails wired end-to-end (denied topics, PII anonymization, contextual grounding) — policy in [policies/guardrails-policy.md](policies/guardrails-policy.md), provisioner at [scripts/setup_guardrail.py](scripts/setup_guardrail.py); the operator runs the provisioner once per environment and sets `BEDROCK_GUARDRAIL_ID` / `BEDROCK_GUARDRAIL_VERSION`
+* [x] Governance report per answer (audit ID, validation, risk, decision visible in API + React + CLI)
+* [x] Context policy admission with token budgets and drop-reason tracking
+* [x] Runtime grounding validation (citation coverage, grounding score, unsupported claims)
 * [x] Stricter policy around when web research is allowed (agent prompt enforces local-first)
 * [x] Clearer confidence and uncertainty handling (agent states when data is unavailable or weak)
 * [x] Better handling for low-signal retrieval results (agent refuses to substitute wrong company data)

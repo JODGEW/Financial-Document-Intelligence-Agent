@@ -85,7 +85,7 @@ _SAMPLE_REPORT = {
     "auditId": "audit-123",
     "model": "claude-haiku-4.5",
     "promptPolicyId": "regulated_doc_agent_v1",
-    "contextPolicyId": "internal_first_v1",
+    "contextPolicyId": "regulated_doc_agent_v1",
     "sourceUsage": {
         "internalSourcesUsed": 2,
         "externalSourcesUsed": 0,
@@ -127,6 +127,47 @@ def test_chat_response_includes_governance_report(monkeypatch):
     assert report["decision"] == "returned"
     assert report["risk"]["riskLevel"] == "low"
     assert report["validation"]["groundingScore"] == 1.0
+
+
+def test_chat_response_includes_context_policy_section(monkeypatch):
+    """The chat API should surface the contextPolicy section in the report payload."""
+    report = {
+        **_SAMPLE_REPORT,
+        "contextPolicyId": "regulated_doc_agent_v1",
+        "contextPolicy": {
+            "id": "regulated_doc_agent_v1",
+            "selectedChunks": 2,
+            "droppedChunks": 1,
+            "dropReasons": ["stale_document_version"],
+            "internalTokens": 120,
+            "externalTokens": 0,
+            "totalPromptTokens": 120,
+        },
+    }
+
+    def fake_query(question, chat_history=None):
+        return {
+            "output": "Answer with citations.",
+            "sources": [],
+            "audit_id": "audit-123",
+            "governance_report": report,
+        }
+
+    monkeypatch.setattr(api, "query", fake_query)
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "What is the policy?", "history": []},
+    )
+
+    assert response.status_code == 200
+    context_policy = response.json()["governance_report"]["contextPolicy"]
+    assert context_policy["id"] == "regulated_doc_agent_v1"
+    assert context_policy["selectedChunks"] == 2
+    assert context_policy["droppedChunks"] == 1
+    assert context_policy["dropReasons"] == ["stale_document_version"]
+    assert context_policy["totalPromptTokens"] == 120
 
 
 def test_chat_stream_emits_governance_report_event(monkeypatch):

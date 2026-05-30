@@ -10,11 +10,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Policy identifiers for PR1. The context policy is a label until PR2's Context
-# Policy Manager makes admission decisions; it names the internal-first behavior
-# the agent already follows.
+from governance.context_policy import POLICY as CONTEXT_POLICY, AdmissionSummary
+
+# Prompt policy id names the internal-first answer contract the agent follows.
+# The context policy id is no longer a placeholder: PR2's Context Policy Manager
+# makes the admission decisions, so it reads from the loaded policy.
 PROMPT_POLICY_ID = "regulated_doc_agent_v1"
-CONTEXT_POLICY_ID = "internal_first_v1"
 
 _EXTERNAL_MARKER = "external context"
 _EXTERNAL_BULLET_RE = re.compile(r"^\s*[-*]\s*\[", re.MULTILINE)
@@ -72,6 +73,25 @@ def _decision(
     return "returned"
 
 
+def _context_policy_section(context_admission: AdmissionSummary | None) -> dict[str, Any]:
+    """Build the contextPolicy section (§7.3) from the admission summary.
+
+    Reported honestly regardless of guardrail outcome: a blocked answer still
+    retrieved chunks before the block, so the counts reflect that work even though
+    the answer was not returned.
+    """
+    summary = context_admission or AdmissionSummary()
+    return {
+        "id": CONTEXT_POLICY.id,
+        "selectedChunks": summary.selected_chunks,
+        "droppedChunks": summary.dropped_chunks,
+        "dropReasons": list(summary.drop_reasons),
+        "internalTokens": summary.internal_tokens,
+        "externalTokens": summary.external_tokens,
+        "totalPromptTokens": summary.total_tokens,
+    }
+
+
 def build_report(
     audit_id: str | None,
     model: str,
@@ -80,6 +100,7 @@ def build_report(
     guardrail_outcome: str | None,
     grounding_result: dict[str, Any],
     risk_result: dict[str, Any],
+    context_admission: AdmissionSummary | None = None,
 ) -> dict[str, Any]:
     """Build the §9.3 governance report dict for one answer."""
     chunks = retrieved_chunks or []
@@ -128,7 +149,8 @@ def build_report(
         "auditId": audit_id,
         "model": model,
         "promptPolicyId": PROMPT_POLICY_ID,
-        "contextPolicyId": CONTEXT_POLICY_ID,
+        "contextPolicyId": CONTEXT_POLICY.id,
+        "contextPolicy": _context_policy_section(context_admission),
         "sourceUsage": {
             "internalSourcesUsed": len(chunks),
             "externalSourcesUsed": _external_source_count(response_text),

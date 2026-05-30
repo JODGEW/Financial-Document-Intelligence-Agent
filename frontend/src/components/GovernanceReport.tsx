@@ -13,6 +13,15 @@ export type GovernanceReport = {
   model: string;
   promptPolicyId: string;
   contextPolicyId: string;
+  contextPolicy?: {
+    id: string;
+    selectedChunks: number;
+    droppedChunks: number;
+    dropReasons: string[];
+    internalTokens: number;
+    externalTokens: number;
+    totalPromptTokens: number;
+  };
   sourceUsage: {
     internalSourcesUsed: number;
     externalSourcesUsed: number;
@@ -119,6 +128,37 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
             <Row label="Document versions" value={`${report.sourceUsage.documentVersionsUsed}`} />
             <Row label="Expired documents" value={`${report.sourceUsage.expiredDocumentsUsed}`} />
           </Section>
+
+          {report.contextPolicy && (
+            <Section title="Context Policy">
+              <Row label="Policy" value={report.contextPolicy.id} />
+              <Row
+                label="Chunks selected"
+                value={`${report.contextPolicy.selectedChunks}/${
+                  report.contextPolicy.selectedChunks + report.contextPolicy.droppedChunks
+                }`}
+              />
+              <Row label="Dropped" value={`${report.contextPolicy.droppedChunks}`} />
+              <Row
+                label="Tokens (int + ext)"
+                value={`${report.contextPolicy.internalTokens} + ${report.contextPolicy.externalTokens} = ${report.contextPolicy.totalPromptTokens}`}
+              />
+              <div className="mt-1 flex flex-wrap gap-1">
+                {report.contextPolicy.dropReasons.length === 0 ? (
+                  <span className="text-zinc-400">No drops</span>
+                ) : (
+                  report.contextPolicy.dropReasons.map((reason) => (
+                    <span
+                      key={reason}
+                      className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700"
+                    >
+                      {reason}
+                    </span>
+                  ))
+                )}
+              </div>
+            </Section>
+          )}
 
           <Section title="Validation">
             <Row label="Citation coverage" value={pct(report.validation.citationCoverage)} />

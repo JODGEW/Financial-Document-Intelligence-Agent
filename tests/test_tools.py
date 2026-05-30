@@ -107,3 +107,62 @@ def test_metadata_filter_from_query_marks_unknown_company(monkeypatch):
 
     assert where_filter == {"company_key": "nvidia"}
     assert _has_unknown_company_filter(where_filter) is True
+
+
+def test_local_search_admits_chunks_per_policy(monkeypatch):
+    """local_search returns only chunks the context policy admits; expired ones drop."""
+    from langchain_core.documents import Document
+    from governance.context_policy import AdmissionSummary
+
+    docs = [
+        Document(page_content="Blackout period rules.", metadata={"source": "policy.md"}),
+        Document(
+            page_content="Superseded blackout guidance.",
+            metadata={"source": "policy-2019.md", "document_status": "expired"},
+        ),
+    ]
+    monkeypatch.setattr("tools._retrieve_documents", lambda query: docs)
+
+    admission = AdmissionSummary()
+    result = local_search.invoke(
+        "blackout periods", {"configurable": {"admission_stash": admission}}
+    )
+
+    assert "Blackout period rules." in result
+    assert "Superseded blackout guidance." not in result
+    assert "policy-2019.md" not in result
+
+
+def test_drop_decisions_reach_governance_report_path(monkeypatch):
+    """Drops recorded by local_search reach the report via the config admission stash."""
+    from langchain_core.documents import Document
+    from governance.context_policy import AdmissionSummary
+    from governance.governance_report import build_report
+
+    docs = [
+        Document(page_content="Active compliance text.", metadata={"source": "policy.md"}),
+        Document(
+            page_content="Expired compliance text.",
+            metadata={"source": "old.md", "document_status": "expired"},
+        ),
+    ]
+    monkeypatch.setattr("tools._retrieve_documents", lambda query: docs)
+
+    admission = AdmissionSummary()
+    local_search.invoke("compliance", {"configurable": {"admission_stash": admission}})
+
+    report = build_report(
+        audit_id="a",
+        model="m",
+        retrieved_chunks=[],
+        response_text="x",
+        guardrail_outcome=None,
+        grounding_result={},
+        risk_result={},
+        context_admission=admission,
+    )
+
+    context_policy = report["contextPolicy"]
+    assert context_policy["selectedChunks"] == 1
+    assert context_policy["droppedChunks"] == 1
+    assert "stale_document_version" in context_policy["dropReasons"]

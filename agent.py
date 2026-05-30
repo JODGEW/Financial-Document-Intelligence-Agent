@@ -8,6 +8,7 @@ from langchain_aws import ChatBedrock
 
 from audit import build_audit_record, extract_retrieved_sources, write_audit_record
 import config
+from governance.context_policy import AdmissionSummary
 from governance.governance_report import build_report, external_context_used
 from governance.grounding_validator import validate as validate_grounding
 from governance.risk_scorer import score as score_risk
@@ -279,6 +280,7 @@ def _finalize_query_result(
     result_messages: list,
     trace_messages: list,
     guardrail_outcome: str | None = None,
+    context_admission: AdmissionSummary | None = None,
 ) -> dict:
     """Extract sources, validate grounding, write audit logs, and shape the result."""
     sources = extract_retrieved_sources(result_messages)
@@ -315,6 +317,7 @@ def _finalize_query_result(
             guardrail_outcome=guardrail_outcome,
             grounding_result=grounding_result,
             risk_result=risk_result,
+            context_admission=context_admission or AdmissionSummary(),
         )
         audit_record["governance_report"] = governance_report
         audit_id = write_audit_record(audit_record)
@@ -339,6 +342,8 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
     until the final-answer marker appears so the UI streams the answer itself,
     not intermediate tool planning.
     """
+    admission = AdmissionSummary()
+    run_config = {"configurable": {"admission_stash": admission}}
     graph = build_agent(streaming=True)
     messages = _to_agent_messages(question, chat_history)
     result_messages: list = []
@@ -352,6 +357,7 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
 
     for mode, payload in graph.stream(
         {"messages": messages},
+        run_config,
         stream_mode=["messages", "updates"],
     ):
         if mode == "messages":
@@ -406,7 +412,7 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
 
     if guardrail_outcome != "blocked" and should_run_external_fallback(question, output):
         yield {"type": "status", "message": "Searching external context..."}
-        web_results = web_search.invoke(question)
+        web_results = web_search.invoke(question, run_config)
         updated_output = apply_external_fallback(output, web_results)
         trace_messages.append(
             {
@@ -425,6 +431,7 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
         result_messages=result_messages,
         trace_messages=trace_messages,
         guardrail_outcome=guardrail_outcome,
+        context_admission=admission,
     )
     yield {"type": "sources", "sources": result["sources"]}
     yield {"type": "audit_id", "audit_id": result["audit_id"]}
@@ -436,10 +443,12 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
 
 def query(question: str, chat_history: list | None = None) -> dict:
     """Run a single question through the agent and return the result."""
+    admission = AdmissionSummary()
+    run_config = {"configurable": {"admission_stash": admission}}
     graph = build_agent()
     messages = _to_agent_messages(question, chat_history)
 
-    result = graph.invoke({"messages": messages})
+    result = graph.invoke({"messages": messages}, run_config)
 
     output = _final_ai_output(result["messages"])
     trace_messages = list(result["messages"])
@@ -447,7 +456,7 @@ def query(question: str, chat_history: list | None = None) -> dict:
     guardrail_outcome = detect_guardrail_intervention(output, result["messages"])
 
     if guardrail_outcome != "blocked" and should_run_external_fallback(question, output):
-        web_results = web_search.invoke(question)
+        web_results = web_search.invoke(question, run_config)
         output = apply_external_fallback(output, web_results)
         trace_messages.append(
             {
@@ -463,4 +472,5 @@ def query(question: str, chat_history: list | None = None) -> dict:
         result_messages=result["messages"],
         trace_messages=trace_messages,
         guardrail_outcome=guardrail_outcome,
+        context_admission=admission,
     )

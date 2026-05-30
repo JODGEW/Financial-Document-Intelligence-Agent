@@ -1,0 +1,25 @@
+# Context policy for the governance layer (Governance_layer.md §7.3).
+#
+# Governance as policy, not code: what reaches the LLM context window is decided
+# here, not hard-coded in context_policy.py. Edit these to retune admission
+# without a code change. If this file is missing or unreadable, context_policy.py
+# falls back to identical defaults so the agent still runs.
+#
+# Token budgets are approximate (1 token ~= 4 characters). Chunks are admitted in
+# retrieval-rank order until a budget is hit; overflow chunks are dropped and the
+# reason is recorded in the governance report.
+context_policy:
+  id: regulated_doc_agent_v1
+  max_total_context_tokens: 12000
+  max_internal_context_tokens: 10000
+  max_external_context_tokens: 1500
+  require_internal_first: true
+  require_chunk_metadata: true
+  exclude_expired_documents: true
+  exclude_unapproved_documents: true
+  allow_web_fallback: true
+  web_fallback_requires_local_miss: true
+  preserve_citation_traceability: true
+  # 0.0 disables score filtering. Set >0 to drop chunks whose retrieval score is
+  # below the threshold (opt-in; retrieval scores are not attached by default).
+  min_retrieval_score: 0.0

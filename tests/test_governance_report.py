@@ -40,7 +40,7 @@ def test_report_matches_section_structure_and_is_json_serializable():
 
     assert set(report) == {
         "auditId", "model", "promptPolicyId", "contextPolicyId",
-        "sourceUsage", "validation", "risk", "decision",
+        "contextPolicy", "sourceUsage", "validation", "risk", "decision",
     }
     assert set(report["sourceUsage"]) == {
         "internalSourcesUsed", "externalSourcesUsed",
@@ -112,6 +112,17 @@ def test_blocked_answer_is_scored_categorically():
     which reads as broken next to a Blocked decision. A block is categorical: max
     risk, no answer to ground, and no review (the block already happened).
     """
+    from governance.context_policy import AdmissionSummary, DropDecision
+
+    # Chunks were retrieved before the block. The contextPolicy section reports
+    # that honestly even though grounding is N/A.
+    admission = AdmissionSummary()
+    admission.record(
+        selected=[{"content": "x" * 40}],
+        drops=[DropDecision("c1", "stale_document_version", "expired")],
+        is_external=False,
+    )
+
     report = build_report(
         audit_id="a",
         model="m",
@@ -121,6 +132,7 @@ def test_blocked_answer_is_scored_categorically():
         # Inputs that the continuous path would score as Medium 0.55 / 50% grounding.
         grounding_result={"citation_coverage": 0.0, "grounding_score": 0.5, "unsupported_claim_count": 0},
         risk_result={"risk_score": 0.55, "risk_level": "medium", "human_review_required": False},
+        context_admission=admission,
     )
 
     assert report["validation"]["citationCoverage"] is None
@@ -130,9 +142,60 @@ def test_blocked_answer_is_scored_categorically():
     assert report["risk"]["riskLevel"] == "high"
     assert report["risk"]["humanReviewRequired"] is False
     assert report["decision"] == "blocked"
+    # contextPolicy is not N/A on a block: it reflects pre-block retrieval.
+    assert report["contextPolicy"]["selectedChunks"] == 1
+    assert report["contextPolicy"]["droppedChunks"] == 1
+    assert report["contextPolicy"]["dropReasons"] == ["stale_document_version"]
     # Still JSON-serializable with the null grounding fields.
     import json
     assert json.loads(json.dumps(report))["validation"]["groundingScore"] is None
+
+
+def test_context_policy_section_populated_and_dedupes_reasons():
+    """contextPolicy carries the §7.3 fields; drop reasons dedupe across tool calls."""
+    from governance.context_policy import AdmissionSummary, DropDecision
+
+    admission = AdmissionSummary()
+    admission.record(
+        selected=[{"content": "a" * 40}],  # 10 internal tokens
+        drops=[
+            DropDecision("c1", "stale_document_version", "expired"),
+            DropDecision("c2", "low_retrieval_score", "below threshold"),
+        ],
+        is_external=False,
+    )
+    admission.record(
+        selected=[{"content": "b" * 80}],  # 20 external tokens
+        drops=[DropDecision("c3", "stale_document_version", "expired")],  # repeat reason
+        is_external=True,
+    )
+
+    report = build_report(
+        audit_id="a",
+        model="m",
+        retrieved_chunks=_CHUNKS,
+        response_text="Answer [policy.md].",
+        guardrail_outcome=None,
+        grounding_result=_GROUNDING,
+        risk_result=_RISK,
+        context_admission=admission,
+    )
+
+    context_policy = report["contextPolicy"]
+    assert set(context_policy) == {
+        "id", "selectedChunks", "droppedChunks", "dropReasons",
+        "internalTokens", "externalTokens", "totalPromptTokens",
+    }
+    assert context_policy["id"] == "regulated_doc_agent_v1"
+    assert context_policy["selectedChunks"] == 2
+    assert context_policy["droppedChunks"] == 3
+    # Deduped, order preserved across both calls.
+    assert context_policy["dropReasons"] == ["stale_document_version", "low_retrieval_score"]
+    assert context_policy["internalTokens"] == 10
+    assert context_policy["externalTokens"] == 20
+    assert context_policy["totalPromptTokens"] == 30
+    # Still JSON-serializable with the new section.
+    assert json.loads(json.dumps(report)) == report
 
 
 def test_missing_inputs_default_gracefully():

@@ -12,16 +12,20 @@ def _governance_line(report: dict | None) -> str | None:
         return None
     validation = report.get("validation", {})
     risk = report.get("risk", {})
+    context = report.get("contextPolicy", {})
 
     def fmt_pct(value: float | None) -> str:
         return "N/A" if value is None else f"{value:.0%}"
 
     grounding = fmt_pct(validation.get("groundingScore"))
     citations = fmt_pct(validation.get("citationCoverage"))
+    selected = context.get("selectedChunks", 0)
+    total = selected + context.get("droppedChunks", 0)
     review = "yes" if risk.get("humanReviewRequired") else "no"
     return (
         f"Governance: risk={risk.get('riskLevel', 'n/a')} | "
-        f"grounding={grounding} | citations={citations} | review={review}"
+        f"grounding={grounding} | citations={citations} | "
+        f"chunks={selected}/{total} | review={review}"
     )
 
 
