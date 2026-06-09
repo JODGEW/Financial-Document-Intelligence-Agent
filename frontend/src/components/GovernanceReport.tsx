@@ -52,6 +52,7 @@ const RISK_STYLES: Record<string, string> = {
 const DECISION_LABELS: Record<string, string> = {
   returned: "Returned to user",
   returned_with_warning: "Returned with warning",
+  held_for_review: "Held for human review",
   requires_review: "Requires human review",
   blocked: "Blocked"
 };

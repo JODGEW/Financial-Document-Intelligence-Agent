@@ -1,6 +1,7 @@
 """Agent setup using LangChain create_agent and AWS Bedrock."""
 
 from collections.abc import Iterator
+from datetime import datetime, timezone
 import warnings
 
 from langchain.agents import create_agent
@@ -8,6 +9,7 @@ from langchain_aws import ChatBedrock
 
 from audit import build_audit_record, extract_retrieved_sources, write_audit_record
 import config
+from governance import review_queue
 from governance.context_policy import AdmissionSummary
 from governance.governance_report import build_report, external_context_used
 from governance.grounding_validator import validate as validate_grounding
@@ -274,6 +276,43 @@ def _stream_chunk_text(chunk) -> str:
     return _content_text(getattr(chunk, "content", ""))
 
 
+def _held_review_notice(review_id: str, risk_level: str) -> str:
+    """User-facing message shown in place of a held draft answer (hold mode)."""
+    return (
+        f"This response is held for human review because {risk_level} risk was "
+        "flagged. A reviewer will assess it before release. "
+        f"Review ID: {review_id}."
+    )
+
+
+def _build_review_item(
+    audit_id: str | None,
+    question: str,
+    draft_answer: str,
+    risk_result: dict,
+    sources: list,
+) -> dict:
+    """Shape a review queue item from the held answer and its risk signals.
+
+    riskReasons come from the scorer result here, not from the report (the report
+    carries riskScore/riskLevel only, per §9.3). reviewId is derived from auditId
+    for 1:1 traceability back to the audit record.
+    """
+    return {
+        "reviewId": f"review_{audit_id}",
+        "auditId": audit_id,
+        "question": question,
+        "draftAnswer": draft_answer,
+        "riskScore": risk_result.get("risk_score", 0.0),
+        "riskLevel": risk_result.get("risk_level", "low"),
+        "riskReasons": list(risk_result.get("risk_reasons", [])),
+        "retrievedSources": sources,
+        "decision": "held_for_review",
+        "reviewStatus": "pending",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _finalize_query_result(
     question: str,
     output: str,
@@ -324,8 +363,32 @@ def _finalize_query_result(
     except OSError as exc:
         audit_error = str(exc)
 
+    # Phase 5: a high-risk answer is held for the human review queue. The draft is
+    # captured into the queue item BEFORE any user-facing substitution. In hold
+    # mode the user-facing answer becomes a short notice; the audit log keeps the
+    # draft (built above with answer=output). Blocked answers never reach here
+    # because the categorical override zeroes humanReviewRequired and sets
+    # decision="blocked".
+    user_facing_output = output
+    if governance_report and governance_report.get("decision") == "held_for_review":
+        review_item = _build_review_item(
+            audit_id=governance_report.get("auditId"),
+            question=question,
+            draft_answer=output,
+            risk_result=risk_result,
+            sources=sources,
+        )
+        try:
+            review_queue.enqueue(review_item, config.REVIEW_QUEUE_DIR)
+        except OSError as exc:
+            audit_error = audit_error or str(exc)
+        if config.HUMAN_REVIEW_HOLD:
+            user_facing_output = _held_review_notice(
+                review_item["reviewId"], review_item["riskLevel"]
+            )
+
     return {
-        "output": output,
+        "output": user_facing_output,
         "messages": result_messages,
         "sources": [] if guardrail_outcome == "blocked" else (sources if should_expose_retrieved_sources(output) else []),
         "audit_id": audit_id,
@@ -433,6 +496,15 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
         guardrail_outcome=guardrail_outcome,
         context_admission=admission,
     )
+
+    # A held answer in hold mode comes back from finalize with the user-facing
+    # text swapped for the held notice. The draft already streamed token by token
+    # (the marker was present, so answer_started is True and the block above did
+    # not fire), so replace it with the notice. The governance_report event below
+    # still carries decision=held_for_review.
+    if result["output"] != output:
+        yield {"type": "replace", "content": result["output"]}
+
     yield {"type": "sources", "sources": result["sources"]}
     yield {"type": "audit_id", "audit_id": result["audit_id"]}
     yield {"type": "governance_report", "report": result["governance_report"]}

@@ -64,7 +64,8 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Writes JSONL audit logs for queries, retrieved sources, and response traces
 - [x] Includes a deterministic evaluation runner for retrieval, citations, grounding, unsupported claims, routing, and latency
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
-- [x] 150 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, and thread safety
+- [x] Holds high-risk answers in a human review queue (hold or flag mode via `HUMAN_REVIEW_HOLD`) with a CLI approve/reject flow
+- [x] 162 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue, and thread safety
 
 ## Best-fit use cases
 
@@ -212,6 +213,7 @@ Currently supports:
 - runtime grounding validation (citation coverage, grounding score, unsupported claims)
 - categorical block scoring (blocked answers report risk=high, validation=N/A)
 - document change impact analysis CLI (`scripts/document_impact.py`)
+- human review queue for high-risk answers: decision routing with a `held_for_review` outcome, hold or flag mode gated by `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`
 - internal-first retrieval policy
 - external context separation
 - document version and chunk traceability
@@ -221,7 +223,6 @@ Currently supports:
 
 Planned extensions:
 
-- human review queue for high-risk outputs (Phase 5)
 - document-level permissions (Phase 6)
 
 The governance modules live in [governance/](governance/); the design doc is [Governance_layer.md](Governance_layer.md) and the build log is [GOVERNANCE_PROGRESS.md](GOVERNANCE_PROGRESS.md).
@@ -305,15 +306,16 @@ ReAct-RAG/
 ├── frontend/        # React + TypeScript + Tailwind chat UI
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
-├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py)
+├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py)
 ├── chroma_db/       # persistent vector store
-├── governance/      # governance layer (report, grounding, risk, context policy, impact)
+├── governance/      # governance layer (report, grounding, risk, context policy, impact, review queue)
 │   ├── governance_report.py  # per-answer report assembly
 │   ├── grounding_validator.py # runtime citation + claim grounding
 │   ├── risk_scorer.py        # 3-signal risk score + categorical block override
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
-│   └── impact.py             # document change diff + audit log scan
-├── tests/           # 150 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, thread safety)
+│   ├── impact.py             # document change diff + audit log scan
+│   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject)
+├── tests/           # 162 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -350,6 +352,8 @@ ReAct-RAG/
 | `BEDROCK_GUARDRAIL_TRACE` | No     | Guardrail trace level. Default `ENABLED`                 |
 | `CHROMA_COLLECTION`     | No       | Defaults to `documents`                                  |
 | `AUDIT_LOG_PATH`        | No       | Defaults to `audit_logs/query_audit.jsonl`               |
+| `HUMAN_REVIEW_HOLD`     | No       | Default `true`. When true, high-risk answers are withheld and replaced with a review notice; when false, the answer returns but the item is still enqueued for review |
+| `REVIEW_QUEUE_DIR`      | No       | Review queue directory. Defaults to `review_queue/`, anchored to the module dir like `AUDIT_LOG_PATH` |
 | `PII_REDACT_AT_INGEST`  | No       | Global PII redaction on load. Default `false`            |
 | `PII_REDACT_TABULAR_AT_INGEST` | No | Tabular-only PII redaction for CSV/XLSX. Default `true`  |
 | `INGEST_TABLE_EXTRACTION` | No     | Toggle PDF/DOCX/HTML/PPTX table extraction. Default `true` |
@@ -411,7 +415,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-150 tests, all passing. Run with:
+162 tests, all passing. Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -426,7 +430,9 @@ python -m pytest tests/ -v
 | `test_api.py` | 8 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format |
 | `test_eval_runner.py` | 10 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy, tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
-| `test_governance_report.py` | 6 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
+| `test_governance_report.py` | 7 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
+| `test_review_queue.py` | 9 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
+| `test_agent_review.py` | 2 | finalize hold mode (answer replaced with the held notice, draft queued + auditable), flag mode (answer returned unchanged, item still enqueued) |
 | `test_grounding_validator.py` | 4 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling |
 | `test_risk_scorer.py` | 4 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, human-review trigger |
 | `test_context_policy.py` | 6 | YAML loading and default fallback, internal token-budget drop, low retrieval-score drop, expired-document drop (stale_document_version), draft-document drop (unapproved_document) |
@@ -610,6 +616,7 @@ After changing document-handling code or adding new corpus files, rerun
 * [x] Governance report per answer (audit ID, validation, risk, decision visible in API + React + CLI)
 * [x] Context policy admission with token budgets and drop-reason tracking
 * [x] Runtime grounding validation (citation coverage, grounding score, unsupported claims)
+* [x] Human review queue for high-risk answers (hold or flag mode via `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`)
 * [x] Stricter policy around when web research is allowed (agent prompt enforces local-first)
 * [x] Clearer confidence and uncertainty handling (agent states when data is unavailable or weak)
 * [x] Better handling for low-signal retrieval results (agent refuses to substitute wrong company data)
@@ -622,7 +629,7 @@ After changing document-handling code or adding new corpus files, rerun
 * [ ] Document-level permissions
 * [ ] IAM-based service access
 * [ ] Logging and monitoring
-* [ ] Human review workflow for sensitive outputs
+* [x] Human review workflow for sensitive outputs (portfolio-minimal version: hold/flag queue, CLI approve/reject)
 
 ---
 

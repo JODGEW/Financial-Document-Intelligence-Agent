@@ -93,7 +93,7 @@ def test_decision_routing_covers_each_outcome():
         **base, guardrail_outcome=None,
         risk_result={**_RISK, "risk_level": "high", "human_review_required": True},
     )
-    assert review["decision"] == "requires_review"
+    assert review["decision"] == "held_for_review"
 
     warning = build_report(
         **base, guardrail_outcome=None,
@@ -103,6 +103,25 @@ def test_decision_routing_covers_each_outcome():
 
     returned = build_report(**base, guardrail_outcome=None, risk_result=_RISK)
     assert returned["decision"] == "returned"
+
+
+def test_block_wins_over_human_review_in_decision_precedence():
+    """A block stays "blocked" even when the risk inputs ask for human review.
+
+    The categorical override zeroes humanReviewRequired, so a blocked answer is
+    never held for review (and never enqueued).
+    """
+    report = build_report(
+        audit_id="a",
+        model="m",
+        retrieved_chunks=_CHUNKS,
+        response_text="This request was blocked by the ReAct-RAG safety policy.",
+        guardrail_outcome="blocked",
+        grounding_result=_GROUNDING,
+        risk_result={**_RISK, "risk_level": "high", "human_review_required": True},
+    )
+    assert report["decision"] == "blocked"
+    assert report["risk"]["humanReviewRequired"] is False
 
 
 def test_blocked_answer_is_scored_categorically():

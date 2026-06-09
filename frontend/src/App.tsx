@@ -567,13 +567,6 @@ function App() {
                   </div>
                 </article>
               ))}
-
-              {isLoading && (
-                <div className="flex items-center gap-2 text-sm text-zinc-500">
-                  <Loader2 size={16} className="animate-spin" />
-                  {streamingStatus ?? "Searching documents and composing answer"}
-                </div>
-              )}
             </div>
           )}
         </div>

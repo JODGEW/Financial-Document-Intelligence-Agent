@@ -63,11 +63,17 @@ def _decision(
     human_review_required: bool,
     risk_level: str,
 ) -> str:
-    """Map governance signals to a decision outcome (§7.7)."""
+    """Map governance signals to a decision outcome (§7.7).
+
+    Precedence: a block is categorical and wins first (it already zeroes
+    human_review_required, but the explicit order documents the intent). Then a
+    high-risk answer is held for the Phase 5 review queue, then a medium-risk
+    answer returns with a warning, then a clean answer returns.
+    """
     if guardrail_outcome and guardrail_outcome.lower() == "blocked":
         return "blocked"
     if human_review_required:
-        return "requires_review"
+        return "held_for_review"
     if risk_level == "medium":
         return "returned_with_warning"
     return "returned"

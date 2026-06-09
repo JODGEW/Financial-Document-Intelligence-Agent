@@ -37,6 +37,16 @@ AUDIT_LOG_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "audit_logs", "query_audit.jsonl"),
 )
 
+# Human review queue (Phase 5). When HUMAN_REVIEW_HOLD is true and an answer is
+# held for review, the user-facing answer is replaced with a short notice and the
+# draft is captured in the queue item. When false (flag mode), the answer returns
+# normally and the item is still enqueued. Queue files live under REVIEW_QUEUE_DIR.
+HUMAN_REVIEW_HOLD = os.getenv("HUMAN_REVIEW_HOLD", "true").lower() == "true"
+REVIEW_QUEUE_DIR = os.getenv(
+    "REVIEW_QUEUE_DIR",
+    os.path.join(os.path.dirname(__file__), "review_queue"),
+)
+
 # Document ingestion. Two-tier PII redaction dispatch:
 # - PII_REDACT_AT_INGEST (global, default off) forces redaction on every format.
 # - PII_REDACT_TABULAR_AT_INGEST (default on) redacts CSV / XLSX only.
