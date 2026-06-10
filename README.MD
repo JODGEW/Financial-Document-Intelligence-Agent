@@ -109,6 +109,7 @@ python -m uvicorn api:app --reload  # React API, run from repo root
 cd frontend && npm run dev          # React UI, run in a second terminal
 python -m pytest tests/ -v       # run tests
 python eval_runner.py            # run evaluation dataset
+python scripts/demo_walkthrough.py  # guided governance demo (see below)
 ```
 
 ### Example output
@@ -132,6 +133,22 @@ trade date, and approvals are valid for 48 hours.
 The agent uses a structured **Result Summary** format for every answer:
 - **Internal Corpus Answer** — grounded in local documents with source citations
 - **External Context** — clearly separated web results, or marked unavailable
+
+---
+
+## Guided demo
+
+One command walks the governance story end to end, pausing between acts:
+
+```bash
+python scripts/demo_walkthrough.py
+```
+
+1. **A grounded answer** — one real query, then the governance report behind it: which chunks the context policy admitted or dropped (and why), grounding score, citation coverage, risk score, and the routing decision.
+2. **A held answer** — the review threshold is temporarily lowered in-process (the staging is printed, then reverted) so the next answer trips human review: the user sees a held notice instead of the draft, the full draft lands in the review queue with its evidence, and the reviewer CLI approves it.
+3. **Drift, caught** — the eval baseline is diffed against a perturbed temp copy (the real `eval/baseline.json` is untouched), producing the exact `scripts/eval_diff.py` output an operator sees when a metric moves, a case flips pass/fail, or latency shifts. Add `--live-eval` to run the real eval against Bedrock instead of the offline diff.
+
+Acts 1–2 need AWS credentials and an ingested corpus; Act 3 in default mode needs neither. `--no-pause` runs straight through. The demo's one persistent side effect is intentional — Act 2 writes a real item into `review_queue/`; reset it with `git checkout -- review_queue/`.
 
 ---
 
@@ -225,7 +242,7 @@ Planned extensions:
 
 - document-level permissions (Phase 6)
 
-The governance modules live in [governance/](governance/); the design doc is [Governance_layer.md](Governance_layer.md) and the build log is [GOVERNANCE_PROGRESS.md](GOVERNANCE_PROGRESS.md).
+The governance modules live in [governance/](governance/). The full design doc and phase-by-phase build log are kept as local working notes outside the public repo.
 
 ---
 
@@ -306,7 +323,7 @@ ReAct-RAG/
 ├── frontend/        # React + TypeScript + Tailwind chat UI
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
-├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py)
+├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py)
 ├── chroma_db/       # persistent vector store
 ├── governance/      # governance layer (report, grounding, risk, context policy, impact, review queue)
 │   ├── governance_report.py  # per-answer report assembly
