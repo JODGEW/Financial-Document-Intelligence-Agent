@@ -13,6 +13,7 @@ frontend/dist/
 frontend/*.tsbuildinfo
 frontend/vite.config.d.ts
 frontend/vite.config.js
+CLAUDE.md
 
 # Local-only dev notes (kept out of the public repo)
 GOVERNANCE_PROGRESS.md
