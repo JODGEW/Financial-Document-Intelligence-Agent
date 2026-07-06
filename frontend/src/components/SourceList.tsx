@@ -32,9 +32,9 @@ export function SourceList({ sources, dense = false }: SourceListProps) {
   return (
     <div>
       {!dense && (
-        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
           Retrieved evidence
-          <span className="tabular-nums font-medium text-zinc-400">
+          <span className="font-mono font-medium tabular-nums text-faint">
             ({sources.length})
           </span>
         </div>

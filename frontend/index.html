@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Financial Document Intelligence Agent</title>
+    <script>
+      // Resolve the theme before first paint so there is no light-mode flash
+      // on a dark preference. Stored choice wins; otherwise follow the OS.
+      (function () {
+        try {
+          var stored = localStorage.getItem("fdia-theme");
+          var dark =
+            stored === "dark" ||
+            (stored !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.add(dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.classList.add("light");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

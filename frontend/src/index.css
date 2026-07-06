@@ -2,13 +2,110 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Semantic token layer — "monochrome instrument, chromatic governance".
+ * The shell is ink-on-paper neutral; the only saturated colors are the four
+ * governance signals (grounded / external / held / blocked). Components read
+ * these through Tailwind (bg-surface, text-ink, text-grounded, …), so a theme
+ * flip is one class on <html> — no per-component dark: variants required.
+ *
+ * Values are space-separated RGB channels so Tailwind can apply alpha
+ * (text-ink/70, ring-ink/40) via rgb(var(--x) / <alpha-value>).
+ */
+:root {
+  --bg: 246 247 248;
+  --surface: 255 255 255;
+  --raised: 238 240 242;
+  --line: 226 229 233;
+  --line-strong: 201 206 214;
+  --ink: 16 21 27;
+  --muted: 89 98 110;
+  --faint: 139 148 160;
+  --accent: 27 34 43; /* graphite interactive: buttons, links, focus */
+  --on-accent: 255 255 255;
+
+  --grounded: 15 157 110;
+  --grounded-bg: 231 246 239;
+  --external: 37 99 235;
+  --external-bg: 232 239 253;
+  --held: 180 83 9;
+  --held-bg: 251 240 227;
+  --blocked: 220 38 38;
+  --blocked-bg: 253 235 235;
+
+  color-scheme: light;
+}
+
+/* Deep ink, not pure black. Same care as light — contrast kept legible and
+   every signal re-tuned to read on a dark ground. */
+:root.dark {
+  --bg: 11 14 19;
+  --surface: 18 22 28;
+  --raised: 26 31 39;
+  --line: 36 42 51;
+  --line-strong: 51 59 70;
+  --ink: 230 234 239;
+  --muted: 153 162 174;
+  --faint: 106 115 128;
+  --accent: 230 234 239;
+  --on-accent: 11 14 19;
+
+  --grounded: 52 211 153;
+  --grounded-bg: 18 40 33;
+  --external: 96 165 250;
+  --external-bg: 20 33 51;
+  --held: 251 191 36;
+  --held-bg: 43 35 15;
+  --blocked: 248 113 113;
+  --blocked-bg: 45 24 24;
+
+  color-scheme: dark;
+}
+
+/* No-JS fallback: follow the OS unless the user has forced light. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: 11 14 19;
+    --surface: 18 22 28;
+    --raised: 26 31 39;
+    --line: 36 42 51;
+    --line-strong: 51 59 70;
+    --ink: 230 234 239;
+    --muted: 153 162 174;
+    --faint: 106 115 128;
+    --accent: 230 234 239;
+    --on-accent: 11 14 19;
+
+    --grounded: 52 211 153;
+    --grounded-bg: 18 40 33;
+    --external: 96 165 250;
+    --external-bg: 20 33 51;
+    --held: 251 191 36;
+    --held-bg: 43 35 15;
+    --blocked: 248 113 113;
+    --blocked-bg: 45 24 24;
+
+    color-scheme: dark;
+  }
+}
+
 html {
-  background: #ffffff;
+  background: rgb(var(--bg));
 }
 
 body {
   margin: 0;
   min-width: 320px;
+  color: rgb(var(--ink));
+}
+
+/* Quiet theme crossfade on the tokened surfaces; neutralized under the
+   reduced-motion block below. */
+body * {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
 }
 
 /* Full-height app shell; dvh tracks mobile browser chrome so the input
@@ -81,7 +178,7 @@ body {
 }
 
 .markdown-answer a {
-  color: #1d4ed8;
+  color: rgb(var(--external));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -92,8 +189,9 @@ body {
 
 .markdown-answer code {
   border-radius: 4px;
-  background: #f4f4f5;
+  background: rgb(var(--raised));
   padding: 0.1rem 0.25rem;
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
   font-size: 0.86em;
 }
 
@@ -101,7 +199,7 @@ body {
   margin: 0.5rem 0;
   overflow-x: auto;
   border-radius: 6px;
-  background: #f4f4f5;
+  background: rgb(var(--raised));
   padding: 0.625rem 0.75rem;
   font-size: 0.8125rem;
   line-height: 1.5;
@@ -114,9 +212,9 @@ body {
 
 .markdown-answer blockquote {
   margin: 0.5rem 0;
-  border-left: 2px solid #e4e4e7;
+  border-left: 2px solid rgb(var(--line));
   padding-left: 0.75rem;
-  color: #52525b;
+  color: rgb(var(--muted));
 }
 
 /* Tables scroll horizontally instead of overflowing the answer block. */
@@ -134,7 +232,7 @@ body {
 
 .markdown-answer th,
 .markdown-answer td {
-  border: 1px solid #e4e4e7;
+  border: 1px solid rgb(var(--line));
   padding: 0.375rem 0.625rem;
   text-align: left;
   vertical-align: top;
@@ -142,12 +240,12 @@ body {
 }
 
 .markdown-answer th {
-  background: #fafafa;
+  background: rgb(var(--raised));
   font-weight: 600;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  color: #52525b;
+  color: rgb(var(--muted));
 }
 
 .markdown-answer td {

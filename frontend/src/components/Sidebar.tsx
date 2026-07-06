@@ -35,13 +35,15 @@ function SectionHeader({
 }) {
   return (
     <div
-      className="mb-2 flex items-center gap-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500"
+      className="mb-2 flex items-center gap-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted"
       title={title}
     >
       {icon}
       {label}
       {count !== undefined && (
-        <span className="tabular-nums font-medium text-zinc-400">{count}</span>
+        <span className="font-mono font-medium tabular-nums text-faint">
+          {count}
+        </span>
       )}
     </div>
   );
@@ -63,26 +65,28 @@ export function Sidebar({
       {/* Backdrop for the mobile drawer */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-zinc-900/40 md:hidden"
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
           onClick={onClose}
           aria-hidden="true"
         />
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 transition-transform duration-200 md:static md:z-auto md:transition-none ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 flex-col border-r border-line bg-surface transition-transform duration-200 md:static md:z-auto md:transition-none ${
           isOpen ? "translate-x-0" : "-translate-x-full md:hidden"
         }`}
       >
         <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-4">
           <div className="min-w-0">
-            <h1 className="truncate text-[15px] font-semibold tracking-tight text-zinc-900">
+            <h1 className="truncate text-[15px] font-semibold tracking-tight text-ink">
               Financial Document Agent
             </h1>
-            <p className="mt-0.5 text-xs text-zinc-500">FDIA</p>
+            <p className="mt-0.5 font-mono text-xs tracking-wide text-faint">
+              FDIA
+            </p>
           </div>
           <button
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-zinc-500 hover:bg-zinc-200 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
             onClick={onClose}
             type="button"
             aria-label="Close sidebar"
@@ -93,7 +97,7 @@ export function Sidebar({
 
         <div className="px-3">
           <button
-            className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 text-[13px] font-medium text-white hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40"
+            className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3 text-[13px] font-medium text-on-accent hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
             onClick={onNewAnalysis}
             type="button"
             title={
@@ -116,10 +120,10 @@ export function Sidebar({
               title="Files in the corpus folder. Retrieval uses the last ingested index."
             />
             {documents.length > 0 ? (
-              <div className="space-y-0.5 text-[13px] text-zinc-600">
+              <div className="space-y-0.5 text-[13px] text-muted">
                 {documents.map((document) => (
                   <a
-                    className="group flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40"
+                    className="group flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
                     href={documentViewUrl(document)}
                     key={document.path}
                     rel="noreferrer"
@@ -129,12 +133,12 @@ export function Sidebar({
                     <span className="min-w-0 flex-1 truncate">
                       {document.name}
                     </span>
-                    <span className="shrink-0 rounded border border-zinc-200 bg-white px-1 py-px text-[10px] font-semibold uppercase tabular-nums text-zinc-500">
+                    <span className="shrink-0 rounded border border-line bg-bg px-1 py-px font-mono text-[10px] font-semibold uppercase tabular-nums text-muted">
                       {document.file_type}
                     </span>
                     <ExternalLink
                       size={12}
-                      className="shrink-0 text-zinc-300 group-hover:text-zinc-500"
+                      className="shrink-0 text-faint group-hover:text-muted"
                     />
                   </a>
                 ))}
@@ -145,7 +149,7 @@ export function Sidebar({
           </section>
 
           {sessions.length > 0 && (
-            <section className="mt-6 border-t border-zinc-200 pt-4">
+            <section className="mt-6 border-t border-line pt-4">
               <SectionHeader
                 icon={<History size={12} />}
                 label="Recent sessions"
@@ -157,10 +161,10 @@ export function Sidebar({
                   const isActive = session.id === activeSessionId;
                   return (
                     <button
-                      className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 disabled:cursor-not-allowed disabled:opacity-50 ${
                         isActive
-                          ? "bg-zinc-200/70 font-medium text-zinc-900"
-                          : "text-zinc-600 hover:bg-zinc-200/70 hover:text-zinc-800"
+                          ? "bg-raised font-medium text-ink"
+                          : "text-muted hover:bg-raised hover:text-ink"
                       }`}
                       key={session.id}
                       onClick={() => onOpenSession(session.id)}
@@ -179,8 +183,8 @@ export function Sidebar({
                         {session.title}
                       </span>
                       <span
-                        className={`shrink-0 text-[11px] tabular-nums ${
-                          isActive ? "text-zinc-500" : "text-zinc-400"
+                        className={`shrink-0 font-mono text-[11px] tabular-nums ${
+                          isActive ? "text-muted" : "text-faint"
                         }`}
                       >
                         {Math.ceil(session.messages.length / 2)}{" "}

@@ -1,4 +1,4 @@
-import { FileSearch, X } from "lucide-react";
+import { X } from "lucide-react";
 import type { ChatMessage } from "../types";
 import SourceList from "./SourceList";
 
@@ -45,24 +45,24 @@ export function DocumentContextPanel({
       {/* Backdrop for the drawer below xl */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-zinc-900/40 xl:hidden"
+          className="fixed inset-0 z-30 bg-black/40 xl:hidden"
           onClick={onClose}
           aria-hidden="true"
         />
       )}
 
       <aside
-        className={`fixed inset-y-0 right-0 z-40 flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-zinc-200 bg-white transition-transform duration-200 xl:static xl:z-auto xl:transition-none ${
+        className={`fixed inset-y-0 right-0 z-40 flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-line bg-surface transition-transform duration-200 xl:static xl:z-auto xl:transition-none ${
           isOpen ? "translate-x-0" : "translate-x-full xl:hidden"
         }`}
         aria-label="Retrieved sources"
       >
-        <div className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 px-4">
-          <div className="text-sm font-semibold text-zinc-900">
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
+          <div className="text-sm font-semibold text-ink">
             Retrieved evidence
           </div>
           <button
-            className="grid h-8 w-8 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40 xl:hidden"
+            className="grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 xl:hidden"
             onClick={onClose}
             type="button"
             aria-label="Close sources panel"
@@ -73,27 +73,27 @@ export function DocumentContextPanel({
 
         <div className="px-4 py-4">
           {evidence === null ? (
-            <p className="text-xs leading-5 text-zinc-400">
+            <p className="text-xs leading-5 text-faint">
               Ask a question to see which corpus chunks were retrieved for the
               answer.
             </p>
           ) : isLoading ? (
-            <p className="text-xs leading-5 text-zinc-400">
+            <p className="text-xs leading-5 text-faint">
               Waiting for the answer to finish…
             </p>
           ) : evidence.length > 0 ? (
             <div>
-              <p className="mb-2 text-xs text-zinc-400">For the latest answer:</p>
+              <p className="mb-2 text-xs text-faint">For the latest answer:</p>
               <SourceList sources={evidence} dense />
             </div>
           ) : withheldByPolicy ? (
-            <p className="text-xs leading-5 text-zinc-400">
+            <p className="text-xs leading-5 text-faint">
               The latest answer was{" "}
               {decision === "blocked" ? "blocked" : "held for review"}; sources
               aren't shown for it.
             </p>
           ) : (
-            <p className="text-xs leading-5 text-zinc-400">
+            <p className="text-xs leading-5 text-faint">
               No source metadata returned for the latest answer.
             </p>
           )}

@@ -31,32 +31,39 @@ type SectionBlockProps = {
   section: AnswerSection;
 };
 
+/**
+ * The provenance rail: a governance-tinted left rule marks where each answer
+ * segment came from — green for internal corpus evidence, blue for labeled
+ * external context. The mono origin tag reads like an audit-margin note.
+ */
 const ACCENT_STYLES = {
   internal: {
-    rule: "border-emerald-700",
-    label: "text-emerald-800",
-    dot: "bg-emerald-700"
+    rule: "border-l-grounded",
+    label: "text-grounded",
+    origin: "corpus"
   },
   external: {
-    rule: "border-blue-800",
-    label: "text-blue-900",
-    dot: "bg-blue-800"
+    rule: "border-l-external",
+    label: "text-external",
+    origin: "web"
   }
 } as const;
 
 function SectionBlock({ label, accent, section }: SectionBlockProps) {
   const styles = ACCENT_STYLES[accent];
   return (
-    <section className={`border-l-2 pl-3 ${styles.rule}`}>
+    <section className={`border-l-[3px] pl-3.5 ${styles.rule}`}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span
-          className={`inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${styles.label}`}
+          className={`inline-flex items-baseline gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${styles.label}`}
         >
-          <span className={`h-1.5 w-1.5 rounded-full ${styles.dot}`} />
+          <span className="font-mono text-[10px] normal-case tracking-normal opacity-70">
+            {styles.origin}
+          </span>
           {label}
         </span>
         {section.status && (
-          <span className="text-xs text-zinc-500">{section.status}</span>
+          <span className="text-xs text-muted">{section.status}</span>
         )}
       </div>
       {section.body && (
@@ -106,7 +113,7 @@ export function AnswerSections({ content }: { content: string }) {
       )}
       {parsed.external &&
         (isUnusedExternal(parsed.external) ? (
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-faint">
             External context: {parsed.external.status}.
           </p>
         ) : (

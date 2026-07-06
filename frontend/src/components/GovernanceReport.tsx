@@ -43,10 +43,12 @@ export type GovernanceReport = {
   decision: string;
 };
 
+// Governance signal, not decoration: each risk level maps to its own chromatic
+// token so the level reads at a glance from color alone.
 const RISK_STYLES: Record<string, string> = {
-  low: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  medium: "border-amber-200 bg-amber-50 text-amber-700",
-  high: "border-red-200 bg-red-50 text-red-700"
+  low: "border-grounded/25 bg-grounded-bg text-grounded",
+  medium: "border-held/25 bg-held-bg text-held",
+  high: "border-blocked/25 bg-blocked-bg text-blocked"
 };
 
 const DECISION_LABELS: Record<string, string> = {
@@ -68,8 +70,10 @@ function titleCase(value: string) {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5">
-      <span className="text-zinc-500">{label}</span>
-      <span className="text-right font-medium text-zinc-800">{value}</span>
+      <span className="text-muted">{label}</span>
+      <span className="text-right font-mono font-medium tabular-nums text-ink">
+        {value}
+      </span>
     </div>
   );
 }
@@ -77,7 +81,7 @@ function Row({ label, value }: { label: string; value: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-normal text-zinc-400">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-normal text-faint">
         {title}
       </div>
       <div className="text-xs leading-5">{children}</div>
@@ -90,9 +94,9 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
 
   if (!report) {
     return (
-      <div className="mt-4 border-t border-zinc-200 pt-3 text-xs text-zinc-400">
+      <div className="mt-4 border-t border-line pt-3 text-xs text-faint">
         <div className="flex items-center gap-2">
-          <ShieldCheck size={14} className="text-zinc-300" />
+          <ShieldCheck size={14} className="text-faint" />
           Governance report unavailable for this answer
         </div>
       </div>
@@ -104,15 +108,15 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
   const decisionLabel = DECISION_LABELS[report.decision] ?? titleCase(report.decision);
 
   return (
-    <div className="mt-4 border-t border-zinc-200 pt-3">
+    <div className="mt-4 border-t border-line pt-3">
       <button
-        className="flex w-full items-center gap-2 text-xs font-semibold uppercase tracking-normal text-zinc-500 hover:text-zinc-700"
+        className="flex w-full items-center gap-2 text-xs font-semibold uppercase tracking-normal text-muted hover:text-ink"
         onClick={() => setIsOpen((open) => !open)}
         type="button"
         aria-expanded={isOpen}
       >
         {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <ShieldCheck size={14} className="text-blue-700" />
+        <ShieldCheck size={14} className="text-external" />
         Governance Report
         <span
           className={`ml-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold normal-case ${riskStyle}`}
@@ -146,12 +150,12 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
               />
               <div className="mt-1 flex flex-wrap gap-1">
                 {report.contextPolicy.dropReasons.length === 0 ? (
-                  <span className="text-zinc-400">No drops</span>
+                  <span className="text-faint">No drops</span>
                 ) : (
                   report.contextPolicy.dropReasons.map((reason) => (
                     <span
                       key={reason}
-                      className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700"
+                      className="rounded-full border border-held/25 bg-held-bg px-2 py-0.5 text-[10px] font-medium text-held"
                     >
                       {reason}
                     </span>
@@ -175,13 +179,13 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
             <div className="mt-1 flex items-center gap-1.5">
               {report.risk.humanReviewRequired ? (
                 <>
-                  <AlertTriangle size={13} className="text-amber-600" />
-                  <span className="text-amber-700">Human review required</span>
+                  <AlertTriangle size={13} className="text-held" />
+                  <span className="text-held">Human review required</span>
                 </>
               ) : (
                 <>
-                  <CheckCircle2 size={13} className="text-emerald-600" />
-                  <span className="text-emerald-700">No review required</span>
+                  <CheckCircle2 size={13} className="text-grounded" />
+                  <span className="text-grounded">No review required</span>
                 </>
               )}
             </div>
@@ -192,7 +196,7 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
               <ScrollText size={13} />
               <span className="font-medium normal-case">{decisionLabel}</span>
             </div>
-            <div className="mt-2 text-[11px] text-zinc-400">
+            <div className="mt-2 font-mono text-[11px] text-faint">
               <div>Model: {report.model}</div>
               <div>Prompt policy: {report.promptPolicyId}</div>
               <div>Context policy: {report.contextPolicyId}</div>

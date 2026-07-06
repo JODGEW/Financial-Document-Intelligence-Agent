@@ -9,14 +9,14 @@ import type { CorpusStatus } from "../types";
 export function EmptyCorpusState({ status }: { status: CorpusStatus }) {
   if (status === "loading") {
     return (
-      <div className="px-2 py-1.5 text-xs text-zinc-400">Loading corpus…</div>
+      <div className="px-2 py-1.5 text-xs text-faint">Loading corpus…</div>
     );
   }
 
   if (status === "error") {
     return (
-      <div className="mx-1 rounded-md border border-dashed border-zinc-300 px-3 py-3 text-xs leading-5 text-zinc-500">
-        <div className="mb-1 flex items-center gap-1.5 font-medium text-zinc-600">
+      <div className="mx-1 rounded-md border border-dashed border-line-strong px-3 py-3 text-xs leading-5 text-muted">
+        <div className="mb-1 flex items-center gap-1.5 font-medium text-ink">
           <FolderOpen size={14} />
           Document list unavailable
         </div>
@@ -27,8 +27,8 @@ export function EmptyCorpusState({ status }: { status: CorpusStatus }) {
   }
 
   return (
-    <div className="mx-1 rounded-md border border-dashed border-zinc-300 px-3 py-3 text-xs leading-5 text-zinc-500">
-      <div className="mb-1 flex items-center gap-1.5 font-medium text-zinc-600">
+    <div className="mx-1 rounded-md border border-dashed border-line-strong px-3 py-3 text-xs leading-5 text-muted">
+      <div className="mb-1 flex items-center gap-1.5 font-medium text-ink">
         <FolderOpen size={14} />
         No corpus loaded
       </div>

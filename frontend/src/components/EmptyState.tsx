@@ -37,10 +37,10 @@ export function EmptyState({ onUsePrompt }: EmptyStateProps) {
     // cards overflow small viewports (justify-center would clip the top).
     <section className="mx-auto my-auto w-full max-w-3xl py-8">
       <div className="mb-7">
-        <h2 className="text-2xl font-semibold tracking-tight text-zinc-950">
+        <h2 className="text-2xl font-semibold tracking-tight text-ink">
           Ask questions across your financial document corpus
         </h2>
-        <p className="mt-2.5 max-w-2xl text-sm leading-6 text-zinc-600">
+        <p className="mt-2.5 max-w-2xl text-sm leading-6 text-muted">
           Query filings, policies, research notes, and extracted financial
           sections. Answers keep internal evidence and external context
           separate, with citations when source metadata is available.
@@ -50,21 +50,21 @@ export function EmptyState({ onUsePrompt }: EmptyStateProps) {
       <div className="grid gap-2.5 sm:grid-cols-2">
         {STARTER_PROMPTS.map((starter) => (
           <button
-            className="group flex min-h-[96px] flex-col justify-between gap-2 rounded-md border border-zinc-200 bg-white p-3.5 text-left shadow-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40"
+            className="group flex min-h-[96px] flex-col justify-between gap-2 rounded-md border border-line bg-surface p-3.5 text-left shadow-sm transition-colors hover:border-line-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
             key={starter.prompt}
             onClick={() => onUsePrompt(starter.prompt)}
             type="button"
           >
-            <span className="text-[13px] leading-5 text-zinc-700">
+            <span className="text-[13px] leading-5 text-ink">
               {starter.prompt}
             </span>
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 group-hover:text-zinc-700">
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-faint group-hover:text-muted">
               {starter.tag}
             </span>
           </button>
         ))}
       </div>
-      <p className="mt-3 text-xs text-zinc-400">
+      <p className="mt-3 text-xs text-faint">
         Starter prompts fill the input so you can name the document, company,
         or period before sending.
       </p>

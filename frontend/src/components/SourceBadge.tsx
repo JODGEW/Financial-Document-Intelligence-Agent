@@ -13,22 +13,22 @@ type SourceBadgeProps = {
 export function SourceBadge({ source, isExpanded, onToggle }: SourceBadgeProps) {
   return (
     <button
-      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-xs leading-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40 ${
+      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-xs leading-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 ${
         isExpanded
-          ? "border-zinc-300 bg-zinc-100 text-zinc-900"
-          : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-800"
+          ? "border-line-strong bg-raised text-ink"
+          : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink"
       }`}
       onClick={onToggle}
       type="button"
       aria-expanded={isExpanded}
       title={source.source}
     >
-      <span className="font-semibold tabular-nums text-emerald-800">
+      <span className="font-mono font-semibold tabular-nums text-grounded">
         {source.rank}
       </span>
       <span className="min-w-0 truncate font-medium">{source.source_name}</span>
       {source.page !== null && (
-        <span className="shrink-0 tabular-nums text-zinc-400">
+        <span className="shrink-0 font-mono tabular-nums text-faint">
           p.{source.page}
         </span>
       )}

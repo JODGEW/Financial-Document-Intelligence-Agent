@@ -22,7 +22,7 @@ export function ChatMessageView({
   if (message.role === "user") {
     return (
       <article className="flex justify-end">
-        <div className="min-w-0 max-w-[85%] rounded-lg bg-zinc-100 px-4 py-2.5 text-sm leading-6 text-zinc-900 sm:max-w-[75%]">
+        <div className="min-w-0 max-w-[85%] rounded-lg bg-raised px-4 py-2.5 text-sm leading-6 text-ink sm:max-w-[75%]">
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         </div>
       </article>
@@ -38,25 +38,25 @@ export function ChatMessageView({
 
   return (
     <article className="flex justify-start">
-      <div className="w-full min-w-0 text-sm leading-6 text-zinc-800">
+      <div className="w-full min-w-0 text-sm leading-6 text-ink">
         {message.content ? (
           <AnswerSections content={message.content} />
         ) : isStreaming ? (
           <LoadingIndicator status={streamingStatus} />
         ) : (
-          <div className="text-sm text-zinc-500">
+          <div className="text-sm text-muted">
             No answer text was returned for this query.
           </div>
         )}
 
         {message.sources && message.sources.length > 0 && (
-          <div className="mt-4 border-t border-zinc-100 pt-3">
+          <div className="mt-4 border-t border-line pt-3">
             <SourceList sources={message.sources} />
           </div>
         )}
 
         {showNoSourceNotice && (
-          <div className="mt-4 border-t border-zinc-100 pt-3 text-xs text-zinc-400">
+          <div className="mt-4 border-t border-line pt-3 text-xs text-faint">
             No source metadata returned for this answer.
           </div>
         )}
@@ -66,7 +66,7 @@ export function ChatMessageView({
         )}
 
         {message.audit_id && (
-          <div className="mt-2 break-all font-mono text-[11px] text-zinc-400">
+          <div className="mt-2 break-all font-mono text-[11px] text-faint">
             Audit ID: {message.audit_id}
           </div>
         )}

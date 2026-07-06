@@ -374,7 +374,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell flex overflow-hidden bg-white text-zinc-900">
+    <div className="app-shell flex overflow-hidden bg-bg text-ink">
       <Sidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
@@ -417,7 +417,7 @@ function App() {
 
           {showScrollToBottom && (
             <button
-              className="absolute bottom-4 left-1/2 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-md hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/40"
+              className="absolute bottom-4 left-1/2 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-line bg-surface text-ink shadow-md hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
               onClick={handleScrollToBottom}
               type="button"
               aria-label="Scroll to latest message"
@@ -430,12 +430,12 @@ function App() {
 
         {error && (
           <div className="shrink-0 px-3 pt-2 sm:px-4">
-            <div className="mx-auto flex w-full max-w-3xl items-start justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
+            <div className="mx-auto flex w-full max-w-3xl items-start justify-between gap-3 rounded-md border border-blocked/30 bg-blocked-bg px-3.5 py-2.5 text-sm text-blocked">
               <span className="min-w-0">
                 The request didn't complete: {error}
               </span>
               <button
-                className="grid h-6 w-6 shrink-0 place-items-center rounded text-red-500 hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded text-blocked hover:bg-blocked/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blocked/50"
                 onClick={() => setError(null)}
                 type="button"
                 aria-label="Dismiss error"
