@@ -16,8 +16,11 @@ from tools import get_retriever
 
 
 DEFAULT_EVAL_PATH = Path(__file__).resolve().parent / "eval" / "questions.jsonl"
+# Accepts both the prose "page N" form and the "p.N" bracket form the agent
+# prompt mandates ("[acme-corp-10k-excerpt-2025.pdf p.2]"); without the p.N
+# branch, page-level citations silently degrade to file-level matching.
 CITATION_RE = re.compile(
-    r"(?P<source>[\w.-]+\.(?:pdf|md|txt))(?:[^.\n]{0,80}?\bpage\s+(?P<page>\d+))?",
+    r"(?P<source>[\w.-]+\.(?:pdf|md|txt))(?:[^.\n]{0,80}?\b(?:page\s+|p\.\s*)(?P<page>\d+))?",
     re.IGNORECASE,
 )
 CLAIM_RE = re.compile(

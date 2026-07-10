@@ -25,7 +25,7 @@ from typing import Any
 # --- Copied verbatim from eval_runner.py. Keep in sync (see module docstring). ---
 
 CITATION_RE = re.compile(
-    r"(?P<source>[\w.-]+\.(?:pdf|md|txt))(?:[^.\n]{0,80}?\bpage\s+(?P<page>\d+))?",
+    r"(?P<source>[\w.-]+\.(?:pdf|md|txt))(?:[^.\n]{0,80}?\b(?:page\s+|p\.\s*)(?P<page>\d+))?",
     re.IGNORECASE,
 )
 CLAIM_RE = re.compile(

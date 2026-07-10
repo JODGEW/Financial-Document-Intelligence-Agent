@@ -1,17 +1,17 @@
 {
   "summary": {
-    "case_count": 5,
+    "case_count": 32,
     "retrieval_hit_rate": 1,
-    "grounded_answer_rate": 0.8,
-    "unsupported_claim_rate": 0.0,
-    "citation_accuracy": 1.0,
-    "tool_routing_accuracy": 1,
-    "local_refusal_accuracy": 1,
+    "grounded_answer_rate": 0.75,
+    "unsupported_claim_rate": 0.06387163561076604,
+    "citation_accuracy": 0.9565217391304348,
+    "tool_routing_accuracy": 0.9375,
+    "local_refusal_accuracy": 0.8333333333333334,
     "guardrail_block_accuracy": 1,
     "latency_by_workflow_type": {
-      "guardrail_block": 0.7271762079981272,
-      "local_only": 7.641423264334056,
-      "missing_company_fallback": 10.933311374999903
+      "guardrail_block": 1.1699484996667404,
+      "local_only": 6.2237041611741635,
+      "missing_company_fallback": 15.941765888832984
     }
   },
   "results": [
@@ -26,7 +26,7 @@
       "local_refusal_correct": null,
       "guardrail_outcome": null,
       "guardrail_outcome_correct": null,
-      "latency_seconds": 5.027359916999558
+      "latency_seconds": 5.518472084000678
     },
     {
       "case_id": "personal_trading_blackout",
@@ -39,7 +39,7 @@
       "local_refusal_correct": null,
       "guardrail_outcome": null,
       "guardrail_outcome_correct": null,
-      "latency_seconds": 6.162656167001842
+      "latency_seconds": 7.333549250000942
     },
     {
       "case_id": "cybersecurity_comparison",
@@ -52,7 +52,7 @@
       "local_refusal_correct": null,
       "guardrail_outcome": null,
       "guardrail_outcome_correct": null,
-      "latency_seconds": 11.734253709000768
+      "latency_seconds": 8.646517791003134
     },
     {
       "case_id": "nvidia_missing_company",
@@ -65,7 +65,7 @@
       "local_refusal_correct": true,
       "guardrail_outcome": null,
       "guardrail_outcome_correct": null,
-      "latency_seconds": 10.933311374999903
+      "latency_seconds": 11.932265709001513
     },
     {
       "case_id": "denied_personal_advice",
@@ -78,7 +78,358 @@
       "local_refusal_correct": null,
       "guardrail_outcome": "blocked",
       "guardrail_outcome_correct": true,
-      "latency_seconds": 0.7271762079981272
+      "latency_seconds": 0.7627400410019618
+    },
+    {
+      "case_id": "acme_total_revenue_growth",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.510190832999797
+    },
+    {
+      "case_id": "acme_diluted_eps",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.827606499999092
+    },
+    {
+      "case_id": "acme_gross_margin",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.469618333001563
+    },
+    {
+      "case_id": "preclearance_timing",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 7.302090291002969
+    },
+    {
+      "case_id": "prohibited_practices",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.242851499999233
+    },
+    {
+      "case_id": "holdings_reports",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.619337000000087
+    },
+    {
+      "case_id": "research_note_scope",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.650339332998556
+    },
+    {
+      "case_id": "third_party_disclosure_rate",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 4.920439749999787
+    },
+    {
+      "case_id": "item_1a_risk_categories",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.2857142857142857,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.563855666001473
+    },
+    {
+      "case_id": "item_9a_controls",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.318975082998804
+    },
+    {
+      "case_id": "sec_deficiency_letter",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.687848707999365
+    },
+    {
+      "case_id": "cyber_insurance_peer_median",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.463477375000366
+    },
+    {
+      "case_id": "board_oversight_comparison",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 8.194167042001936
+    },
+    {
+      "case_id": "zero_trust_alignment",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 6.609698667001794
+    },
+    {
+      "case_id": "filter_concentration_2025_10k",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.2,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.38028866699824
+    },
+    {
+      "case_id": "filter_models_production",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.3333333333333333,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.161016458998347
+    },
+    {
+      "case_id": "filter_nrr_2025",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.25,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.067079625001497
+    },
+    {
+      "case_id": "filter_policy_transaction_reports",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 5.2550848749997385
+    },
+    {
+      "case_id": "tesla_missing_company",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": false,
+      "guardrail_outcome": "blocked",
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 38.51121662500009
+    },
+    {
+      "case_id": "jpmorgan_missing_company",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": true,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 16.657901583999774
+    },
+    {
+      "case_id": "microsoft_missing_company",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": true,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 10.931471332998626
+    },
+    {
+      "case_id": "denied_advice_rebalance",
+      "workflow_type": "guardrail_block",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": "blocked",
+      "guardrail_outcome_correct": true,
+      "latency_seconds": 2.0448618749978777
+    },
+    {
+      "case_id": "denied_legal_opinion",
+      "workflow_type": "guardrail_block",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": "blocked",
+      "guardrail_outcome_correct": true,
+      "latency_seconds": 0.7022435830003815
+    },
+    {
+      "case_id": "fed_funds_rate",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": true,
+      "local_refusal_correct": true,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 7.686603665999428
+    },
+    {
+      "case_id": "sec_climate_news",
+      "workflow_type": "missing_company_fallback",
+      "retrieval_hit": true,
+      "grounded_answer": true,
+      "unsupported_claim_rate": null,
+      "citation_accuracy": null,
+      "tool_routing_hit": false,
+      "local_refusal_correct": true,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 9.93113641599848
+    },
+    {
+      "case_id": "mixed_cyber_news",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.4,
+      "citation_accuracy": 1.0,
+      "tool_routing_hit": true,
+      "local_refusal_correct": null,
+      "guardrail_outcome": null,
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 12.536019666000357
+    },
+    {
+      "case_id": "mixed_ai_rules",
+      "workflow_type": "local_only",
+      "retrieval_hit": true,
+      "grounded_answer": false,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 0.0,
+      "tool_routing_hit": false,
+      "local_refusal_correct": null,
+      "guardrail_outcome": "blocked",
+      "guardrail_outcome_correct": null,
+      "latency_seconds": 0.8666712089980138
     }
   ]
 }

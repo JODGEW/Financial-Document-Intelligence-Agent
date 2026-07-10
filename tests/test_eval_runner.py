@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from eval_runner import (
+    Citation,
     EvalCase,
     ExpectedSource,
     citation_accuracy,
     evaluate_case,
     grounded_answer,
     load_eval_cases,
+    parse_citations,
     retrieval_hit,
     summarize_results,
     tool_routing_hit,
@@ -54,6 +56,26 @@ def test_retrieval_hit_requires_all_expected_sources():
 
     assert retrieval_hit(expected_sources, retrieved_sources) is True
     assert retrieval_hit([ExpectedSource("filing.pdf", page=2)], retrieved_sources) is False
+
+
+def test_parse_citations_accepts_prompt_bracket_page_form():
+    """The agent prompt cites as "[file.pdf p.2]"; the parser must read the page."""
+    citations = parse_citations(
+        "Revenue was $284.7M. [acme-corp-10k-excerpt-2025.pdf p.2] "
+        "Blackouts apply. [compliance-policy-personal-trading.md]"
+    )
+
+    assert citations == [
+        Citation("acme-corp-10k-excerpt-2025.pdf", 2),
+        Citation("compliance-policy-personal-trading.md", None),
+    ]
+
+
+def test_citation_accuracy_scores_bracket_page_form_at_page_level():
+    retrieved_sources = [{"source_name": "filing.pdf", "page": 1}]
+
+    assert citation_accuracy("See [filing.pdf p.1].", retrieved_sources) == 1.0
+    assert citation_accuracy("See [filing.pdf p.3].", retrieved_sources) == 0.0
 
 
 def test_citation_accuracy_checks_file_and_page():

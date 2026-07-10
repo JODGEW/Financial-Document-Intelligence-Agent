@@ -29,6 +29,16 @@ Then open `http://localhost:5173` in your browser. The frontend needs the
 backend running at `http://127.0.0.1:8000`; otherwise the document sidebar will
 not load.
 
+### Frontend preview
+
+**Grounded answer with retrieved source evidence**
+
+![Grounded document answer with citations and retrieved evidence](assets/screenshots/frontend-grounded-answer.png)
+
+**Governance validation and decision trace**
+
+![Expanded governance report showing source usage, grounding validation, risk, and decision](assets/screenshots/frontend-governance-report.png)
+
 ## Why this project
 
 In regulated workflows, a plain chatbot answer is not enough. Users need answers tied back to source material they can inspect.
@@ -65,7 +75,8 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Includes a deterministic evaluation runner for retrieval, citations, grounding, unsupported claims, routing, and latency
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds high-risk answers in a human review queue (hold or flag mode via `HUMAN_REVIEW_HOLD`) with a CLI approve/reject flow
-- [x] 162 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue, and thread safety
+- [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
+- [x] 164 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue, and thread safety
 
 ## Best-fit use cases
 
@@ -236,7 +247,8 @@ Currently supports:
 - document version and chunk traceability
 - Bedrock Guardrails for denied topics and PII handling
 - JSONL audit logs for query and retrieval traces
-- deterministic evaluation for grounding, citations, routing, and drift
+- deterministic evaluation for grounding, citations, routing, and drift (32-case dataset with a frozen baseline)
+- optional LangSmith run tracing, joined to the audit log by `audit_id`
 
 Planned extensions:
 
@@ -332,7 +344,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject)
-├── tests/           # 162 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
+├── tests/           # 164 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -345,6 +357,8 @@ ReAct-RAG/
 │   ├── test_risk_scorer.py
 │   ├── test_context_policy.py
 │   ├── test_document_impact.py
+│   ├── test_review_queue.py
+│   ├── test_agent_review.py
 │   ├── test_loaders_registry.py
 │   ├── test_pii_redaction.py
 │   └── test_loader_{docx,excel,html,csv,pptx,email,json}.py
@@ -371,6 +385,9 @@ ReAct-RAG/
 | `AUDIT_LOG_PATH`        | No       | Defaults to `audit_logs/query_audit.jsonl`               |
 | `HUMAN_REVIEW_HOLD`     | No       | Default `true`. When true, high-risk answers are withheld and replaced with a review notice; when false, the answer returns but the item is still enqueued for review |
 | `REVIEW_QUEUE_DIR`      | No       | Review queue directory. Defaults to `review_queue/`, anchored to the module dir like `AUDIT_LOG_PATH` |
+| `LANGSMITH_TRACING`     | No       | Set to `true` to send run traces to LangSmith. Off by default; the agent behaves identically when unset |
+| `LANGSMITH_API_KEY`     | No       | LangSmith API key. Required only when `LANGSMITH_TRACING=true` |
+| `LANGSMITH_PROJECT`     | No       | LangSmith project name for traces. Defaults to `default`. Every traced run carries the answer's `audit_id` in its metadata, joining it to the audit log and governance report |
 | `PII_REDACT_AT_INGEST`  | No       | Global PII redaction on load. Default `false`            |
 | `PII_REDACT_TABULAR_AT_INGEST` | No | Tabular-only PII redaction for CSV/XLSX. Default `true`  |
 | `INGEST_TABLE_EXTRACTION` | No     | Toggle PDF/DOCX/HTML/PPTX table extraction. Default `true` |
@@ -432,7 +449,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-162 tests, all passing. Run with:
+164 tests, all passing. Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -445,7 +462,7 @@ python -m pytest tests/ -v
 | `test_agent.py` | 12 | Agent build, query output, local search routing, chat history, Result Summary format, company mismatch rejection, missing-company web fallback prompt rule, source display gating, deterministic external fallback |
 | `test_audit.py` | 7 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization, governance report nested in the audit record |
 | `test_api.py` | 8 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format |
-| `test_eval_runner.py` | 10 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy, tool-routing accuracy, fallback workflow refusal scoring, latency summary |
+| `test_eval_runner.py` | 12 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy and citation parsing (prose "page N" and bracket "p.N" forms), tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
 | `test_governance_report.py` | 7 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
 | `test_review_queue.py` | 9 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
@@ -468,7 +485,7 @@ python -m pytest tests/ -v
 
 ## Evaluation
 
-The evaluation runner uses `eval/questions.jsonl` as a small, inspectable dataset. Run:
+The evaluation runner uses `eval/questions.jsonl` as an inspectable dataset of 32 cases covering local lookups, numeric table questions, section-specific and cross-document questions, metadata-filter phrasings, missing-company fallbacks, guardrail probes, and web-fallback questions. Each case runs the live agent against Bedrock, so a full run takes several minutes. Run:
 
 ```bash
 python eval_runner.py

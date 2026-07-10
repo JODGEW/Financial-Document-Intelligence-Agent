@@ -78,8 +78,8 @@ export function Sidebar({
       >
         <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-4">
           <div className="min-w-0">
-            <h1 className="truncate text-[15px] font-semibold tracking-tight text-ink">
-              Financial Document Agent
+            <h1 className="text-balance text-[15px] font-semibold leading-snug tracking-tight text-ink">
+              Financial Document Intelligence Agent
             </h1>
             <p className="mt-0.5 font-mono text-xs tracking-wide text-faint">
               FDIA

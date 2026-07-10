@@ -26,10 +26,14 @@ _CHUNKS = [
 ]
 
 # A spread of answers: fully grounded, miscited, and an unsupported numeric claim.
+# The p.2 / p.9 entries exercise the prompt's "[file.pdf p.N]" bracket citation
+# form, which both parsers must resolve at page level (p.2 matches the chunk,
+# p.9 must not).
 _ANSWERS = [
     "Employees may not trade during the 30 day blackout window "
     "[compliance-policy-personal-trading.md].",
     "Total revenue was $5 million [acme-corp-10k-excerpt-2025.pdf p.2].",
+    "Total revenue was $5 million [acme-corp-10k-excerpt-2025.pdf p.9].",
     "Revenue grew 42% last year [ghost-report.pdf].",
     "The policy covers preclearance and reporting [compliance-policy-personal-trading.md].",
 ]
