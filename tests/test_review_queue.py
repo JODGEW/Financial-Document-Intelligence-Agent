@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import scripts.review_queue as cli
 from governance import review_queue
 
@@ -55,6 +57,62 @@ def test_get_returns_item_or_none(tmp_path):
     review_queue.enqueue(_item("review_a"), tmp_path)
     assert review_queue.get("review_a", tmp_path)["reviewId"] == "review_a"
     assert review_queue.get("review_missing", tmp_path) is None
+
+
+def test_list_items_tags_each_item_with_its_file_status(tmp_path):
+    """list_items returns (item, status) pairs sourced from the matching file."""
+    review_queue.enqueue(_item("review_a"), tmp_path)
+    review_queue.enqueue(_item("review_b"), tmp_path)
+    review_queue.enqueue(_item("review_c"), tmp_path)
+    review_queue.approve("review_b", tmp_path)
+    review_queue.reject("review_c", tmp_path)
+
+    def ids(status):
+        return [(i["reviewId"], s) for i, s in review_queue.list_items(tmp_path, status)]
+
+    assert ids("pending") == [("review_a", "pending")]
+    assert ids("approved") == [("review_b", "approved")]
+    assert ids("rejected") == [("review_c", "rejected")]
+
+
+def test_list_items_all_spans_files_and_empty_dir_is_empty(tmp_path):
+    """status=all covers pending, approved, and rejected; an empty dir yields []."""
+    assert review_queue.list_items(tmp_path, "all") == []
+
+    review_queue.enqueue(_item("review_a"), tmp_path)
+    review_queue.enqueue(_item("review_b"), tmp_path)
+    review_queue.approve("review_b", tmp_path)
+
+    pairs = review_queue.list_items(tmp_path, "all")
+    assert [(i["reviewId"], s) for i, s in pairs] == [
+        ("review_a", "pending"),
+        ("review_b", "approved"),
+    ]
+
+
+def test_list_items_unknown_status_raises_value_error(tmp_path):
+    """An unknown status is a programming error, not a silent empty list."""
+    with pytest.raises(ValueError):
+        review_queue.list_items(tmp_path, "archived")
+
+
+def test_get_any_searches_all_three_files(tmp_path):
+    """get_any finds items in any status and returns None when absent."""
+    review_queue.enqueue(_item("review_a"), tmp_path)
+    review_queue.enqueue(_item("review_b"), tmp_path)
+    review_queue.enqueue(_item("review_c"), tmp_path)
+    review_queue.approve("review_b", tmp_path)
+    review_queue.reject("review_c", tmp_path)
+
+    for review_id, expected_status in (
+        ("review_a", "pending"),
+        ("review_b", "approved"),
+        ("review_c", "rejected"),
+    ):
+        item, status = review_queue.get_any(review_id, tmp_path)
+        assert (item["reviewId"], status) == (review_id, expected_status)
+
+    assert review_queue.get_any("review_missing", tmp_path) is None
 
 
 def test_approve_moves_pending_to_approved(tmp_path):

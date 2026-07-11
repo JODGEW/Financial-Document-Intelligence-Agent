@@ -74,3 +74,28 @@ def test_finalize_flag_mode_returns_answer_but_still_enqueues(monkeypatch, tmp_p
     pending = review_queue.list_pending(tmp_path)
     assert len(pending) == 1
     assert pending[0]["draftAnswer"] == _ANSWER
+
+
+def test_review_item_snapshots_hold_mode_as_was_withheld(monkeypatch, tmp_path):
+    """Each queued item records the hold/flag mode in effect when it was created."""
+    _force_held(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(agent.config, "HUMAN_REVIEW_HOLD", True)
+    agent._finalize_query_result(
+        question="held in hold mode",
+        output=_ANSWER,
+        result_messages=[],
+        trace_messages=[],
+        guardrail_outcome=None,
+    )
+    monkeypatch.setattr(agent.config, "HUMAN_REVIEW_HOLD", False)
+    agent._finalize_query_result(
+        question="held in flag mode",
+        output=_ANSWER,
+        result_messages=[],
+        trace_messages=[],
+        guardrail_outcome=None,
+    )
+
+    pending = review_queue.list_pending(tmp_path)
+    assert [item["wasWithheld"] for item in pending] == [True, False]

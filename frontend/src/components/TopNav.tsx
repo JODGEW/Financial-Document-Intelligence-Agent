@@ -1,5 +1,5 @@
-import { Menu, Moon, PanelRight, ShieldCheck, Sun } from "lucide-react";
-import { useTheme } from "../lib/theme";
+import { Menu, PanelRight, ShieldCheck } from "lucide-react";
+import ThemeToggle from "./ThemeToggle";
 
 type TopNavProps = {
   isSidebarOpen: boolean;
@@ -12,6 +12,8 @@ type TopNavProps = {
   showEvidenceToggle: boolean;
   isContextPanelOpen: boolean;
   onToggleContextPanel: () => void;
+  /** The Chat / Review Queue workspace switcher. */
+  workspaceNav?: React.ReactNode;
 };
 
 export function TopNav({
@@ -19,10 +21,9 @@ export function TopNav({
   onOpenSidebar,
   showEvidenceToggle,
   isContextPanelOpen,
-  onToggleContextPanel
+  onToggleContextPanel,
+  workspaceNav
 }: TopNavProps) {
-  const { theme, toggleTheme } = useTheme();
-
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-3 sm:px-4">
       <div className="flex min-w-0 items-center gap-2">
@@ -47,6 +48,8 @@ export function TopNav({
       </div>
 
       <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        {workspaceNav}
+
         <div
           className="hidden items-center gap-1.5 rounded-full border border-grounded/25 bg-grounded-bg px-2.5 py-1 text-[11px] font-medium text-grounded md:flex"
           title="Answers cite retrieved corpus evidence; external context is labeled separately."
@@ -77,19 +80,7 @@ export function TopNav({
           </button>
         )}
 
-        <button
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
-          onClick={toggleTheme}
-          type="button"
-          aria-label={
-            theme === "dark" ? "Switch to light theme" : "Switch to dark theme"
-          }
-          title={
-            theme === "dark" ? "Switch to light theme" : "Switch to dark theme"
-          }
-        >
-          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-        </button>
+        <ThemeToggle />
       </div>
     </header>
   );

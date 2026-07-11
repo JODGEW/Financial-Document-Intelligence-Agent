@@ -5,7 +5,8 @@ import type {
   ChatMessage,
   ChatStreamEvent,
   CorpusDocument,
-  CorpusStatus
+  CorpusStatus,
+  WorkspaceId
 } from "./types";
 import { makeId } from "./lib/answer";
 import { DEFAULT_MODE } from "./modes";
@@ -13,8 +14,10 @@ import ChatThread from "./components/ChatThread";
 import CommandInput from "./components/CommandInput";
 import DocumentContextPanel from "./components/DocumentContextPanel";
 import EmptyState from "./components/EmptyState";
+import ReviewWorkspace from "./components/ReviewWorkspace";
 import Sidebar from "./components/Sidebar";
 import TopNav from "./components/TopNav";
+import WorkspaceNav from "./components/WorkspaceNav";
 
 const BOTTOM_SCROLL_THRESHOLD = 160;
 const SESSION_TITLE_LENGTH = 64;
@@ -28,6 +31,9 @@ function sessionTitle(messages: ChatMessage[]) {
 }
 
 function App() {
+  // Chat and review are sibling workspaces behind one local flag: no router,
+  // no deep links, and a refresh resets to chat by design.
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ArchivedSession[]>([]);
   // The filed session whose thread is loaded in the main panel, if any.
@@ -373,6 +379,18 @@ function App() {
     inputRef.current?.focus();
   }
 
+  const workspaceNav = (
+    <WorkspaceNav active={activeWorkspace} onSelect={setActiveWorkspace} />
+  );
+
+  if (activeWorkspace === "review") {
+    return (
+      <div className="app-shell flex overflow-hidden bg-bg text-ink">
+        <ReviewWorkspace workspaceNav={workspaceNav} />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell flex overflow-hidden bg-bg text-ink">
       <Sidebar
@@ -394,6 +412,7 @@ function App() {
           showEvidenceToggle={hasEvidence}
           isContextPanelOpen={isContextPanelOpen}
           onToggleContextPanel={() => setIsContextPanelOpen((open) => !open)}
+          workspaceNav={workspaceNav}
         />
 
         <div className="relative flex min-h-0 flex-1 flex-col">

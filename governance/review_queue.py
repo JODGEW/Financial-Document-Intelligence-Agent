@@ -10,8 +10,8 @@ audit log and does not re-deliver the held answer; both are out of scope for thi
 phase. Concurrent writers are not a concern at this scale.
 
 All functions take the queue directory as a parameter so callers (agent, CLI,
-tests) control where the files live. This module is the only writer of queue
-files.
+API, tests) control where the files live. This module is the only reader and
+writer of queue files; the API never opens them directly.
 """
 
 from __future__ import annotations
@@ -24,6 +24,12 @@ from typing import Any
 PENDING_FILE = "pending.jsonl"
 APPROVED_FILE = "approved.jsonl"
 REJECTED_FILE = "rejected.jsonl"
+
+_STATUS_FILES = {
+    "pending": PENDING_FILE,
+    "approved": APPROVED_FILE,
+    "rejected": REJECTED_FILE,
+}
 
 
 def _read_items(path: Path) -> list[dict[str, Any]]:
@@ -69,6 +75,40 @@ def get(review_id: str, queue_dir: str | Path) -> dict[str, Any] | None:
     for item in list_pending(queue_dir):
         if item.get("reviewId") == review_id:
             return item
+    return None
+
+
+def list_items(
+    queue_dir: str | Path, status: str
+) -> list[tuple[dict[str, Any], str]]:
+    """Return (item, status) pairs for one status, or across all three files.
+
+    status is one of pending, approved, rejected, or all. For "all", items come
+    back in file order: pending, then approved, then rejected. The status in
+    each pair is derived from the file the item was read from, not from the
+    item body. Unknown status raises ValueError.
+    """
+    if status != "all" and status not in _STATUS_FILES:
+        raise ValueError(f"unknown review status: {status!r}")
+    statuses = list(_STATUS_FILES) if status == "all" else [status]
+    queue_dir = Path(queue_dir)
+    pairs: list[tuple[dict[str, Any], str]] = []
+    for name in statuses:
+        for item in _read_items(queue_dir / _STATUS_FILES[name]):
+            pairs.append((item, name))
+    return pairs
+
+
+def get_any(
+    review_id: str, queue_dir: str | Path
+) -> tuple[dict[str, Any], str] | None:
+    """Find a review item in any of the three files, returning (item, status).
+
+    Returns None when the id is absent everywhere.
+    """
+    for item, status in list_items(queue_dir, "all"):
+        if item.get("reviewId") == review_id:
+            return item, status
     return None
 
 

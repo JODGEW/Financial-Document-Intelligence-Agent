@@ -21,7 +21,7 @@ export function SourceBadge({ source, isExpanded, onToggle }: SourceBadgeProps) 
       onClick={onToggle}
       type="button"
       aria-expanded={isExpanded}
-      title={source.source}
+      title={source.source_path}
     >
       <span className="font-mono font-semibold tabular-nums text-grounded">
         {source.rank}

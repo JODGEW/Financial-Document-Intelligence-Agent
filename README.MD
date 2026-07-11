@@ -76,7 +76,7 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds high-risk answers in a human review queue (hold or flag mode via `HUMAN_REVIEW_HOLD`) with a CLI approve/reject flow
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 164 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue, and thread safety
+- [x] 183 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue and its API routes, and thread safety
 
 ## Best-fit use cases
 
@@ -241,7 +241,7 @@ Currently supports:
 - runtime grounding validation (citation coverage, grounding score, unsupported claims)
 - categorical block scoring (blocked answers report risk=high, validation=N/A)
 - document change impact analysis CLI (`scripts/document_impact.py`)
-- human review queue for high-risk answers: decision routing with a `held_for_review` outcome, hold or flag mode gated by `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`
+- human review queue for high-risk answers: decision routing with a `held_for_review` outcome, hold or flag mode gated by `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`, and a reviewer workspace in the React UI over the `/api/reviews` routes
 - internal-first retrieval policy
 - external context separation
 - document version and chunk traceability
@@ -255,6 +255,32 @@ Planned extensions:
 - document-level permissions (Phase 6)
 
 The governance modules live in [governance/](governance/). The full design doc and phase-by-phase build log are kept as local working notes outside the public repo.
+
+---
+
+## Review workspace
+
+The React UI has a second workspace for working the human review queue. A "Review Queue" entry in the top bar switches between chat and review; the switch is plain local state (no router, no deep links, and a refresh returns to chat).
+
+What it does:
+
+- lists queue items by status (Pending / Approved / Rejected / All), in the server's order
+- shows the full item: risk signals, the original question, the held draft rendered with the same rules as a chat answer, the governance report, the retrieved context with links into the corpus, and the item's identifiers
+- records approve/reject decisions with an optional reviewer note behind a confirmation dialog
+- shows whether the answer was withheld before delivery (the `wasWithheld` snapshot; items written before that field existed read as "delivery state unknown")
+
+Deliberate limits: this is a local demo surface. There is no authentication and no reviewer identity, and approving a draft does not deliver it to the original requester; a decision only moves the item between queue files and stamps `reviewedAt` plus the note. The workspace banner states this.
+
+The API behind it:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/reviews` | List review items by `status` query param (`pending` default, `approved`, `rejected`, `all`). Pending sorts oldest first; resolved items sort most recently reviewed first. |
+| `GET /api/reviews/{review_id}` | Full item detail across all statuses. Joins the audit log by `auditId` and returns only the record's `governance_report`. |
+| `POST /api/reviews/{review_id}/approve` | Approve a pending item. Body `{"note": "..."}` is optional. |
+| `POST /api/reviews/{review_id}/reject` | Reject a pending item, same body. |
+
+Responses are allowlisted DTOs: corpus-relative paths only (the stored absolute `source` path never leaves the server), `404` for unknown ids, `409` when the item was already resolved, `422` for invalid status values or a malformed body.
 
 ---
 
@@ -332,7 +358,7 @@ ReAct-RAG/
 ├── app.py           # Gradio fallback chat UI
 ├── api.py           # FastAPI backend for the React UI
 ├── eval/            # sample questions, expectations, and frozen baseline.json for drift checks
-├── frontend/        # React + TypeScript + Tailwind chat UI
+├── frontend/        # React + TypeScript + Tailwind UI (chat + review workspaces)
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
 ├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py)
@@ -343,8 +369,8 @@ ReAct-RAG/
 │   ├── risk_scorer.py        # 3-signal risk score + categorical block override
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
-│   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject)
-├── tests/           # 164 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
+│   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
+├── tests/           # 183 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -449,7 +475,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-164 tests, all passing. Run with:
+183 tests, all passing. Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -461,12 +487,12 @@ python -m pytest tests/ -v
 | `test_tools.py` | 13 | Local search retrieval, source metadata, metadata-filter inference, no-match handling, web search graceful degradation, markdown link output, no "date unavailable" noise, retriever documents, Chroma singleton, concurrent parallel search (thread safety), context policy admission and drop decisions reaching the report |
 | `test_agent.py` | 12 | Agent build, query output, local search routing, chat history, Result Summary format, company mismatch rejection, missing-company web fallback prompt rule, source display gating, deterministic external fallback |
 | `test_audit.py` | 7 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization, governance report nested in the audit record |
-| `test_api.py` | 8 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format |
+| `test_api.py` | 22 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; chat sources are corpus-relative (the absolute `source` path is dropped in both sync and stream paths); `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format; review routes: per-status listing with server-side ordering, cross-status detail, approve/reject with a persisted note, 404/409/422 handling, no absolute path anywhere in any response, audit join returns only `governance_report`, `wasWithheld` reads null on legacy items |
 | `test_eval_runner.py` | 12 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy and citation parsing (prose "page N" and bracket "p.N" forms), tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
 | `test_governance_report.py` | 7 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
-| `test_review_queue.py` | 9 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
-| `test_agent_review.py` | 2 | finalize hold mode (answer replaced with the held notice, draft queued + auditable), flag mode (answer returned unchanged, item still enqueued) |
+| `test_review_queue.py` | 13 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, `list_items` filters by status with file-derived status tags (plus `all`, empty dir, and invalid-status ValueError), `get_any` finds items across all three files, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
+| `test_agent_review.py` | 3 | finalize hold mode (answer replaced with the held notice, draft queued + auditable), flag mode (answer returned unchanged, item still enqueued), `wasWithheld` snapshots the hold/flag mode in effect when the item was created |
 | `test_grounding_validator.py` | 4 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling |
 | `test_risk_scorer.py` | 4 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, human-review trigger |
 | `test_context_policy.py` | 6 | YAML loading and default fallback, internal token-budget drop, low retrieval-score drop, expired-document drop (stale_document_version), draft-document drop (unapproved_document) |

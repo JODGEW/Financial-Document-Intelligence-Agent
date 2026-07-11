@@ -297,7 +297,9 @@ def _build_review_item(
 
     riskReasons come from the scorer result here, not from the report (the report
     carries riskScore/riskLevel only, per §9.3). reviewId is derived from auditId
-    for 1:1 traceability back to the audit record.
+    for 1:1 traceability back to the audit record. wasWithheld snapshots the
+    hold/flag mode in effect when the item was created; items written before this
+    field lack the key and readers must treat that as null.
     """
     return {
         "reviewId": f"review_{audit_id}",
@@ -311,6 +313,7 @@ def _build_review_item(
         "decision": "held_for_review",
         "reviewStatus": "pending",
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "wasWithheld": config.HUMAN_REVIEW_HOLD,
     }
 
 

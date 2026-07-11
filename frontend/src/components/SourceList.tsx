@@ -10,7 +10,7 @@ type SourceListProps = {
 };
 
 function sourceKey(source: RetrievedSource) {
-  return `${source.rank}-${source.source}-${source.page ?? "n/a"}`;
+  return `${source.rank}-${source.source_path}-${source.page ?? "n/a"}`;
 }
 
 /**

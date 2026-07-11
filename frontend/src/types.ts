@@ -24,11 +24,48 @@ export type ChatStreamEvent =
 
 export type RetrievedSource = {
   rank: number;
-  source: string;
   source_name: string;
   source_path: string;
+  section_title?: string | null;
   page: number | null;
   excerpt: string;
+};
+
+export type WorkspaceId = "chat" | "review";
+
+export type ReviewStatus = "pending" | "approved" | "rejected";
+
+export type ReviewStatusFilter = ReviewStatus | "all";
+
+export type ReviewSummary = {
+  reviewId: string;
+  question: string;
+  riskScore: number;
+  riskLevel: string;
+  riskReasons: string[];
+  reviewStatus: ReviewStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  wasWithheld: boolean | null;
+};
+
+export type SafeReviewSource = {
+  rank: number | null;
+  sourceName: string | null;
+  sourcePath: string | null;
+  sectionTitle: string | null;
+  page: number | null;
+  excerpt: string | null;
+  documentUrl: string | null;
+};
+
+export type ReviewDetail = ReviewSummary & {
+  auditId: string | null;
+  draftAnswer: string;
+  retrievedSources: SafeReviewSource[];
+  decision: string | null;
+  reviewerNote: string | null;
+  governanceReport: GovernanceReport | null;
 };
 
 export type CorpusDocument = {
