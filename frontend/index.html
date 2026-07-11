@@ -6,17 +6,17 @@
     <title>Financial Document Intelligence Agent</title>
     <script>
       // Resolve the theme before first paint so there is no light-mode flash
-      // on a dark preference. Stored choice wins; otherwise follow the OS.
+      // on a dark preference. A stored light/dark choice forces the matching
+      // class; auto (or nothing stored) leaves both classes off so the
+      // prefers-color-scheme CSS follows the OS live.
       (function () {
         try {
           var stored = localStorage.getItem("fdia-theme");
-          var dark =
-            stored === "dark" ||
-            (stored !== "light" &&
-              window.matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.classList.add(dark ? "dark" : "light");
+          if (stored === "dark" || stored === "light") {
+            document.documentElement.classList.add(stored);
+          }
         } catch (e) {
-          document.documentElement.classList.add("light");
+          // Storage unavailable: stay in auto and follow the OS.
         }
       })();
     </script>

@@ -1,40 +1,61 @@
 import { useEffect, useState } from "react";
 
-export type Theme = "light" | "dark";
+export type ThemePreference = "light" | "dark" | "auto";
 
 const STORAGE_KEY = "fdia-theme";
 
-/** The theme currently applied to <html> (set pre-paint by the inline script). */
-function currentTheme(): Theme {
-  return document.documentElement.classList.contains("dark") ? "dark" : "light";
+/** Cycle order for the toggle button. */
+const CYCLE: ThemePreference[] = ["light", "dark", "auto"];
+
+/**
+ * The preference currently applied to <html> (set pre-paint by the inline
+ * script in index.html). A forced choice carries the matching class; auto
+ * carries neither, so the prefers-color-scheme CSS follows the OS live.
+ */
+function currentPreference(): ThemePreference {
+  const classes = document.documentElement.classList;
+  if (classes.contains("dark")) {
+    return "dark";
+  }
+  if (classes.contains("light")) {
+    return "light";
+  }
+  return "auto";
 }
 
-function applyTheme(theme: Theme) {
+function applyPreference(preference: ThemePreference) {
   const root = document.documentElement;
-  root.classList.toggle("dark", theme === "dark");
-  root.classList.toggle("light", theme === "light");
+  root.classList.toggle("dark", preference === "dark");
+  root.classList.toggle("light", preference === "light");
 }
 
 /**
- * Light/dark toggle backed by localStorage. The inline script in index.html
- * has already resolved and applied the initial theme, so this hook only reads
- * that state and lets the user flip it.
+ * Theme preference cycling light -> dark -> auto, backed by localStorage.
+ * The inline script in index.html has already resolved and applied the
+ * initial state, so this hook only reads it and lets the user cycle.
  */
-export function useTheme(): { theme: Theme; toggleTheme: () => void } {
-  const [theme, setTheme] = useState<Theme>(() => currentTheme());
+export function useTheme(): {
+  preference: ThemePreference;
+  cycleTheme: () => void;
+} {
+  const [preference, setPreference] = useState<ThemePreference>(() =>
+    currentPreference()
+  );
 
   useEffect(() => {
-    applyTheme(theme);
+    applyPreference(preference);
     try {
-      localStorage.setItem(STORAGE_KEY, theme);
+      localStorage.setItem(STORAGE_KEY, preference);
     } catch {
       // Private-mode storage failures are non-fatal; the class is still applied.
     }
-  }, [theme]);
+  }, [preference]);
 
-  function toggleTheme() {
-    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  function cycleTheme() {
+    setPreference(
+      (current) => CYCLE[(CYCLE.indexOf(current) + 1) % CYCLE.length]
+    );
   }
 
-  return { theme, toggleTheme };
+  return { preference, cycleTheme };
 }
