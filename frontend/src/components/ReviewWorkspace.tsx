@@ -61,6 +61,9 @@ export function ReviewWorkspace({ workspaceNav }: ReviewWorkspaceProps) {
   // while an earlier request is still in flight.
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  // Entry auto-open is armed once per mount; the first pending list load or
+  // any manual filter change disarms it.
+  const autoSelectRef = useRef(true);
 
   const loadList = useCallback(async (target: ReviewStatusFilter) => {
     const requestId = ++listRequestRef.current;
@@ -114,6 +117,27 @@ export function ReviewWorkspace({ workspaceNav }: ReviewWorkspaceProps) {
   useEffect(() => {
     void loadList(filter);
   }, [filter, loadList]);
+
+  // Open the oldest pending item on workspace entry so review work starts
+  // without an extra click. Pinned conditions: only the pending filter, only
+  // with nothing selected, and only the first pending list load of this
+  // mount. Filter switches and post-action refreshes never re-trigger it;
+  // an empty pending queue keeps the idle copy.
+  useEffect(() => {
+    if (!autoSelectRef.current || listState !== "ready" || filter !== "pending") {
+      return;
+    }
+    autoSelectRef.current = false;
+    if (items.length > 0 && selectedId === null) {
+      selectItem(items[0].reviewId);
+    }
+  }, [listState, items, filter, selectedId]);
+
+  function changeFilter(next: ReviewStatusFilter) {
+    // Manual navigation ends the entry auto-open window.
+    autoSelectRef.current = false;
+    setFilter(next);
+  }
 
   function selectItem(reviewId: string) {
     if (reviewId === selectedId && detailState === "ready") {
@@ -196,7 +220,7 @@ export function ReviewWorkspace({ workspaceNav }: ReviewWorkspaceProps) {
         <div className="flex w-[300px] shrink-0 flex-col border-r border-line bg-surface">
           <ReviewList
             filter={filter}
-            onFilterChange={setFilter}
+            onFilterChange={changeFilter}
             items={items}
             state={listState}
             error={listError}
