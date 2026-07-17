@@ -200,7 +200,6 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
               <div>Model: {report.model}</div>
               <div>Prompt policy: {report.promptPolicyId}</div>
               <div>Context policy: {report.contextPolicyId}</div>
-              {report.auditId && <div className="break-all">Audit ID: {report.auditId}</div>}
             </div>
           </Section>
         </div>

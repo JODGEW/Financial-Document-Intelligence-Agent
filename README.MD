@@ -262,6 +262,8 @@ The governance modules live in [governance/](governance/). The full design doc a
 
 The React UI has a second workspace for working the human review queue. A "Review Queue" entry in the top bar switches between chat and review; the switch is plain local state (no router, no deep links, and a refresh returns to chat).
 
+![Review workspace showing the pending queue and a held answer's detail: risk reasons, the withheld draft with internal and external context, and retrieved evidence](assets/screenshots/review-workspace.png)
+
 What it does:
 
 - lists queue items by status (Pending / Approved / Rejected / All), in the server's order
