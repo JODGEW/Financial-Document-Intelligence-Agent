@@ -165,6 +165,56 @@ def test_evaluate_case_computes_metrics_with_injected_dependencies():
     assert result.latency_seconds >= 0
 
 
+def test_evaluate_case_reads_full_chunk_text_past_excerpt_cap():
+    """A numeric claim past the 700-char excerpt cap scores as supported.
+
+    The agent's source dicts carry audit-capped excerpts; evaluate_case
+    attaches the full chunk text from the tool trace before claim scoring.
+    """
+    full_text = "Filler sentence for the excerpt cap check. " * 25 + "Net retention was 118%."
+    normalized = " ".join(full_text.split())
+    case = EvalCase(
+        id="case_past_cap",
+        question="What was net retention?",
+        workflow_type="local_only",
+        expected_tools=["local_search"],
+        expected_sources=[ExpectedSource("filing.pdf", page=1)],
+        expected_terms=["118"],
+    )
+    docs = [
+        SimpleNamespace(
+            page_content=full_text,
+            metadata={"source": "/repo/docs/filing.pdf", "page": 1},
+        )
+    ]
+
+    def fake_query(_question):
+        return {
+            "output": "Net retention was 118% [filing.pdf p.1].",
+            "sources": [
+                {
+                    "source": "/repo/docs/filing.pdf",
+                    "source_name": "filing.pdf",
+                    "page": 1,
+                    "excerpt": normalized[:700],
+                }
+            ],
+            "messages": [
+                {
+                    "type": "tool",
+                    "name": "local_search",
+                    "content": f"[Source 1: /repo/docs/filing.pdf, page 1]\n{full_text}",
+                }
+            ],
+        }
+
+    result = evaluate_case(case, run_query=fake_query, retrieve=lambda _question: docs)
+
+    assert "118" not in normalized[:700]
+    assert result.unsupported_claim_rate == 0.0
+    assert result.grounded_answer is True
+
+
 def test_evaluate_case_fallback_skips_local_grounding_metrics():
     case = EvalCase(
         id="nvidia_missing",

@@ -8,7 +8,7 @@ import warnings
 from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
 
-from audit import build_audit_record, extract_retrieved_sources, write_audit_record
+from audit import SOURCE_HEADER_RE, build_audit_record, extract_retrieved_sources, write_audit_record
 import config
 from governance import review_queue
 from governance.context_policy import AdmissionSummary
@@ -277,6 +277,51 @@ def _stream_chunk_text(chunk) -> str:
     return _content_text(getattr(chunk, "content", ""))
 
 
+def _full_chunk_texts(messages: list) -> list[str]:
+    """Collect full local chunk texts from the tool messages in a graph trace.
+
+    audit.extract_retrieved_sources caps each excerpt at MAX_EXCERPT_CHARS for
+    the audit record; grounding validation needs the whole chunk. Same block
+    format and whitespace normalization as the audit parse, no cap.
+    """
+    texts = []
+    for message in messages:
+        if isinstance(message, dict):
+            message_type = str(message.get("type", ""))
+            content = message.get("content", "")
+        else:
+            message_type = str(getattr(message, "type", ""))
+            content = getattr(message, "content", "")
+        if message_type != "tool" or not isinstance(content, str):
+            continue
+        for block in content.split("\n\n---\n\n"):
+            match = SOURCE_HEADER_RE.match(block.strip())
+            if match:
+                texts.append(" ".join(match.group("content").split()))
+    return texts
+
+
+def attach_full_chunk_content(sources: list, messages: list) -> list:
+    """Return source copies whose full chunk text rides a ``content`` key.
+
+    The audit record keeps the capped ``excerpt`` convention (audit.py owns
+    that cap); the uncapped text is attached to copies for grounding only, so
+    a number sitting past the excerpt cap still counts as supported. Each full
+    text is matched to its source by excerpt prefix; sources with no match
+    (web results, synthetic fixtures) pass through unchanged.
+    """
+    full_texts = _full_chunk_texts(messages)
+    enriched = []
+    for source in sources:
+        excerpt = str(source.get("excerpt", ""))
+        full = next(
+            (text for text in full_texts if excerpt and text.startswith(excerpt)),
+            None,
+        )
+        enriched.append({**source, "content": full} if full else dict(source))
+    return enriched
+
+
 def _held_review_notice(review_id: str, risk_level: str) -> str:
     """User-facing message shown in place of a held draft answer (hold mode)."""
     return (
@@ -338,8 +383,11 @@ def _finalize_query_result(
 
     # Runtime governance: grounding score, risk score, and the per-answer report.
     # Grounding runs against the full retrieved set (the evidence the answer was
-    # built from), not the display-filtered sources below.
-    grounding_result = validate_grounding(output, sources)
+    # built from), not the display-filtered sources below. Validation reads the
+    # whole chunk text; the audit record and everything downstream of it keep
+    # the capped excerpts.
+    evidence_sources = attach_full_chunk_content(sources, result_messages)
+    grounding_result = validate_grounding(output, evidence_sources)
     risk_result = score_risk(
         grounding_result["grounding_score"],
         guardrail_outcome,

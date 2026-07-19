@@ -98,8 +98,16 @@ def extract_claim_tokens(answer: str) -> list[str]:
 
 
 def evidence_text(retrieved_sources: list[dict[str, Any]]) -> str:
-    """Join retrieved excerpts for claim-support checks."""
-    return "\n".join(str(source.get("excerpt", "")) for source in retrieved_sources)
+    """Join retrieved evidence for claim-support checks.
+
+    Prefers the full chunk text (``content``) when a source carries one and
+    falls back to the audit-capped ``excerpt`` otherwise, so a number sitting
+    past the excerpt cap still counts as supported.
+    """
+    return "\n".join(
+        str(source.get("content") or source.get("excerpt", ""))
+        for source in retrieved_sources
+    )
 
 
 # --- Runtime-only composition on top of the shared primitives. ---

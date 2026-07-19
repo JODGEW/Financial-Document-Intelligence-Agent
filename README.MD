@@ -76,7 +76,7 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds high-risk answers in a human review queue (hold or flag mode via `HUMAN_REVIEW_HOLD`) with a CLI approve/reject flow
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 183 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue and its API routes, and thread safety
+- [x] 185 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue and its API routes, and thread safety
 
 ## Best-fit use cases
 
@@ -372,7 +372,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 183 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
+├── tests/           # 185 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -477,7 +477,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-183 tests, all passing. Run with:
+185 tests, all passing. Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -490,12 +490,12 @@ python -m pytest tests/ -v
 | `test_agent.py` | 12 | Agent build, query output, local search routing, chat history, Result Summary format, company mismatch rejection, missing-company web fallback prompt rule, source display gating, deterministic external fallback |
 | `test_audit.py` | 7 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization, governance report nested in the audit record |
 | `test_api.py` | 22 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; chat sources are corpus-relative (the absolute `source` path is dropped in both sync and stream paths); `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format; review routes: per-status listing with server-side ordering, cross-status detail, approve/reject with a persisted note, 404/409/422 handling, no absolute path anywhere in any response, audit join returns only `governance_report`, `wasWithheld` reads null on legacy items |
-| `test_eval_runner.py` | 12 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy and citation parsing (prose "page N" and bracket "p.N" forms), tool-routing accuracy, fallback workflow refusal scoring, latency summary |
+| `test_eval_runner.py` | 13 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy and citation parsing (prose "page N" and bracket "p.N" forms), claim support past the excerpt cap via full chunk text, tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
 | `test_governance_report.py` | 7 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
 | `test_review_queue.py` | 13 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, `list_items` filters by status with file-derived status tags (plus `all`, empty dir, and invalid-status ValueError), `get_any` finds items across all three files, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
 | `test_agent_review.py` | 3 | finalize hold mode (answer replaced with the held notice, draft queued + auditable), flag mode (answer returned unchanged, item still enqueued), `wasWithheld` snapshots the hold/flag mode in effect when the item was created |
-| `test_grounding_validator.py` | 4 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling |
+| `test_grounding_validator.py` | 5 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling, claims past the excerpt cap supported only through full chunk text |
 | `test_risk_scorer.py` | 4 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, human-review trigger |
 | `test_context_policy.py` | 6 | YAML loading and default fallback, internal token-budget drop, low retrieval-score drop, expired-document drop (stale_document_version), draft-document drop (unapproved_document) |
 | `test_document_impact.py` | 10 | load_current_chunks filters by document_id, compute_new_chunks is pure (no Chroma write), diff added/removed/modified, audit-log scan match and no-match, report shape, end-to-end modified-doc flags a past query, CLI text + json exit 0, document-id-not-found edge |

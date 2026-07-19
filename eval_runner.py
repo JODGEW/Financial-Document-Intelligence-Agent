@@ -11,7 +11,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
-from agent import query
+from agent import attach_full_chunk_content, query
 from tools import get_retriever
 
 
@@ -289,8 +289,16 @@ def retrieved_docs_to_sources(docs: list[Any]) -> list[dict[str, Any]]:
 
 
 def evidence_text(retrieved_sources: list[dict[str, Any]]) -> str:
-    """Join retrieved excerpts for claim-support checks."""
-    return "\n".join(str(source.get("excerpt", "")) for source in retrieved_sources)
+    """Join retrieved evidence for claim-support checks.
+
+    Prefers the full chunk text (``content``) when a source carries one and
+    falls back to the audit-capped ``excerpt`` otherwise, so a number sitting
+    past the excerpt cap still counts as supported.
+    """
+    return "\n".join(
+        str(source.get("content") or source.get("excerpt", ""))
+        for source in retrieved_sources
+    )
 
 
 REFUSAL_MARKERS = (
@@ -328,6 +336,9 @@ def evaluate_case(
     answer = str(agent_result.get("output", ""))
     messages = agent_result.get("messages", [])
     answer_sources = agent_result.get("sources") or retrieved_sources
+    # The agent's source dicts carry audit-capped excerpts; claim support must
+    # read whole chunks, so the full text from the tool trace is attached here.
+    answer_sources = attach_full_chunk_content(answer_sources, messages)
     text_for_support = evidence_text(answer_sources)
 
     is_fallback = case.workflow_type == "missing_company_fallback"
