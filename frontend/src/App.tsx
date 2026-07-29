@@ -229,7 +229,11 @@ function App() {
         return;
       }
       if (event.type === "error") {
-        throw new Error(event.message);
+        // Surface the correlation id so a user can report something an
+        // operator can actually find in the server log.
+        throw new Error(
+          event.error_id ? `${event.message} (ref: ${event.error_id})` : event.message
+        );
       }
     }
 

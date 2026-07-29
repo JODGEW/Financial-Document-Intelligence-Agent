@@ -68,12 +68,14 @@ class _FakeStreamingGraph:
         }
 
 
-def _run_stream(monkeypatch, tmp_path, chunk_texts, final_answer):
+def _run_stream(monkeypatch, tmp_path, chunk_texts, final_answer, audit_writer=None):
     monkeypatch.setattr(
         agent, "build_agent", lambda **kw: _FakeStreamingGraph(chunk_texts, final_answer)
     )
     monkeypatch.setattr(
-        agent, "write_audit_record", lambda record, *a, **k: record["audit_id"]
+        agent,
+        "write_audit_record",
+        audit_writer or (lambda record, *a, **k: record["audit_id"]),
     )
     monkeypatch.setattr(agent.config, "REVIEW_QUEUE_DIR", str(tmp_path))
     monkeypatch.setattr(agent.config, "HUMAN_REVIEW_HOLD", True)
@@ -176,6 +178,66 @@ def test_returned_stream_still_delivers_the_answer(monkeypatch, tmp_path):
     assert report["decision"] == "returned"
     assert events[-1] == {"type": "done"}
     assert review_queue.list_pending(tmp_path) == []
+
+
+def test_audit_write_failure_warning_is_sanitized(monkeypatch, tmp_path, caplog):
+    """An OSError from the audit write keeps its warn-and-return semantics but
+    the warning event carries a stable code, never the raw path-bearing text."""
+    import logging
+
+    secret_path = "/Users/wenhaohe/private/audit-secret-dir/query_audit.jsonl"
+
+    def failing_writer(record, *args, **kwargs):
+        raise OSError(f"[Errno 13] Permission denied: '{secret_path}'")
+
+    with caplog.at_level(logging.ERROR, logger="agent"):
+        events = _run_stream(
+            monkeypatch,
+            tmp_path,
+            chunk_texts=[_RETURNED_DRAFT],
+            final_answer=_RETURNED_DRAFT,
+            audit_writer=failing_writer,
+        )
+
+    # The answer still returns (unchanged semantics) and a warning is emitted.
+    assert _events_of(events, "replace")[0]["content"] == _RETURNED_DRAFT
+    warnings = _events_of(events, "warning")
+    assert warnings == [{"type": "warning", "message": "audit_record_write_failed"}]
+    # The raw OSError text never reaches any event; it lands in the server log.
+    assert secret_path not in json.dumps(events)
+    assert secret_path in caplog.text
+
+
+def test_enqueue_failure_warning_is_sanitized_and_hold_still_applies(
+    monkeypatch, tmp_path, caplog
+):
+    """An OSError from the queue write still withholds the draft (the safer
+    default) and warns with a stable code instead of the raw path."""
+    import logging
+
+    secret_path = "/Users/wenhaohe/private/queue-secret-dir/pending.jsonl"
+
+    def failing_enqueue(item, queue_dir):
+        raise OSError(f"[Errno 13] Permission denied: '{secret_path}'")
+
+    monkeypatch.setattr(agent.review_queue, "enqueue", failing_enqueue)
+
+    with caplog.at_level(logging.ERROR, logger="agent"):
+        events = _run_stream(
+            monkeypatch,
+            tmp_path,
+            chunk_texts=[_HELD_DRAFT],
+            final_answer=_HELD_DRAFT,
+        )
+
+    # The draft is still withheld even though the queue write failed.
+    replaces = _events_of(events, "replace")
+    assert "held for human review" in replaces[0]["content"]
+    assert _SECRET not in json.dumps(events)
+    warnings = _events_of(events, "warning")
+    assert warnings == [{"type": "warning", "message": "review_queue_write_failed"}]
+    assert secret_path not in json.dumps(events)
+    assert secret_path in caplog.text
 
 
 def test_stream_event_order_releases_content_only_after_validation(monkeypatch, tmp_path):

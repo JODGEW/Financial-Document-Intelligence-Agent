@@ -19,7 +19,10 @@ export type ChatStreamEvent =
   | { type: "audit_id"; audit_id: string | null }
   | { type: "governance_report"; report: GovernanceReport | null }
   | { type: "warning"; message: string }
-  | { type: "error"; message: string }
+  // code is a stable machine-readable identifier; error_id is an opaque
+  // correlation id operators can match against the server log. Both are
+  // optional so older event shapes keep parsing.
+  | { type: "error"; message: string; code?: string; error_id?: string }
   | { type: "done" };
 
 export type RetrievedSource = {

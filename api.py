@@ -1,7 +1,9 @@
 """FastAPI backend for the React chat interface."""
 
 import json
+import logging
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -10,12 +12,27 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import FileResponse, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent import detect_guardrail_intervention, query, stream_query
 import config
 from governance import review_queue
 from loaders.registry import supported_extensions
+
+logger = logging.getLogger("api")
+
+# The only error contract chat clients ever see. Raw exception text must never
+# leave the server: provider errors, OSError strings, and library messages can
+# carry absolute paths, request contents, and configuration fragments. The
+# error_id is a fresh opaque correlation id logged with the server-side
+# traceback — NOT an audit_id, because when a request fails no audit record
+# was written and claiming one would be false.
+SAFE_ERROR_CODE = "internal_error"
+SAFE_ERROR_MESSAGE = "The request could not be completed. Please try again."
+
+
+def _new_error_id() -> str:
+    return f"err_{uuid.uuid4().hex[:12]}"
 
 
 MAX_HISTORY_TURNS = 4
@@ -445,21 +462,33 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-    result = await run_in_threadpool(
-        query,
-        message,
-        _to_agent_history(request.history),
-    )
-    return ChatResponse(
-        answer=result["output"],
-        sources=[
-            _to_chat_source(source)
-            for source in result.get("sources", [])
-            if isinstance(source, dict)
-        ],
-        audit_id=result.get("audit_id"),
-        governance_report=result.get("governance_report"),
-    )
+    try:
+        result = await run_in_threadpool(
+            query,
+            message,
+            _to_agent_history(request.history),
+        )
+        return ChatResponse(
+            answer=result["output"],
+            sources=[
+                _to_chat_source(source)
+                for source in result.get("sources", [])
+                if isinstance(source, dict)
+            ],
+            audit_id=result.get("audit_id"),
+            governance_report=result.get("governance_report"),
+        )
+    except Exception:
+        error_id = _new_error_id()
+        logger.exception("POST /api/chat failed (error_id=%s)", error_id)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": SAFE_ERROR_CODE,
+                "message": SAFE_ERROR_MESSAGE,
+                "error_id": error_id,
+            },
+        )
 
 
 @app.post("/api/chat/stream")
@@ -485,11 +514,17 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         ],
                     }
                 yield json.dumps(event, default=str) + "\n"
-        except Exception as exc:
+        except Exception:
+            error_id = _new_error_id()
+            logger.exception(
+                "POST /api/chat/stream failed (error_id=%s)", error_id
+            )
             yield json.dumps(
                 {
                     "type": "error",
-                    "message": str(exc) or "The streaming request failed.",
+                    "code": SAFE_ERROR_CODE,
+                    "message": SAFE_ERROR_MESSAGE,
+                    "error_id": error_id,
                 }
             ) + "\n"
 

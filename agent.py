@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from datetime import datetime, timezone
+import logging
 import uuid
 import warnings
 
@@ -17,6 +18,8 @@ from governance.grounding_validator import validate as validate_grounding
 from governance.risk_scorer import score as score_risk
 from tools import ALL_TOOLS, web_search
 
+
+logger = logging.getLogger(__name__)
 
 GUARDRAIL_INTERVENTION_MARKERS = (
     "blocked by the react-rag safety policy",
@@ -429,8 +432,13 @@ def _finalize_query_result(
         )
         audit_record["governance_report"] = governance_report
         written_audit_id = write_audit_record(audit_record)
-    except OSError as exc:
-        audit_error = str(exc)
+    except OSError:
+        # Full details stay server-side: an OSError string embeds absolute
+        # filesystem paths, and audit_error is surfaced to chat clients as a
+        # warning event. The stable code keeps the existing "answer still
+        # returns, caller is warned" semantics without leaking the path.
+        logger.exception("Audit record write failed (audit_id=%s)", audit_id)
+        audit_error = "audit_record_write_failed"
 
     # Phase 5: a high-risk answer is held for the human review queue. The draft is
     # captured into the queue item BEFORE any user-facing substitution. In hold
@@ -449,8 +457,15 @@ def _finalize_query_result(
         )
         try:
             review_queue.enqueue(review_item, config.REVIEW_QUEUE_DIR)
-        except OSError as exc:
-            audit_error = audit_error or str(exc)
+        except OSError:
+            # Same sanitization as the audit-write catch above; the hold (the
+            # safer default) still applies below.
+            logger.exception(
+                "Review queue enqueue failed (audit_id=%s, review_id=%s)",
+                audit_id,
+                review_item["reviewId"],
+            )
+            audit_error = audit_error or "review_queue_write_failed"
         if config.HUMAN_REVIEW_HOLD:
             user_facing_output = _held_review_notice(
                 review_item["reviewId"],
