@@ -63,6 +63,15 @@ FILING_REGISTRY_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "filing_registry", "registry.jsonl"),
 )
 
+# Persistent comparison entities (comparison roadmap step 3): SQLite, because
+# comparisons are mutable workflow records that later grow state transitions
+# and child rows — the documented JSONL limitations apply. Runtime state,
+# gitignored like the other stores.
+COMPARISON_DB_PATH = os.getenv(
+    "COMPARISON_DB_PATH",
+    os.path.join(os.path.dirname(__file__), "comparisons", "comparisons.db"),
+)
+
 # Document ingestion. Two-tier PII redaction dispatch:
 # - PII_REDACT_AT_INGEST (global, default off) forces redaction on every format.
 # - PII_REDACT_TABULAR_AT_INGEST (default on) redacts CSV / XLSX only.

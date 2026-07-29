@@ -109,6 +109,65 @@ RiskLevel = Literal["low", "medium", "high"]
 ReviewStatus = Literal["not_required", "pending", "approved", "rejected"]
 REVIEW_STATUSES: tuple[str, ...] = get_args(ReviewStatus)
 
+# Stable machine-readable reason codes for the cross-filing pair rules. Shared
+# by ComparisonResult validation (which raises the paired message) and the
+# comparison store's pair eligibility check (which returns the codes to API
+# clients as 422 reasons).
+PAIR_IDENTICAL_FILINGS = "identical_filings"
+PAIR_COMPANY_MISMATCH = "company_mismatch"
+PAIR_FORM_TYPE_MISMATCH = "form_type_mismatch"
+PAIR_PERIOD_ORDER_INVALID = "period_order_invalid"
+
+
+def filing_pair_violations(
+    previous: "FilingReference", current: "FilingReference"
+) -> list[tuple[str, str]]:
+    """Every violated cross-filing pair rule as (reason_code, message).
+
+    Empty list means the pair is eligible for a v1 comparison: two distinct
+    filings of one company, same form type, strictly increasing period_end.
+    The messages are exactly the ones ComparisonResult raises, so extracting
+    this helper changed no validation behavior.
+    """
+    violations: list[tuple[str, str]] = []
+    if previous.document_id == current.document_id:
+        violations.append(
+            (
+                PAIR_IDENTICAL_FILINGS,
+                "previous_filing.document_id and current_filing.document_id "
+                f"must differ; both are '{previous.document_id}' — a comparison "
+                "requires two distinct filings",
+            )
+        )
+    if previous.company_key != current.company_key:
+        violations.append(
+            (
+                PAIR_COMPANY_MISMATCH,
+                "previous_filing.company_key "
+                f"('{previous.company_key}') != current_filing.company_key "
+                f"('{current.company_key}') — v1 compares filings of one company",
+            )
+        )
+    if previous.form_type != current.form_type:
+        violations.append(
+            (
+                PAIR_FORM_TYPE_MISMATCH,
+                f"previous_filing.form_type ('{previous.form_type}') != "
+                f"current_filing.form_type ('{current.form_type}') — v1 compares "
+                "like-for-like filings",
+            )
+        )
+    if previous.period_end >= current.period_end:
+        violations.append(
+            (
+                PAIR_PERIOD_ORDER_INVALID,
+                f"previous_filing.period_end ({previous.period_end.isoformat()}) "
+                "must be strictly before current_filing.period_end "
+                f"({current.period_end.isoformat()})",
+            )
+        )
+    return violations
+
 
 class _ComparisonModel(BaseModel):
     """Base config for every comparison.v1 model: unknown fields are rejected."""
@@ -572,30 +631,8 @@ class ComparisonResult(_ComparisonModel):
     def _enforce_cross_filing_invariants(self) -> "ComparisonResult":
         prev, curr = self.previous_filing, self.current_filing
 
-        if prev.document_id == curr.document_id:
-            raise ValueError(
-                "previous_filing.document_id and current_filing.document_id "
-                f"must differ; both are '{prev.document_id}' — a comparison "
-                "requires two distinct filings"
-            )
-        if prev.company_key != curr.company_key:
-            raise ValueError(
-                "previous_filing.company_key "
-                f"('{prev.company_key}') != current_filing.company_key "
-                f"('{curr.company_key}') — v1 compares filings of one company"
-            )
-        if prev.form_type != curr.form_type:
-            raise ValueError(
-                f"previous_filing.form_type ('{prev.form_type}') != "
-                f"current_filing.form_type ('{curr.form_type}') — v1 compares "
-                "like-for-like filings"
-            )
-        if prev.period_end >= curr.period_end:
-            raise ValueError(
-                f"previous_filing.period_end ({prev.period_end.isoformat()}) "
-                "must be strictly before current_filing.period_end "
-                f"({curr.period_end.isoformat()})"
-            )
+        for _code, message in filing_pair_violations(prev, curr):
+            raise ValueError(message)
 
         scope = set(self.section_scope)
         if len(scope) != len(self.section_scope):

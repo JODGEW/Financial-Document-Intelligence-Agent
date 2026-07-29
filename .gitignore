@@ -13,6 +13,10 @@ review_queue/*.jsonl
 # (per-source ingestion outcomes + filing identities). A clean clone starts
 # empty; the directory is kept via filing_registry/.gitkeep.
 filing_registry/*.jsonl
+# Comparison entity store (SQLite + sidecar wal/journal files) is runtime
+# state written by the comparison API; the directory is kept via
+# comparisons/.gitkeep.
+comparisons/*.db*
 .DS_Store
 WALKTHROUGH.md
 .gradio/

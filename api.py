@@ -3,18 +3,20 @@
 import json
 import logging
 import mimetypes
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent import detect_guardrail_intervention, query, stream_query
+import comparison_store
 import config
 from governance import review_queue
 from loaders.registry import supported_extensions
@@ -157,6 +159,47 @@ class ReviewActionRequest(BaseModel):
     """Body for the approve/reject review actions."""
 
     note: str | None = None
+
+
+class ComparisonCreateRequest(BaseModel):
+    """Body for creating a comparison. Identity fields only.
+
+    The client may name the two filings and the section scope — nothing else.
+    Company, form type, dates, source names, and hashes are resolved
+    server-side from the filing registry, never accepted from the client.
+    """
+
+    previousFilingId: str = Field(min_length=1)
+    currentFilingId: str = Field(min_length=1)
+    sectionScope: list[str] | None = None
+
+
+class ComparisonRecordDTO(BaseModel):
+    """A persisted comparison entity. The field set is an allowlist.
+
+    Pre-detection on purpose: there are no change/evidence/validation/risk/
+    review fields because no detector has run — this is a ComparisonRecord,
+    not a comparison.v1 ComparisonResult.
+    """
+
+    comparisonId: str
+    schemaVersion: str
+    workflowVersion: str
+    previousFilingId: str
+    currentFilingId: str
+    sectionScope: list[str]
+    status: Literal["ready_for_detection", "failed"]
+    createdAt: str
+    updatedAt: str
+    failureCode: str | None = None
+    failureSummary: str | None = None
+
+
+class ComparisonCreateResponse(BaseModel):
+    """POST /api/comparisons response: the entity plus idempotency outcome."""
+
+    created: bool
+    comparison: ComparisonRecordDTO
 
 
 app = FastAPI(title="Financial Document Intelligence API")
@@ -453,6 +496,106 @@ def reject_review(
     """Reject a pending review item, stamping reviewedAt server-side."""
     note = payload.note if payload else None
     return _resolve_review_action(review_id, review_queue.reject, "rejected", note)
+
+
+def _to_comparison_dto(record: dict) -> ComparisonRecordDTO:
+    """Map a stored comparison record onto the allowlist, field by field.
+
+    Filing ids, scope keys, timestamps, and lifecycle fields only — no
+    storage paths, no registry entry contents.
+    """
+    return ComparisonRecordDTO(
+        comparisonId=record.get("comparison_id", ""),
+        schemaVersion=record.get("schema_version", ""),
+        workflowVersion=record.get("workflow_version", ""),
+        previousFilingId=record.get("previous_filing_id", ""),
+        currentFilingId=record.get("current_filing_id", ""),
+        sectionScope=list(record.get("section_scope") or []),
+        status=record.get("status", "ready_for_detection"),
+        createdAt=record.get("created_at", ""),
+        updatedAt=record.get("updated_at", ""),
+        failureCode=record.get("failure_code"),
+        failureSummary=record.get("failure_summary"),
+    )
+
+
+def _comparison_storage_error(exc: Exception) -> HTTPException:
+    """Log the real storage failure; return a safe 500 with a correlation id.
+
+    SQL text, SQLite error strings, and filesystem paths stay server-side.
+    """
+    error_id = _new_error_id()
+    logger.exception("Comparison storage failure (error_id=%s)", error_id)
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": "comparison_storage_error",
+            "message": "Failed to access comparison storage.",
+            "error_id": error_id,
+        },
+    )
+
+
+@app.post("/api/comparisons", response_model=ComparisonCreateResponse)
+def create_comparison(
+    request: ComparisonCreateRequest, response: Response
+) -> ComparisonCreateResponse:
+    """Create (or idempotently return) a comparison for a validated filing pair.
+
+    201 with created=true for a new record; 200 with created=false when the
+    identical logical comparison already exists. Ineligible pairs are 422
+    with stable machine-readable reason codes — nothing is persisted.
+    """
+    try:
+        record, created = comparison_store.create_comparison(
+            request.previousFilingId.strip(),
+            request.currentFilingId.strip(),
+            request.sectionScope,
+        )
+    except comparison_store.ComparisonPairError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_comparison_pair",
+                "reasons": exc.reasons,
+                "message": exc.detail,
+            },
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return ComparisonCreateResponse(
+        created=created, comparison=_to_comparison_dto(record)
+    )
+
+
+@app.get("/api/comparisons", response_model=list[ComparisonRecordDTO])
+def list_comparisons(
+    filing_id: str | None = None,
+    status: Literal["ready_for_detection", "failed"] | None = None,
+) -> list[ComparisonRecordDTO]:
+    """List comparisons, newest first. Minimal stable filters only:
+    filing_id matches either side of the pair; status matches exactly."""
+    try:
+        records = comparison_store.list_comparisons(
+            filing_id=filing_id, status=status
+        )
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_comparison_dto(record) for record in records]
+
+
+@app.get("/api/comparisons/{comparison_id}", response_model=ComparisonRecordDTO)
+def get_comparison(comparison_id: str) -> ComparisonRecordDTO:
+    """Fetch one comparison by id; 404 when it does not exist."""
+    try:
+        record = comparison_store.get_comparison(comparison_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Comparison not found.")
+    return _to_comparison_dto(record)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
