@@ -56,7 +56,7 @@ def test_chat_stream_returns_ndjson_events(monkeypatch):
         assert question == "What is the policy?"
         assert chat_history == []
         yield {"type": "status", "message": "Searching local documents..."}
-        yield {"type": "token", "content": "Answer"}
+        yield {"type": "replace", "content": "Answer"}
         yield {
             "type": "sources",
             "sources": [
@@ -84,7 +84,7 @@ def test_chat_stream_returns_ndjson_events(monkeypatch):
     assert response.status_code == 200
     events = [json.loads(line) for line in response.text.strip().splitlines()]
     assert events[0]["type"] == "status"
-    assert events[1] == {"type": "token", "content": "Answer"}
+    assert events[1] == {"type": "replace", "content": "Answer"}
     assert events[2]["sources"][0]["source_name"] == "policy.md"
     # The stream re-shapes raw agent source dicts onto the chat allowlist.
     assert "source" not in events[2]["sources"][0]
@@ -184,7 +184,7 @@ def test_chat_stream_emits_governance_report_event(monkeypatch):
     """The streaming API should emit a final governance_report event."""
     def fake_stream_query(question, chat_history=None):
         yield {"type": "status", "message": "Searching local documents..."}
-        yield {"type": "token", "content": "Answer"}
+        yield {"type": "replace", "content": "Answer"}
         yield {"type": "governance_report", "report": _SAMPLE_REPORT}
         yield {"type": "done"}
 

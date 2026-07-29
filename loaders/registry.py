@@ -5,7 +5,6 @@ A FormatHandler bundles everything needed to ingest one file extension:
 - an optional splitter callable (docs -> chunks); None means use the
   pipeline's fallback recursive splitter
 - a format_family classification used by the PII redaction dispatch
-- optional flags / hints for downstream metadata enrichment
 
 Handlers register themselves at import time. The ingestion pipeline calls
 ``handler_for(ext)`` to dispatch.
@@ -13,7 +12,7 @@ Handlers register themselves at import time. The ingestion pipeline calls
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Literal
 
 from langchain_core.documents import Document
@@ -31,8 +30,6 @@ class FormatHandler:
     loader: LoaderFn
     splitter: SplitterFn | None = None
     format_family: FormatFamily = "text"
-    extract_tables: bool = False
-    filing_type_hints: tuple[str, ...] = field(default_factory=tuple)
 
 
 REGISTRY: dict[str, FormatHandler] = {}

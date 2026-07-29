@@ -66,7 +66,7 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Gracefully handles missing Tavily API key (web search disabled, no crash)
 - [x] Thread-safe Chroma singleton for parallel tool calls
 - [x] Supports CLI, Gradio fallback, and React/TypeScript interfaces
-- [x] Streams React answer tokens as the Bedrock/LangGraph response is generated
+- [x] Streams staged status events while the answer is generated and validated, then releases the governance-decided answer in one update (drafts are never transmitted before the decision)
 - [x] Caps Gradio chat history to prevent stale formatting from older turns
 - [x] Exposes retrieved chunk metadata in the React answer view
 - [x] Extracts PDF table text into retrievable chunks when PyMuPDF detects tables
@@ -420,7 +420,6 @@ ReAct-RAG/
 | `LANGSMITH_PROJECT`     | No       | LangSmith project name for traces. Defaults to `default`. Every traced run carries the answer's `audit_id` in its metadata, joining it to the audit log and governance report |
 | `PII_REDACT_AT_INGEST`  | No       | Global PII redaction on load. Default `false`            |
 | `PII_REDACT_TABULAR_AT_INGEST` | No | Tabular-only PII redaction for CSV/XLSX. Default `true`  |
-| `INGEST_TABLE_EXTRACTION` | No     | Toggle PDF/DOCX/HTML/PPTX table extraction. Default `true` |
 
 \* In deployed environments, IAM roles are the preferred access pattern for Bedrock and related AWS services.
 

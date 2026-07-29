@@ -13,13 +13,8 @@ context_policy:
   max_total_context_tokens: 12000
   max_internal_context_tokens: 10000
   max_external_context_tokens: 1500
-  require_internal_first: true
-  require_chunk_metadata: true
   exclude_expired_documents: true
   exclude_unapproved_documents: true
-  allow_web_fallback: true
-  web_fallback_requires_local_miss: true
-  preserve_citation_traceability: true
   # 0.0 disables score filtering. Set >0 to drop chunks whose retrieval score is
   # below the threshold (opt-in; retrieval scores are not attached by default).
   min_retrieval_score: 0.0

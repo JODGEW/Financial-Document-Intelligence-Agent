@@ -13,7 +13,6 @@ export type ChatMessage = {
 
 export type ChatStreamEvent =
   | { type: "status"; message: string }
-  | { type: "token"; content: string }
   | { type: "replace"; content: string }
   | { type: "sources"; sources: RetrievedSource[] }
   | { type: "audit_id"; audit_id: string | null }

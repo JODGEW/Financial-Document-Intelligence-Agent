@@ -58,13 +58,8 @@ class ContextPolicy:
     max_total_context_tokens: int = 12000
     max_internal_context_tokens: int = 10000
     max_external_context_tokens: int = 1500
-    require_internal_first: bool = True
-    require_chunk_metadata: bool = True
     exclude_expired_documents: bool = True
     exclude_unapproved_documents: bool = True
-    allow_web_fallback: bool = True
-    web_fallback_requires_local_miss: bool = True
-    preserve_citation_traceability: bool = True
     # 0.0 means no score filtering. Set >0 to opt in to dropping low-score chunks.
     min_retrieval_score: float = 0.0
 
@@ -91,13 +86,8 @@ _INT_FIELDS = (
     "max_external_context_tokens",
 )
 _BOOL_FIELDS = (
-    "require_internal_first",
-    "require_chunk_metadata",
     "exclude_expired_documents",
     "exclude_unapproved_documents",
-    "allow_web_fallback",
-    "web_fallback_requires_local_miss",
-    "preserve_citation_traceability",
 )
 
 

@@ -54,6 +54,3 @@ PII_REDACT_AT_INGEST = os.getenv("PII_REDACT_AT_INGEST", "false").lower() == "tr
 PII_REDACT_TABULAR_AT_INGEST = (
     os.getenv("PII_REDACT_TABULAR_AT_INGEST", "true").lower() == "true"
 )
-INGEST_TABLE_EXTRACTION = (
-    os.getenv("INGEST_TABLE_EXTRACTION", "true").lower() == "true"
-)

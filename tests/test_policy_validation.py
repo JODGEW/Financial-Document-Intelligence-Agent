@@ -226,12 +226,12 @@ def test_error_names_policy_and_field_but_not_the_document(tmp_path):
         tmp_path,
         f"# {marker}\n"
         "context_policy:\n"
-        f"  require_internal_first: {marker}\n",
+        f"  exclude_expired_documents: {marker}\n",
     )
     with pytest.raises(GovernancePolicyConfigError) as excinfo:
         load_policy(str(target))
     message = str(excinfo.value)
-    assert "context_policy.require_internal_first" in message
+    assert "context_policy.exclude_expired_documents" in message
     assert "boolean" in message
     assert marker not in message
 

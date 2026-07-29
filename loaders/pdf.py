@@ -31,6 +31,5 @@ register(
         loader=_load,
         splitter=_split,
         format_family="text",
-        extract_tables=True,
     )
 )

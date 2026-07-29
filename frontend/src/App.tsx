@@ -189,13 +189,6 @@ function App() {
         setStreamingStatus(event.message);
         return;
       }
-      if (event.type === "token") {
-        updateAssistant((assistant) => ({
-          ...assistant,
-          content: `${assistant.content}${event.content}`
-        }));
-        return;
-      }
       if (event.type === "replace") {
         updateAssistant((assistant) => ({
           ...assistant,

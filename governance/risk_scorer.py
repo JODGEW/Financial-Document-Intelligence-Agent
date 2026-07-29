@@ -45,7 +45,6 @@ _POLICY_PATH = Path(__file__).resolve().parent.parent / "policies" / "risk_thres
 # policies/risk_thresholds.yaml.
 _DEFAULT_THRESHOLDS = {
     "auto_return_below": 0.50,
-    "return_with_warning_below": 0.75,
     "require_review_at_or_above": 0.75,
     "require_review_below_grounding": 0.50,
 }
@@ -116,8 +115,7 @@ def _load_policy(path: Path = _POLICY_PATH) -> tuple[dict[str, float], dict[str,
             weights[key] = value
 
     # Band ordering on the effective values: _risk_level buckets low/medium/high
-    # against exactly this pair. (return_with_warning_below is validated above
-    # when present but not ordered - no code path reads it.)
+    # against exactly this pair.
     if thresholds["auto_return_below"] > thresholds["require_review_at_or_above"]:
         raise GovernancePolicyConfigError(
             "risk_thresholds policy: 'auto_return_below' must be <= "

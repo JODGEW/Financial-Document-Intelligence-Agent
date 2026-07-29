@@ -11,9 +11,11 @@
 #   - guardrail:  blocked=1.0, anonymized=0.5, passed=0.0
 #   - external:   external_context_used ? 1.0 : 0.0
 risk_thresholds:
-  auto_return_below: 0.50          # risk < 0.50         -> low
-  return_with_warning_below: 0.75  # 0.50 <= risk < 0.75 -> medium
-  require_review_at_or_above: 0.75 # risk >= 0.75        -> high, human review
+  # Bands: risk < auto_return_below -> low; risk >= require_review_at_or_above
+  # -> high (human review); everything between the two -> medium, returned
+  # with a warning.
+  auto_return_below: 0.50
+  require_review_at_or_above: 0.75
   # Mandatory-review floor, separate from the weighted score above: an answer
   # that PRESENTS an internal corpus answer and whose grounding_score is
   # STRICTLY below this is held for human review even when its weighted risk
