@@ -169,6 +169,38 @@ CREATE TABLE IF NOT EXISTS comparison_results (
     result_hash          TEXT NOT NULL,  -- sha256 over the timestamp-independent form
     created_at           TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS comparison_governance_evaluations (
+    -- NOT NULL is load-bearing: SQLite's non-INTEGER PRIMARY KEYs otherwise
+    -- accept NULL (historic quirk kept for compatibility).
+    evaluation_id          TEXT PRIMARY KEY NOT NULL,  -- gov_<sha256(...)[:16]>
+    comparison_id          TEXT NOT NULL
+                           REFERENCES comparisons (comparison_id),
+    comparison_result_hash TEXT NOT NULL,     -- must match comparison_results
+    policy_id              TEXT NOT NULL,
+    policy_version         TEXT NOT NULL,
+    risk_score             REAL NOT NULL,
+    risk_level             TEXT NOT NULL,
+    decision               TEXT NOT NULL,
+    reason_codes           TEXT NOT NULL,     -- JSON array of stable codes
+    evaluated_at           TEXT NOT NULL,     -- timezone-aware UTC ISO 8601
+    governed_result_json   TEXT NOT NULL,     -- validated comparison.v1 snapshot
+    governed_result_hash   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_governance_logical_key
+    ON comparison_governance_evaluations (
+        comparison_id, comparison_result_hash, policy_id, policy_version
+    );
+CREATE TABLE IF NOT EXISTS comparison_review_items (
+    review_id              TEXT PRIMARY KEY NOT NULL,  -- crev_<same suffix>
+    comparison_id          TEXT NOT NULL
+                           REFERENCES comparisons (comparison_id),
+    evaluation_id          TEXT NOT NULL UNIQUE
+                           REFERENCES comparison_governance_evaluations (evaluation_id),
+    comparison_result_hash TEXT NOT NULL,
+    governed_result_hash   TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK (status IN ('pending')),
+    created_at             TEXT NOT NULL
+);
 """
 
 
@@ -559,6 +591,179 @@ def get_result(
     stored = dict(row)
     stored["result"] = json.loads(stored.pop("result_json"))
     return stored
+
+
+def record_evaluation(
+    *,
+    comparison_id: str,
+    evaluation_id: str,
+    comparison_result_hash: str,
+    policy_id: str,
+    policy_version: str,
+    risk_score: float,
+    risk_level: str,
+    decision: str,
+    reason_codes: list[str],
+    governed_result_json: str,
+    governed_result_hash: str,
+    review_id: str | None,
+    db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Persist an immutable governance evaluation (+ pending review if held).
+
+    One BEGIN IMMEDIATE transaction covers: the stale-hash guard (the
+    evaluation must attach to the comparison's CURRENT stored result hash),
+    the idempotent evaluation insert, and — for held_for_review only — the
+    single pending comparison_review_items row. Everything commits or rolls
+    back together; concurrent identical evaluations serialize and yield one
+    row each. Returns (stored_evaluation, created).
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = conn.execute(
+                "SELECT result_hash FROM comparison_results WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if current is None:
+                raise ComparisonLifecycleError(
+                    comparison_id, "no_result", "no detector result exists"
+                )
+            if current["result_hash"] != comparison_result_hash:
+                raise ComparisonLifecycleError(
+                    comparison_id,
+                    "stale_result_hash",
+                    "the evaluation targets a result hash that is not the "
+                    "comparison's current stored result",
+                )
+
+            cursor = conn.execute(
+                """
+                INSERT INTO comparison_governance_evaluations (
+                    evaluation_id, comparison_id, comparison_result_hash,
+                    policy_id, policy_version, risk_score, risk_level,
+                    decision, reason_codes, evaluated_at,
+                    governed_result_json, governed_result_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    evaluation_id,
+                    comparison_id,
+                    comparison_result_hash,
+                    policy_id,
+                    policy_version,
+                    risk_score,
+                    risk_level,
+                    decision,
+                    json.dumps(reason_codes),
+                    now,
+                    governed_result_json,
+                    governed_result_hash,
+                ),
+            )
+            created = cursor.rowcount == 1
+            if created and decision == "held_for_review":
+                conn.execute(
+                    """
+                    INSERT INTO comparison_review_items (
+                        review_id, comparison_id, evaluation_id,
+                        comparison_result_hash, governed_result_hash,
+                        status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                    """,
+                    (
+                        review_id,
+                        comparison_id,
+                        evaluation_id,
+                        comparison_result_hash,
+                        governed_result_hash,
+                        now,
+                    ),
+                )
+            row = conn.execute(
+                "SELECT * FROM comparison_governance_evaluations "
+                "WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return _evaluation_row_to_record(row), created
+
+
+def _evaluation_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    record = dict(row)
+    record["reason_codes"] = json.loads(record["reason_codes"])
+    record["governed_result"] = json.loads(record.pop("governed_result_json"))
+    return record
+
+
+def get_evaluation(
+    evaluation_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Fetch one immutable governance evaluation by id, or None."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_governance_evaluations WHERE evaluation_id = ?",
+            (evaluation_id,),
+        ).fetchone()
+    return _evaluation_row_to_record(row) if row else None
+
+
+def list_evaluations(
+    comparison_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Every stored evaluation for a comparison (all policy versions), oldest
+    first — old-policy evaluations remain readable forever."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_governance_evaluations "
+            "WHERE comparison_id = ? ORDER BY evaluated_at, evaluation_id",
+            (comparison_id,),
+        ).fetchall()
+    return [_evaluation_row_to_record(row) for row in rows]
+
+
+def list_comparison_reviews(
+    db_path: str | Path | None = None, *, comparison_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Pending comparison review items (newest first), optionally filtered.
+
+    Summary rows only — the governed result lives on the evaluation; review
+    rows reference it by hash rather than copying evidence.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    query = (
+        "SELECT r.*, e.risk_score, e.risk_level, e.reason_codes "
+        "FROM comparison_review_items r "
+        "JOIN comparison_governance_evaluations e "
+        "ON e.evaluation_id = r.evaluation_id "
+        "WHERE r.status = 'pending'"
+    )
+    params: list[Any] = []
+    if comparison_id:
+        query += " AND r.comparison_id = ?"
+        params.append(comparison_id)
+    query += " ORDER BY r.created_at DESC, r.review_id"
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["reason_codes"] = json.loads(item["reason_codes"])
+        items.append(item)
+    return items
 
 
 def mark_failed(

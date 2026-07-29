@@ -1,0 +1,62 @@
+# Comparison-governance risk policy (comparison roadmap step 8).
+#
+# Governance as policy, not code: comparison_governance.py reads this file at
+# import and falls back to identical baked-in defaults ONLY when the file is
+# missing. A present but invalid file fails startup with
+# GovernancePolicyConfigError — governance configuration is never silently
+# replaced by permissive defaults.
+#
+# WHAT THE SCORE MEASURES — and does not. The risk score is a 0..1 measure of
+# OUTPUT TRUST AND REVIEW NECESSITY for one detected comparison: how much of
+# its own deterministic validation failed, how much of it is undetermined,
+# and whether its evidence layer held up. It does NOT measure financial
+# materiality, investment or legal risk, or the business importance of the
+# detected filing changes — the number of added/removed/modified changes is
+# deliberately not a signal.
+#
+# Signals (each a 0..1 rate with an explicit denominator):
+#   - failed_validation_rate:   failed checks / (passed + failed) checks
+#                               across all changes (not_applicable and
+#                               not_run sit outside both sides; an empty
+#                               denominator scores 0.0)
+#   - undetermined_change_rate: undetermined changes / total changes
+#                               (no changes scores 0.0)
+#   - evidence_failure_rate:    changes whose evidence_presence or
+#                               citation_support check failed / total changes
+#                               (no changes scores 0.0)
+#
+# Mandatory review is independent of the weighted score: any enabled rule
+# below holds the comparison even when the weighted score is low. The
+# displayed score/level are never inflated to force a hold — the hold carries
+# its own explicit reason code.
+
+comparison_risk_policy:
+  policy_id: comparison_risk_v1
+  policy_version: "1"
+
+signal_weights:
+  # Must sum to 1.0 (validated).
+  failed_validation_rate_weight: 0.5
+  undetermined_change_rate_weight: 0.3
+  evidence_failure_rate_weight: 0.2
+
+risk_thresholds:
+  # Bands: score < warn_at_or_above -> low; score >= hold_at_or_above ->
+  # high (held); between the two -> medium. warn must be <= hold (validated).
+  # Note: with every mandatory_review rule enabled (the defaults), any
+  # condition that raises the score above zero also mandates a hold, so the
+  # returned_with_warning band is honest-but-unreachable until an operator
+  # relaxes the mandatory rules.
+  warn_at_or_above: 0.25
+  hold_at_or_above: 0.50
+
+mandatory_review:
+  # Booleans (validated as actual booleans). Each enabled rule holds the
+  # comparison with one specific reason code:
+  #   failed_check_<check_name>   - any validation check failed
+  #   undetermined_changes_present - any change is undetermined
+  #   unexpected_not_run_check    - a check reports not_run even though all
+  #                                 six validators are implemented
+  hold_on_any_failed_check: true
+  hold_on_any_undetermined_change: true
+  hold_on_unexpected_not_run: true

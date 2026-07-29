@@ -17,6 +17,7 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent import detect_guardrail_intervention, query, stream_query
 import comparison_detector
+import comparison_governance
 import comparison_store
 import config
 from governance import review_queue
@@ -201,6 +202,50 @@ class ComparisonCreateResponse(BaseModel):
 
     created: bool
     comparison: ComparisonRecordDTO
+
+
+class GovernanceEvaluationDTO(BaseModel):
+    """An immutable comparison governance evaluation. Allowlisted fields.
+
+    ``governedResult`` is the validated comparison.v1 snapshot (risk/review
+    updated, everything else preserved from the detector result) — the same
+    wire contract the result endpoint uses. No storage paths, no SQL detail.
+    """
+
+    evaluationId: str
+    comparisonId: str
+    policyId: str
+    policyVersion: str
+    riskScore: float
+    riskLevel: str
+    decision: str
+    reasonCodes: list[str]
+    evaluatedAt: str
+    comparisonResultHash: str
+    governedResultHash: str
+    governedResult: dict
+
+
+class GovernanceEvaluateResponse(BaseModel):
+    """POST governance response: the evaluation plus idempotency outcome."""
+
+    created: bool
+    evaluation: GovernanceEvaluationDTO
+
+
+class ComparisonReviewSummaryDTO(BaseModel):
+    """Pending comparison-review summary. Deliberately excerpt-free: the
+    governed result (with evidence) is referenced by hash and served by the
+    governance endpoint, never copied into list rows."""
+
+    reviewId: str
+    comparisonId: str
+    evaluationId: str
+    status: Literal["pending"]
+    riskScore: float
+    riskLevel: str
+    reasonCodes: list[str]
+    createdAt: str
 
 
 class ComparisonDetectResponse(BaseModel):
@@ -665,6 +710,108 @@ def detect_comparison(
 
     response.status_code = 201 if created else 200
     return ComparisonDetectResponse(created=created, result=result)
+
+
+def _to_governance_dto(record: dict) -> GovernanceEvaluationDTO:
+    """Map a stored evaluation onto the allowlist, field by field."""
+    return GovernanceEvaluationDTO(
+        evaluationId=record.get("evaluation_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        policyId=record.get("policy_id", ""),
+        policyVersion=record.get("policy_version", ""),
+        riskScore=record.get("risk_score", 0.0),
+        riskLevel=record.get("risk_level", ""),
+        decision=record.get("decision", ""),
+        reasonCodes=list(record.get("reason_codes") or []),
+        evaluatedAt=record.get("evaluated_at", ""),
+        comparisonResultHash=record.get("comparison_result_hash", ""),
+        governedResultHash=record.get("governed_result_hash", ""),
+        governedResult=record.get("governed_result") or {},
+    )
+
+
+@app.post(
+    "/api/comparisons/{comparison_id}/governance",
+    response_model=GovernanceEvaluateResponse,
+)
+def evaluate_comparison_governance(
+    comparison_id: str, response: Response
+) -> GovernanceEvaluateResponse:
+    """Evaluate a detected comparison under the comparison risk policy.
+
+    201 + created=true for a new immutable evaluation (held decisions also
+    create their single pending review item in the same transaction); 200 +
+    created=false for the idempotent replay; 404 unknown comparison or no
+    detector result; 409 when the stored result is invalid or the hash is
+    stale; safe 500 with correlation id otherwise.
+    """
+    try:
+        record, created = comparison_governance.govern(comparison_id)
+    except comparison_governance.GovernanceNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except comparison_governance.GovernanceResultInvalid as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": exc.message}
+        ) from exc
+    except comparison_store.ComparisonLifecycleError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.status, "message": str(exc)},
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return GovernanceEvaluateResponse(
+        created=created, evaluation=_to_governance_dto(record)
+    )
+
+
+@app.get(
+    "/api/comparisons/{comparison_id}/governance",
+    response_model=GovernanceEvaluationDTO,
+)
+def get_comparison_governance(comparison_id: str) -> GovernanceEvaluationDTO:
+    """The evaluation for the current policy id/version and current result
+    hash; 404 when none exists yet."""
+    try:
+        record = comparison_governance.get_current_evaluation(comparison_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No governance evaluation exists for this comparison "
+            "under the current policy.",
+        )
+    return _to_governance_dto(record)
+
+
+@app.get("/api/comparison-reviews", response_model=list[ComparisonReviewSummaryDTO])
+def list_comparison_reviews(
+    comparison_id: str | None = None,
+) -> list[ComparisonReviewSummaryDTO]:
+    """Pending comparison review summaries (newest first). Read-only: no
+    approve/reject exists yet, and rows carry no evidence excerpts."""
+    try:
+        items = comparison_store.list_comparison_reviews(
+            comparison_id=comparison_id
+        )
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [
+        ComparisonReviewSummaryDTO(
+            reviewId=item.get("review_id", ""),
+            comparisonId=item.get("comparison_id", ""),
+            evaluationId=item.get("evaluation_id", ""),
+            status=item.get("status", "pending"),
+            riskScore=item.get("risk_score", 0.0),
+            riskLevel=item.get("risk_level", ""),
+            reasonCodes=list(item.get("reason_codes") or []),
+            createdAt=item.get("created_at", ""),
+        )
+        for item in items
+    ]
 
 
 @app.get("/api/comparisons/{comparison_id}/result")
