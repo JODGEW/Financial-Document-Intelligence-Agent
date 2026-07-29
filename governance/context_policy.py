@@ -15,7 +15,15 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import yaml
+from governance.policy_validation import (
+    GovernancePolicyConfigError,
+    load_policy_mapping,
+    require_mapping_section,
+    validated_bool,
+    validated_int,
+    validated_number,
+    validated_policy_id,
+)
 
 _POLICY_PATH = Path(__file__).resolve().parent.parent / "policies" / "context_policy.yaml"
 
@@ -41,8 +49,9 @@ _ACTIVE_STATUS = "active"
 class ContextPolicy:
     """Loaded from policies/context_policy.yaml. Field set is the §7.3 example.
 
-    Defaults match the YAML so a missing or unreadable file still runs a sane
-    policy (same fallback contract as risk_scorer).
+    Defaults match the YAML so a missing file still runs a sane policy (same
+    fallback contract as risk_scorer). A present but invalid file raises
+    GovernancePolicyConfigError instead of defaulting (see load_policy).
     """
 
     id: str = "regulated_doc_agent_v1"
@@ -74,22 +83,65 @@ def approx_tokens(text: str) -> int:
     return len(text or "") // TOKEN_CHARS_APPROX
 
 
-def load_policy(path: str | None = None) -> ContextPolicy:
-    """Load the context policy from YAML, falling back to baked-in defaults.
+# Field groups for load-time validation. Kept next to the dataclass so a new
+# field must be added to exactly one group (or given its own branch) to load.
+_INT_FIELDS = (
+    "max_total_context_tokens",
+    "max_internal_context_tokens",
+    "max_external_context_tokens",
+)
+_BOOL_FIELDS = (
+    "require_internal_first",
+    "require_chunk_metadata",
+    "exclude_expired_documents",
+    "exclude_unapproved_documents",
+    "allow_web_fallback",
+    "web_fallback_requires_local_miss",
+    "preserve_citation_traceability",
+)
 
-    Mirrors risk_scorer's fallback: a missing or unreadable file never crashes the
-    agent, it just runs the default policy. Unknown YAML keys are ignored so the
-    file can carry notes the code does not enforce yet.
+
+def load_policy(path: str | None = None) -> ContextPolicy:
+    """Load the context policy from YAML, validating every configured value.
+
+    A missing file falls back to the baked-in defaults (documented contract,
+    same as risk_scorer). A present but invalid file raises
+    GovernancePolicyConfigError at import so governance configuration fails
+    fast instead of silently running defaults, silently treating a quoted
+    "false" as truthy, or deferring a TypeError to the first admit_chunks call.
+    Unknown YAML keys are ignored so the file can carry notes the code does not
+    enforce yet; absent known keys keep their dataclass defaults.
     """
     target = Path(path) if path else _POLICY_PATH
-    try:
-        raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    raw = load_policy_mapping(target, "context_policy")
+    if raw is None:
         return ContextPolicy()
 
-    data = raw.get("context_policy") or {}
+    data = require_mapping_section(raw, "context_policy", "context_policy")
+    if data is None:
+        raise GovernancePolicyConfigError(
+            "context_policy policy: the file has no 'context_policy' section, "
+            "so it configures nothing. Restore the documented section or delete "
+            "the file to use the built-in defaults."
+        )
+
     known = {f.name for f in fields(ContextPolicy)}
-    return ContextPolicy(**{key: value for key, value in data.items() if key in known})
+    values: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in known:
+            continue
+        qualified = f"context_policy.{key}"
+        if key == "id":
+            values[key] = validated_policy_id("context_policy", qualified, value)
+        elif key in _INT_FIELDS:
+            values[key] = validated_int("context_policy", qualified, value, minimum=0)
+        elif key in _BOOL_FIELDS:
+            values[key] = validated_bool("context_policy", qualified, value)
+        elif key == "min_retrieval_score":
+            values[key] = validated_number(
+                "context_policy", qualified, value, minimum=0.0, maximum=1.0
+            )
+    return ContextPolicy(**values)
 
 
 # Loaded once at import, like risk_scorer's THRESHOLDS/WEIGHTS.

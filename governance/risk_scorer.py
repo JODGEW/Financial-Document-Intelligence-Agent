@@ -31,12 +31,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
+from governance.policy_validation import (
+    GovernancePolicyConfigError,
+    load_policy_mapping,
+    require_mapping_section,
+    validated_number,
+)
 
 _POLICY_PATH = Path(__file__).resolve().parent.parent / "policies" / "risk_thresholds.yaml"
 
-# Used when the YAML is missing or unreadable, so the agent never crashes on a
-# bad policy file. Kept identical to policies/risk_thresholds.yaml.
+# Used when the YAML file is absent. A present but invalid file raises
+# GovernancePolicyConfigError instead (see _load_policy). Kept identical to
+# policies/risk_thresholds.yaml.
 _DEFAULT_THRESHOLDS = {
     "auto_return_below": 0.50,
     "return_with_warning_below": 0.75,
@@ -65,14 +71,60 @@ _GUARDRAIL_RISK = {
 
 
 def _load_policy(path: Path = _POLICY_PATH) -> tuple[dict[str, float], dict[str, float]]:
-    """Load thresholds and weights from YAML, falling back to defaults."""
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    """Load thresholds and weights from YAML, validating every configured value.
+
+    A missing file falls back to the baked-in defaults (documented contract).
+    A present but invalid file raises GovernancePolicyConfigError at import so
+    governance configuration fails fast instead of silently running defaults
+    or deferring a TypeError to the first score() call. Known keys are
+    validated as finite numbers in [0, 1]; unknown keys are carried through
+    unvalidated (the file may hold forward-compatible keys the code does not
+    read yet). Absent sections/keys keep their per-key defaults.
+    """
+    raw = load_policy_mapping(path, "risk_thresholds")
+    if raw is None:
         return dict(_DEFAULT_THRESHOLDS), dict(_DEFAULT_WEIGHTS)
 
-    thresholds = {**_DEFAULT_THRESHOLDS, **(raw.get("risk_thresholds") or {})}
-    weights = {**_DEFAULT_WEIGHTS, **(raw.get("signal_weights") or {})}
+    threshold_section = require_mapping_section(raw, "risk_thresholds", "risk_thresholds")
+    weight_section = require_mapping_section(raw, "signal_weights", "risk_thresholds")
+    if threshold_section is None and weight_section is None:
+        raise GovernancePolicyConfigError(
+            "risk_thresholds policy: the file contains neither a "
+            "'risk_thresholds' nor a 'signal_weights' section, so it configures "
+            "nothing. Restore a documented section or delete the file to use "
+            "the built-in defaults."
+        )
+
+    thresholds = dict(_DEFAULT_THRESHOLDS)
+    for key, value in (threshold_section or {}).items():
+        if key in _DEFAULT_THRESHOLDS:
+            thresholds[key] = validated_number(
+                "risk_thresholds", f"risk_thresholds.{key}", value,
+                minimum=0.0, maximum=1.0,
+            )
+        else:
+            thresholds[key] = value
+
+    weights = dict(_DEFAULT_WEIGHTS)
+    for key, value in (weight_section or {}).items():
+        if key in _DEFAULT_WEIGHTS:
+            weights[key] = validated_number(
+                "risk_thresholds", f"signal_weights.{key}", value,
+                minimum=0.0, maximum=1.0,
+            )
+        else:
+            weights[key] = value
+
+    # Band ordering on the effective values: _risk_level buckets low/medium/high
+    # against exactly this pair. (return_with_warning_below is validated above
+    # when present but not ordered - no code path reads it.)
+    if thresholds["auto_return_below"] > thresholds["require_review_at_or_above"]:
+        raise GovernancePolicyConfigError(
+            "risk_thresholds policy: 'auto_return_below' must be <= "
+            "'require_review_at_or_above', got "
+            f"{thresholds['auto_return_below']} > "
+            f"{thresholds['require_review_at_or_above']}."
+        )
     return thresholds, weights
 
 
