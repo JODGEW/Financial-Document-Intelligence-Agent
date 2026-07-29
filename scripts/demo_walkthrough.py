@@ -7,19 +7,24 @@ pipeline (Bedrock agent, Chroma retrieval, review queue, eval baseline):
   Act 1  Ask a grounded question. Show the answer plus the governance report
          behind it: context-policy admission (chunks admitted/dropped and why),
          grounding score, citation coverage, risk score, and the routing decision.
-  Act 2  Stage the hold path. The review threshold (normally 0.75) is lowered
-         in-process for one query so the answer trips human review: the user
-         sees a held notice instead of the draft, the draft lands in the review
-         queue with its evidence, and the reviewer CLI resolves it.
+  Act 2  The hold path under the normal policy. A deliberately ungrounded draft
+         (fabricated numbers, citation to a file that was never retrieved) is
+         validated against real retrieved evidence by the production pipeline —
+         grounding validation, risk scoring, decision routing, review queue —
+         with no thresholds changed. The grounding floor
+         (require_review_below_grounding) holds it: the user-facing answer is
+         the held notice, the draft lands in the review queue with its evidence
+         and reason codes, and the reviewer CLI resolves it.
   Act 3  Stage drift. The eval baseline is diffed against a perturbed copy in a
          temp file (the real eval/baseline.json is never touched), producing the
          exact scripts/eval_diff.py output an operator sees when a metric moves,
          a case flips pass/fail, or latency shifts.
 
-Staging is explicit: the script prints what it changes before each act, and the
-changes do not survive the run (the threshold patch is reverted, the perturbed
-baseline is a temp file). The one persistent side effect is intentional: Act 2
-writes a real item into review_queue/. Reset with: git checkout -- review_queue/
+Staging is explicit: the script prints what it substitutes before each act (the
+ungrounded draft in Act 2, the perturbed baseline copy in Act 3). Policy is
+never touched: thresholds, weights, and the hold mode all run at their shipped
+values. The one persistent side effect is intentional: Act 2 writes a real item
+into review_queue/. Reset with: git checkout -- review_queue/
 
 Requirements: AWS credentials for Bedrock (same as cli.py) and an ingested
 corpus (python ingest.py) for Acts 1-2. Act 3 in default mode needs neither.
@@ -50,6 +55,21 @@ GROUNDED_QUESTION = (
 HELD_QUESTION = (
     "How do the cybersecurity risks in the 10-K compare to the trends described "
     "in the internal research note?"
+)
+
+# Act 2's deliberately ungrounded draft: numbers that appear in no retrieved
+# chunk, cited to a file that was never retrieved. The temperature-0 agent on
+# this clean corpus does not produce answers like this on demand, so the demo
+# substitutes the draft and lets the real pipeline judge it under the real
+# policy. Format matches the agent's mandated Result Summary shape.
+UNGROUNDED_DRAFT = (
+    "## Result Summary\n\n"
+    '<span style="color: #2e7d32; font-weight: bold;">Internal Corpus Answer:</span> '
+    "Available. Acme Corporation's cybersecurity spending rose 63% year over year "
+    "while peer incidents fell 41%, and remediation costs reached $512 million "
+    "[acme-shadow-report.pdf p.9].\n\n"
+    '<span style="color: #1565c0; font-style: italic;">External Context:</span> '
+    "Unavailable."
 )
 
 PAUSE = True
@@ -137,35 +157,53 @@ def act_1_grounded_query() -> None:
 
 
 def act_2_held_answer(auto_approve: bool) -> None:
-    banner("ACT 2 - A high-risk answer is held for human review")
+    banner("ACT 2 - An ungrounded answer is held for human review (normal policy)")
 
     import config
-    from agent import query
+    from agent import _finalize_query_result
     from governance import review_queue, risk_scorer
+    from tools import local_search
 
-    real_threshold = risk_scorer.THRESHOLDS["require_review_at_or_above"]
+    threshold = risk_scorer.THRESHOLDS["require_review_at_or_above"]
+    floor = risk_scorer.THRESHOLDS["require_review_below_grounding"]
     stage_note(
-        f"For this one query, the review trigger is lowered in-process from "
-        f"{real_threshold} to 0.0 so you can watch the hold path fire. In normal "
-        f"operation only answers scoring >= {real_threshold} are held. The patch "
-        f"is reverted immediately after the query."
+        f"No thresholds are changed. The temperature-0 agent on this clean corpus "
+        f"does not produce ungrounded answers on demand, so this act substitutes a "
+        f"deliberately ungrounded draft (fabricated numbers, citation to a file "
+        f"that was never retrieved) and runs it through the real production "
+        f"pipeline: grounding validation -> risk scoring -> decision routing -> "
+        f"review queue, under the shipped policy (weighted review threshold "
+        f"{threshold}, mandatory grounding floor {floor})."
     )
     print(f"Question: {HELD_QUESTION}\n")
-    print("Running the agent...\n")
+    print("Retrieving real evidence chunks from Chroma...\n")
+    tool_output = local_search.invoke(HELD_QUESTION)
+    result_messages = [
+        {"type": "tool", "name": "local_search", "content": tool_output}
+    ]
 
-    real_hold = config.HUMAN_REVIEW_HOLD
-    risk_scorer.THRESHOLDS["require_review_at_or_above"] = 0.0
-    config.HUMAN_REVIEW_HOLD = True
-    try:
-        result = query(HELD_QUESTION)
-    finally:
-        risk_scorer.THRESHOLDS["require_review_at_or_above"] = real_threshold
-        config.HUMAN_REVIEW_HOLD = real_hold
+    print("The ungrounded draft under review:\n")
+    print("  " + strip_html(UNGROUNDED_DRAFT).replace("\n", "\n  "))
+    print("\nValidating the draft against the retrieved evidence...\n")
+    result = _finalize_query_result(
+        question=HELD_QUESTION,
+        output=UNGROUNDED_DRAFT,
+        result_messages=result_messages,
+        trace_messages=result_messages,
+        guardrail_outcome=None,
+    )
 
     report = result.get("governance_report") or {}
-    print("What the user sees (the draft answer is withheld):\n")
+    risk = report.get("risk", {})
+    if config.HUMAN_REVIEW_HOLD:
+        print("What the user sees (the draft answer is withheld):\n")
+    else:
+        print("HUMAN_REVIEW_HOLD=false (flag mode): the answer returns, but the "
+              "item is still enqueued. What the user sees:\n")
     print(strip_html(result["output"]))
     print(f"\nDecision in the governance report: {report.get('decision')}")
+    print(f"Risk reasons in the report:         "
+          f"{', '.join(risk.get('riskReasons') or []) or 'none'}")
 
     audit_id = result.get("audit_id")
     item = next(
@@ -174,22 +212,18 @@ def act_2_held_answer(auto_approve: bool) -> None:
         None,
     )
     if item is None:
-        print("\nNo matching review item found (was the answer blocked by a "
-              "guardrail instead?). Inspect with: python scripts/review_queue.py list")
+        print("\nNo matching review item found. Inspect with: "
+              "python scripts/review_queue.py list")
         return
 
     draft = strip_html(item.get("draftAnswer", ""))
     preview = draft[:400] + ("..." if len(draft) > 400 else "")
     print("\nMeanwhile, the full draft is preserved in the review queue:\n")
     print(f"  Review ID: {item.get('reviewId')}")
-    print(f"  Risk:      {item.get('riskLevel')} (score {item.get('riskScore')})")
+    print(f"  Risk:      {item.get('riskLevel')} (score {item.get('riskScore')}) - "
+          f"the weighted score is untouched; the hold comes from the explicit "
+          f"grounding floor, not from a score adjustment")
     print(f"  Reasons:   {', '.join(item.get('riskReasons') or []) or 'none'}")
-    if (item.get("riskScore") or 0.0) < real_threshold:
-        print(f"             (the score is the real signal - the scorer was never "
-              f"touched. The '{item.get('riskLevel')}' label and the hold come "
-              f"from the staged 0.0 threshold; in production only answers "
-              f"scoring >= {real_threshold} are held, so this one would return "
-              f"normally.)")
     print(f"  Sources:   {len(item.get('retrievedSources') or [])} retrieved chunks")
     print(f"  Draft (preview):\n    {preview}")
 
@@ -315,9 +349,10 @@ def main() -> int:
     PAUSE = not args.no_pause
 
     banner("Financial Document Intelligence Agent - governance walkthrough")
-    print("Three acts: a grounded answer and its governance report, a high-risk\n"
-          "answer held for human review, and eval_diff.py catching an induced\n"
-          "drift. Staged steps are labeled [staging] and reverted after use.")
+    print("Three acts: a grounded answer and its governance report, an ungrounded\n"
+          "answer held for human review under the normal policy, and eval_diff.py\n"
+          "catching an induced drift. Staged inputs are labeled [staging]; policy\n"
+          "thresholds are never modified.")
 
     if not (_REPO_ROOT / "chroma_db").exists():
         print("\nwarning: chroma_db/ not found - run `python ingest.py` first, "

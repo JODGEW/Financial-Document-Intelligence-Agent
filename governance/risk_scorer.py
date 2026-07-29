@@ -5,6 +5,25 @@ external context was used. Thresholds and signal weights load from
 ``policies/risk_thresholds.yaml`` at import. The fuller §7.6 input set (PII,
 retrieval confidence, document freshness, topic sensitivity) is deferred until
 the human review queue can act on it.
+
+Human review has two independent gates, each with its own explicit reason code:
+
+- the weighted gate: ``risk_score >= require_review_at_or_above``
+  (``risk_score_at_or_above_review_threshold``), and
+- the mandatory grounding floor: ``grounding_score`` strictly below
+  ``require_review_below_grounding`` (``grounding_below_review_floor``),
+  applied only when the answer presents an internal corpus answer
+  (``internal_answer_available``). A refusal or web-fallback answer has no
+  internal claims to ground — its grounding numbers are artifacts (e.g. a
+  ``.pdf`` token inside a web URL parses as an unmatched citation) — so the
+  floor does not judge it, matching how eval_runner nulls grounding metrics
+  for fallback cases.
+
+The floor exists because the weighted score cannot reach 0.75 without a
+guardrail signal (max non-blocked score is 0.5 + 0.2 = 0.70), so grounding
+failures need a direct policy gate. The gates only set
+``human_review_required`` and append reasons; the displayed risk score and
+level always reflect the weighted formula alone.
 """
 
 from __future__ import annotations
@@ -22,7 +41,12 @@ _DEFAULT_THRESHOLDS = {
     "auto_return_below": 0.50,
     "return_with_warning_below": 0.75,
     "require_review_at_or_above": 0.75,
+    "require_review_below_grounding": 0.50,
 }
+
+# Explicit reason codes for the two human-review gates (module docstring).
+REASON_RISK_AT_REVIEW_THRESHOLD = "risk_score_at_or_above_review_threshold"
+REASON_GROUNDING_BELOW_FLOOR = "grounding_below_review_floor"
 _DEFAULT_WEIGHTS = {
     "grounding_score_weight": 0.5,
     "guardrail_outcome_weight": 0.3,
@@ -77,8 +101,14 @@ def score(
     external_context_used: bool,
     thresholds: dict[str, float] | None = None,
     weights: dict[str, float] | None = None,
+    internal_answer_available: bool = True,
 ) -> dict[str, Any]:
-    """Combine the three v1 signals into a risk score, level, and reasons."""
+    """Combine the three v1 signals into a risk score, level, and reasons.
+
+    internal_answer_available scopes the mandatory grounding floor (module
+    docstring): False means the answer declared its internal corpus answer
+    unavailable, so there are no internal claims for the floor to judge.
+    """
     thresholds = thresholds or THRESHOLDS
     weights = weights or WEIGHTS
 
@@ -103,10 +133,22 @@ def score(
     if external_context_used:
         reasons.append("external_context_used")
 
+    # Two independent review gates. Each appends its own reason code; neither
+    # touches the weighted risk_score/risk_level above.
+    weighted_gate = risk_score >= thresholds["require_review_at_or_above"]
+    grounding_floor_gate = (
+        internal_answer_available
+        and grounding_score < thresholds["require_review_below_grounding"]
+    )
+    if weighted_gate:
+        reasons.append(REASON_RISK_AT_REVIEW_THRESHOLD)
+    if grounding_floor_gate:
+        reasons.append(REASON_GROUNDING_BELOW_FLOOR)
+
     risk_level = _risk_level(risk_score, thresholds)
     return {
         "risk_score": risk_score,
         "risk_level": risk_level,
         "risk_reasons": reasons,
-        "human_review_required": risk_score >= thresholds["require_review_at_or_above"],
+        "human_review_required": weighted_gate or grounding_floor_gate,
     }

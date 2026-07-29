@@ -322,11 +322,17 @@ def attach_full_chunk_content(sources: list, messages: list) -> list:
     return enriched
 
 
-def _held_review_notice(review_id: str, risk_level: str) -> str:
-    """User-facing message shown in place of a held draft answer (hold mode)."""
+def _held_review_notice(review_id: str, risk_level: str, risk_reasons: list) -> str:
+    """User-facing message shown in place of a held draft answer (hold mode).
+
+    Names the gate that held the answer: the hold can come from the mandatory
+    grounding floor while the weighted risk level is honestly low/medium, so
+    stating only the level would misdescribe the trigger.
+    """
+    reasons = ", ".join(risk_reasons) if risk_reasons else "policy"
     return (
-        f"This response is held for human review because {risk_level} risk was "
-        "flagged. A reviewer will assess it before release. "
+        f"This response is held for human review ({risk_level} risk; "
+        f"flagged: {reasons}). A reviewer will assess it before release. "
         f"Review ID: {review_id}."
     )
 
@@ -340,8 +346,8 @@ def _build_review_item(
 ) -> dict:
     """Shape a review queue item from the held answer and its risk signals.
 
-    riskReasons come from the scorer result here, not from the report (the report
-    carries riskScore/riskLevel only, per §9.3). reviewId is derived from auditId
+    riskReasons come from the scorer result; the governance report carries the
+    same list under risk.riskReasons. reviewId is derived from auditId
     for 1:1 traceability back to the audit record. wasWithheld snapshots the
     hold/flag mode in effect when the item was created; items written before this
     field lack the key and readers must treat that as null.
@@ -392,6 +398,10 @@ def _finalize_query_result(
         grounding_result["grounding_score"],
         guardrail_outcome,
         external_context_used(output),
+        # A refusal/web-fallback answer (internal corpus answer unavailable)
+        # has no internal claims to ground, so the mandatory grounding floor
+        # does not judge it. Same availability predicate as source display.
+        internal_answer_available=should_expose_retrieved_sources(output),
     )
 
     written_audit_id = None
@@ -443,7 +453,9 @@ def _finalize_query_result(
             audit_error = audit_error or str(exc)
         if config.HUMAN_REVIEW_HOLD:
             user_facing_output = _held_review_notice(
-                review_item["reviewId"], review_item["riskLevel"]
+                review_item["reviewId"],
+                review_item["riskLevel"],
+                review_item["riskReasons"]
             )
 
     return {

@@ -14,6 +14,15 @@ risk_thresholds:
   auto_return_below: 0.50          # risk < 0.50         -> low
   return_with_warning_below: 0.75  # 0.50 <= risk < 0.75 -> medium
   require_review_at_or_above: 0.75 # risk >= 0.75        -> high, human review
+  # Mandatory-review floor, separate from the weighted score above: an answer
+  # that PRESENTS an internal corpus answer and whose grounding_score is
+  # STRICTLY below this is held for human review even when its weighted risk
+  # score stays under require_review_at_or_above. The trigger is reported as
+  # the explicit reason grounding_below_review_floor; the displayed risk
+  # score/level are never adjusted to force the hold. Answers whose internal
+  # corpus answer is unavailable (refusals, web fallbacks) are not judged by
+  # the floor — they have no internal claims to ground.
+  require_review_below_grounding: 0.50
 
 signal_weights:
   grounding_score_weight: 0.5

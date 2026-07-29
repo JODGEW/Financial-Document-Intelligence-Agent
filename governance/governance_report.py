@@ -131,6 +131,7 @@ def build_report(
         risk_block = {
             "riskScore": 1.0,
             "riskLevel": "high",
+            "riskReasons": ["guardrail_blocked"],
             "humanReviewRequired": False,
         }
         decision = "blocked"
@@ -147,6 +148,7 @@ def build_report(
         risk_block = {
             "riskScore": risk.get("risk_score", 0.0),
             "riskLevel": risk_level,
+            "riskReasons": [str(reason) for reason in risk.get("risk_reasons", [])],
             "humanReviewRequired": human_review_required,
         }
         decision = _decision(guardrail_outcome, human_review_required, risk_level)

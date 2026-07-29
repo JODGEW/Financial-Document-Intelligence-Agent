@@ -38,6 +38,8 @@ export type GovernanceReport = {
   risk: {
     riskScore: number;
     riskLevel: string;
+    // Absent on reports written before the riskReasons field existed.
+    riskReasons?: string[];
     humanReviewRequired: boolean;
   };
   decision: string;
@@ -189,6 +191,18 @@ export function GovernanceReport({ report }: { report?: GovernanceReport | null 
                 </>
               )}
             </div>
+            {(report.risk.riskReasons ?? []).length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(report.risk.riskReasons ?? []).map((reason) => (
+                  <span
+                    key={reason}
+                    className="rounded-full border border-held/25 bg-held-bg px-2 py-0.5 text-[10px] font-medium text-held"
+                  >
+                    {reason}
+                  </span>
+                ))}
+              </div>
+            )}
           </Section>
 
           <Section title="Decision">

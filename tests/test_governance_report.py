@@ -50,9 +50,34 @@ def test_report_matches_section_structure_and_is_json_serializable():
         "citationCoverage", "groundingScore", "unsupportedClaims",
         "guardrailOutcome", "piiDetected",
     }
-    assert set(report["risk"]) == {"riskScore", "riskLevel", "humanReviewRequired"}
+    assert set(report["risk"]) == {
+        "riskScore", "riskLevel", "riskReasons", "humanReviewRequired",
+    }
     assert report["validation"]["citationCoverage"] == 0.9
     assert report["validation"]["unsupportedClaims"] == 1
+    assert report["risk"]["riskReasons"] == []
+
+
+def test_risk_reasons_pass_through_from_scorer_result():
+    """The scorer's risk_reasons list surfaces verbatim as risk.riskReasons."""
+    report = build_report(
+        audit_id="audit-r",
+        model="m",
+        retrieved_chunks=_CHUNKS,
+        response_text="Answer [policy.md].",
+        guardrail_outcome=None,
+        grounding_result=_GROUNDING,
+        risk_result={
+            **_RISK,
+            "risk_reasons": ["grounding_score_below_target", "grounding_below_review_floor"],
+            "human_review_required": True,
+        },
+    )
+    assert report["risk"]["riskReasons"] == [
+        "grounding_score_below_target",
+        "grounding_below_review_floor",
+    ]
+    assert report["decision"] == "held_for_review"
 
 
 def test_source_usage_counts_documents_and_external_bullets():
@@ -159,6 +184,7 @@ def test_blocked_answer_is_scored_categorically():
     assert report["validation"]["unsupportedClaims"] == 0
     assert report["risk"]["riskScore"] == 1.0
     assert report["risk"]["riskLevel"] == "high"
+    assert report["risk"]["riskReasons"] == ["guardrail_blocked"]
     assert report["risk"]["humanReviewRequired"] is False
     assert report["decision"] == "blocked"
     # contextPolicy is not N/A on a block: it reflects pre-block retrieval.
