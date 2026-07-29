@@ -458,10 +458,19 @@ def _finalize_query_result(
                 review_item["riskReasons"]
             )
 
+    # A withheld answer (hold-mode held_for_review) sends only the notice and
+    # allowed metadata: its evidence stays with the reviewer (queue item) and
+    # the audit record, matching the blocked case. Flag mode returns the draft,
+    # so its sources remain visible.
+    withheld = user_facing_output != output
     return {
         "output": user_facing_output,
         "messages": result_messages,
-        "sources": [] if guardrail_outcome == "blocked" else (sources if should_expose_retrieved_sources(output) else []),
+        "sources": (
+            []
+            if guardrail_outcome == "blocked" or withheld
+            else (sources if should_expose_retrieved_sources(output) else [])
+        ),
         "audit_id": written_audit_id,
         "audit_error": audit_error,
         "guardrail_outcome": guardrail_outcome,
@@ -472,9 +481,15 @@ def _finalize_query_result(
 def stream_query(question: str, chat_history: list | None = None) -> Iterator[dict]:
     """Stream a question through the agent as UI-friendly events.
 
-    The first model pass may contain tool-planning prose. We buffer visible text
-    until the final-answer marker appears so the UI streams the answer itself,
-    not intermediate tool planning.
+    Draft content is never released before the governance decision: model
+    output is buffered server-side while only ``status`` events stream, and the
+    answer text leaves this generator exactly once — a single ``replace`` event
+    emitted after ``_finalize_query_result`` has run grounding validation, risk
+    scoring, and decision routing. A held answer therefore streams only the
+    held notice, and a blocked answer only the block message; the draft exists
+    client-side only when the decision released it. (Previously tokens streamed
+    live during generation and the notice arrived as a trailing replacement,
+    which had already transmitted the withheld draft.)
     """
     admission = AdmissionSummary()
     # audit_id is pre-generated so the LangSmith trace (when LANGSMITH_TRACING is
@@ -503,6 +518,9 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
         stream_mode=["messages", "updates"],
     ):
         if mode == "messages":
+            # Buffer only. Draft text must not leave this generator before the
+            # governance decision; the marker is tracked purely to surface a
+            # "Composing answer..." status transition once drafting starts.
             chunk, _metadata = payload
             text = _stream_chunk_text(chunk)
             if not text:
@@ -510,7 +528,6 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
 
             if answer_started:
                 streamed_parts.append(text)
-                yield {"type": "token", "content": text}
                 continue
 
             pending_text += text
@@ -519,10 +536,8 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
                 marker_index = pending_text.lower().find("result summary")
             if marker_index != -1:
                 answer_started = True
-                visible_text = pending_text[marker_index:]
-                streamed_parts.append(visible_text)
+                streamed_parts.append(pending_text[marker_index:])
                 yield {"type": "status", "message": "Composing answer..."}
-                yield {"type": "token", "content": visible_text}
             continue
 
         if mode != "updates":
@@ -545,13 +560,6 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
     output = final_output or "".join(streamed_parts)
     guardrail_outcome = detect_guardrail_intervention(output, result_messages)
 
-    # A guardrail block (and any answer that never hits the "## Result Summary"
-    # marker) streams zero visible tokens above. Surface the final text once here
-    # so the UI shows the message instead of an endless "Preparing answer..."
-    # state. Normal answers set answer_started and skip this.
-    if not answer_started and output:
-        yield {"type": "replace", "content": output}
-
     if guardrail_outcome != "blocked" and should_run_external_fallback(question, output):
         yield {"type": "status", "message": "Searching external context..."}
         web_results = web_search.invoke(question, run_config)
@@ -565,8 +573,8 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
         )
         if updated_output != output:
             output = updated_output
-            yield {"type": "replace", "content": output}
 
+    yield {"type": "status", "message": "Validating answer against governance policy..."}
     result = _finalize_query_result(
         question=question,
         output=output,
@@ -577,13 +585,10 @@ def stream_query(question: str, chat_history: list | None = None) -> Iterator[di
         audit_id=audit_id,
     )
 
-    # A held answer in hold mode comes back from finalize with the user-facing
-    # text swapped for the held notice. The draft already streamed token by token
-    # (the marker was present, so answer_started is True and the block above did
-    # not fire), so replace it with the notice. The governance_report event below
-    # still carries decision=held_for_review.
-    if result["output"] != output:
-        yield {"type": "replace", "content": result["output"]}
+    # The single release point: whatever finalize decided the user may see —
+    # the draft for a returned answer, the held notice for a hold, the block
+    # message for a guardrail block. Nothing content-bearing was emitted above.
+    yield {"type": "replace", "content": result["output"]}
 
     yield {"type": "sources", "sources": result["sources"]}
     yield {"type": "audit_id", "audit_id": result["audit_id"]}

@@ -78,6 +78,8 @@ def test_finalize_holds_answer_and_enqueues_draft(monkeypatch, tmp_path):
     assert result["output"] != _UNGROUNDED_ANSWER
     assert "held for human review" in result["output"]
     assert "Review ID: review_" in result["output"]
+    # A withheld answer sends no evidence chunks; the reviewer gets them.
+    assert result["sources"] == []
 
     pending = review_queue.list_pending(tmp_path)
     assert len(pending) == 1
@@ -97,8 +99,9 @@ def test_finalize_flag_mode_returns_answer_but_still_enqueues(monkeypatch, tmp_p
     result = _finalize("What was revenue growth?", _UNGROUNDED_ANSWER)
 
     assert result["governance_report"]["decision"] == "held_for_review"
-    # Flag mode: the user still sees the real answer.
+    # Flag mode: the user still sees the real answer, sources included.
     assert result["output"] == _UNGROUNDED_ANSWER
+    assert len(result["sources"]) == 1
 
     pending = review_queue.list_pending(tmp_path)
     assert len(pending) == 1
