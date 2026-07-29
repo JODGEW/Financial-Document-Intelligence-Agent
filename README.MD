@@ -66,7 +66,10 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Gracefully handles missing Tavily API key (web search disabled, no crash)
 - [x] Thread-safe Chroma singleton for parallel tool calls
 - [x] Supports CLI, Gradio fallback, and React/TypeScript interfaces
-- [x] Streams staged status events while the answer is generated and validated, then releases the governance-decided answer in one update (drafts are never transmitted before the decision)
+- [x] Streams workflow status while the answer is generated and validated, then releases the buffered, governance-decided answer in one update (drafts and withheld source excerpts are never transmitted before the decision)
+- [x] Returns a safe, stable error contract from the chat API (`code` + generic message + opaque correlation id); full exception detail stays in the server log
+- [x] Fails startup explicitly when a governance policy YAML file is present but invalid; a missing policy file uses the documented built-in defaults
+- [x] Review-queue writes are atomic per file (temp file + fsync + rename) and race-safe within one process; the pending→terminal move is not a database transaction and the CLI racing the API from a second process is unprotected
 - [x] Caps Gradio chat history to prevent stale formatting from older turns
 - [x] Exposes retrieved chunk metadata in the React answer view
 - [x] Extracts PDF table text into retrievable chunks when PyMuPDF detects tables
@@ -74,9 +77,9 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Writes JSONL audit logs for queries, retrieved sources, and response traces
 - [x] Includes a deterministic evaluation runner for retrieval, citations, grounding, unsupported claims, routing, and latency
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
-- [x] Holds high-risk answers in a human review queue (hold or flag mode via `HUMAN_REVIEW_HOLD`) with a CLI approve/reject flow
+- [x] Holds answers that meet a mandatory-review policy condition in a human review queue — either weighted risk at/above the 0.75 threshold or grounding strictly below the 0.50 review floor, each with an explicit reason code (a low weighted-risk answer can still be held by the floor). Hold or flag mode via `HUMAN_REVIEW_HOLD`; resolved in the React reviewer workspace or the CLI (approve/reject with an optional note — no draft editing yet)
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 185 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses, evaluation metrics, governance reporting, context policy admission, runtime grounding validation, document change impact analysis, the human review queue and its API routes, and thread safety
+- [x] 252 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), and thread safety
 
 ## Best-fit use cases
 
@@ -230,7 +233,7 @@ Amazon Bedrock Guardrails are wired end-to-end. The policy ([policies/guardrails
 
 ## AI Governance Layer
 
-The project wraps the document agent in a governance layer. It controls what information enters the model, validates whether each answer is grounded in retrieved evidence, scores risk, and produces an audit-ready report for every answer. The report is visible in the API response, the React panel, and a one-line CLI summary, and the full record is written to the JSONL audit log.
+The project wraps the document agent in a governance layer. It controls what information enters the model, validates whether each answer is grounded in retrieved evidence, scores risk, and produces a governance report for every answer, persisted with the append-only JSONL audit record (a local file, not tamper-proof storage). The report is visible in the API response, the React panel, and a one-line CLI summary, and the full record is written to the JSONL audit log.
 
 The point is to make each answer defensible: you can see which chunks were admitted or dropped and why, how well the answer is grounded, what the risk decision was, and which past answers depend on a document that just changed.
 
@@ -238,10 +241,10 @@ Currently supports:
 
 - governance report per answer (audit ID, source usage, validation, risk, decision)
 - context policy admission with drop reasons and token budgets
-- runtime grounding validation (citation coverage, grounding score, unsupported claims)
+- runtime grounding validation — deterministic and lexical (citation-string matching plus numeric-token support), not semantic entailment (citation coverage, grounding score, unsupported numeric claims)
 - categorical block scoring (blocked answers report risk=high, validation=N/A)
-- document change impact analysis CLI (`scripts/document_impact.py`)
-- human review queue for high-risk answers: decision routing with a `held_for_review` outcome, hold or flag mode gated by `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`, and a reviewer workspace in the React UI over the `/api/reviews` routes
+- document change impact analysis CLI (`scripts/document_impact.py`) — same-document changed-chunk analysis against past answers; not a two-period filing comparison
+- human review queue with a reachable mandatory-review policy: `held_for_review` routing driven by the weighted 0.75 threshold or the 0.50 grounding floor (explicit reason codes in the report and queue item), hold or flag mode gated by `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`, and a reviewer workspace in the React UI over the `/api/reviews` routes
 - internal-first retrieval policy
 - external context separation
 - document version and chunk traceability
@@ -250,9 +253,7 @@ Currently supports:
 - deterministic evaluation for grounding, citations, routing, and drift (32-case dataset with a frozen baseline)
 - optional LangSmith run tracing, joined to the audit log by `audit_id`
 
-Planned extensions:
-
-- document-level permissions (Phase 6)
+Planned next: the financial filing comparison workflow (see the roadmap under "What would make this more production-like"). Document-level permissions — formerly "Phase 6" — are deferred until after the comparison workflow and basic authentication.
 
 The governance modules live in [governance/](governance/). The full design doc and phase-by-phase build log are kept as local working notes outside the public repo.
 
@@ -273,7 +274,7 @@ What it does:
 - records approve/reject decisions with an optional reviewer note behind a confirmation dialog
 - shows whether the answer was withheld before delivery (the `wasWithheld` snapshot; items written before that field existed read as "delivery state unknown")
 
-Deliberate limits: this is a local demo surface. There is no authentication and no reviewer identity, and approving a draft does not deliver it to the original requester; a decision only moves the item between queue files and stamps `reviewedAt` plus the note. The workspace banner states this.
+Deliberate limits: this is a local demo surface. There is no authentication, no reviewer identity, no assignment, and no SLA; the only actions are approve and reject with an optional note (no draft editing); approving a draft does not deliver it to the original requester — a decision only moves the item between queue files and stamps `reviewedAt` plus the note. Persistence is local JSONL: writes are atomic per file and race-safe within one process, but the pending→terminal move is not a transaction and a second process (e.g. the CLI racing the API) is unprotected. A clean clone starts with an empty queue; `python scripts/review_queue.py seed` creates demo items. The workspace banner states the auth limits.
 
 The API behind it:
 
@@ -374,7 +375,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 185 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API, eval, guardrails, governance, human review queue, thread safety)
+├── tests/           # 252 tests (ingest, per-format loaders, registry, PII, tools, agent, auditability, API + error sanitization, eval, guardrails, governance + policy validation, streaming, human review queue + atomicity + seed, thread safety)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -478,7 +479,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-185 tests, all passing. Run with:
+252 tests, all passing (the 12 in `test_agent.py` call live Bedrock and need credentials plus an ingested corpus; the other 240 run offline). Run with:
 
 ```bash
 python -m pytest tests/ -v
@@ -493,12 +494,18 @@ python -m pytest tests/ -v
 | `test_api.py` | 22 | Chat API returns answer metadata and audit id; governance report and contextPolicy section in the chat + streaming responses; streaming returns incremental NDJSON events; chat sources are corpus-relative (the absolute `source` path is dropped in both sync and stream paths); `SUPPORTED_DOC_SUFFIXES` derives from the loader registry and `/api/documents` lists every supported format; review routes: per-status listing with server-side ordering, cross-status detail, approve/reject with a persisted note, 404/409/422 handling, no absolute path anywhere in any response, audit join returns only `governance_report`, `wasWithheld` reads null on legacy items |
 | `test_eval_runner.py` | 13 | Eval dataset validation, retrieval hit rate, grounded answer rate, unsupported claim rate, citation accuracy and citation parsing (prose "page N" and bracket "p.N" forms), claim support past the excerpt cap via full chunk text, tool-routing accuracy, fallback workflow refusal scoring, latency summary |
 | `test_guardrails.py` | 10 | Bedrock-guardrail intervention detection (block message and stop_reason paths), guardrail-block eval scoring, policy ↔ provisioner constants alignment, eval-drift comparator (no-drift / metric move / case flip + latency) |
-| `test_governance_report.py` | 7 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
+| `test_governance_report.py` | 8 | Report structure and JSON serializability, source usage counts, decision routing across outcomes, block wins over human review in decision precedence, categorical scoring for blocked answers, contextPolicy section populated with deduped drop reasons, graceful defaults on missing inputs |
 | `test_review_queue.py` | 13 | enqueue writes a pending item with required fields, list_pending returns items / empty when absent, get by id or None, approve and reject move items between JSONL files, unknown-id no-op returns None, `list_items` filters by status with file-derived status tags (plus `all`, empty dir, and invalid-status ValueError), `get_any` finds items across all three files, CLI list/show/approve/reject smoke (text + json), CLI unknown-id exits 1 |
-| `test_agent_review.py` | 3 | finalize hold mode (answer replaced with the held notice, draft queued + auditable), flag mode (answer returned unchanged, item still enqueued), `wasWithheld` snapshots the hold/flag mode in effect when the item was created |
+| `test_agent_review.py` | 6 | Hold/flag/wasWithheld routing driven by a genuinely ungrounded draft through the real validator and scorer (no `score_risk` monkeypatching), grounded control stays returned with sources, refusal/web-fallback answers exempt from the grounding floor, end-to-end `query()` hold landing in the pending queue with matching reason codes |
 | `test_grounding_validator.py` | 5 | Runtime citation coverage and unsupported-claim rate match eval_runner on identical inputs (consistency contract), composite grounding score, empty-input handling, claims past the excerpt cap supported only through full chunk text |
-| `test_risk_scorer.py` | 4 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, human-review trigger |
+| `test_risk_scorer.py` | 7 | Weighted 3-signal score, threshold bucketing into low/medium/high, YAML threshold loading with default fallback, weighted-gate boundary at exactly 0.75, mandatory grounding-floor boundary (strictly below 0.50) with explicit reason codes, floor exemption for unavailable internal answers |
 | `test_context_policy.py` | 6 | YAML loading and default fallback, internal token-budget drop, low retrieval-score drop, expired-document drop (stale_document_version), draft-document drop (unapproved_document) |
+| `test_agent_stream.py` | 6 | Streaming leak prevention: held and mid-block streams emit no draft content in any event (secret-phrase proof) while the queue item preserves the draft, returned streams still deliver the answer with sources, no content-bearing event precedes the validation status, audit-write and enqueue failures warn with sanitized stable codes |
+| `test_api_errors.py` | 4 | Chat API error sanitization: streaming and sync failures return only the stable `code`/message/`error_id` contract (secret phrase, absolute path, and credential fragment never reach the client; full exception + correlation id in the server log), pre-first-event failure, explicit empty-message 400 preserved |
+| `test_policy_validation.py` | 26 | Governance policy fail-fast: shipped YAMLs load, missing-file default fallback, invalid syntax / empty file / list root / typo'd section / non-mapping section rejected, wrong types, booleans-as-numbers, NaN/infinity, out-of-range and mis-ordered thresholds, negative budgets, truthy-string booleans, empty policy id, unknown-key forward compatibility, error messages name the field without echoing the document |
+| `test_review_queue_atomic.py` | 11 | Atomic queue writes: exact-one-move with unrelated-item byte survival, barrier races (approve/reject and approve/approve) with one winner + one conflict, fsync/replace/serialization failure injection leaving originals byte-for-byte intact and temp files cleaned, the partial-move crash window + self-heal, legacy items resolvable, every line valid JSON |
+| `test_review_seed.py` | 6 | Demo seed: gitignore/.gitkeep expectations, fresh dir empty, seeded items carry current-policy reason codes with no absolute paths or guardrail artifacts, real approve/reject signatures, audit-id join, rerun refusal and `--reset` confinement, no policy/config mutation |
+| `test_dead_config_removed.py` | 7 | Dead-config absence + equivalence: removed flag/fields/threshold/keys are gone, PDF table extraction unaffected by the former env var, medium band derived from the two real thresholds, admission identical for all active controls, old YAMLs with removed keys still load |
 | `test_document_impact.py` | 10 | load_current_chunks filters by document_id, compute_new_chunks is pure (no Chroma write), diff added/removed/modified, audit-log scan match and no-match, report shape, end-to-end modified-doc flags a past query, CLI text + json exit 0, document-id-not-found edge |
 | `test_loaders_registry.py` | 6 | Built-in handlers registered, case-insensitive `handler_for`, unknown-extension returns None, register-overwrite idempotency, sorted `supported_extensions()`, PDF handler dispatch into `ingest._split_pdf` |
 | `test_pii_redaction.py` | 7 | Email/SSN/phone/card redaction with per-type counts, no-PII passthrough, global-flag override, tabular-flag scoping (tabular only), both-flags-off no-op, `None`-handler safety |
@@ -543,7 +550,7 @@ python scripts/eval_diff.py
 
 This runs the eval and compares against the baseline. It prints `No drift.` when every metric is within 5 percentage points and every workflow's latency is within 30%, otherwise it prints a focused diff (which metric moved, which `case_id` flipped pass/fail, which workflow's latency shifted). To refresh the baseline after an intentional improvement: `python scripts/eval_diff.py --update-baseline`.
 
-The current groundedness and unsupported-claim checks are deterministic and rule-based. They are intended as a stable first-pass evaluation layer, not as a replacement for human review or a larger LLM-judged eval set.
+The current groundedness and unsupported-claim checks are deterministic and lexical — citation-filename matching and numeric-token substring support. They do not perform semantic entailment: a fabricated non-numeric claim with a well-formed citation passes them. They are intended as a stable first-pass evaluation layer, not as a replacement for human review or a larger LLM-judged eval set.
 
 ---
 
@@ -637,10 +644,39 @@ Known limitations:
 * Web results are supplemental and need clear labeling
 * The evaluation pipeline is lightweight and rule-based; a larger benchmark set would be needed for production confidence
 * There are no production-grade approval workflows or document-level permissions in the current build
+* There is no authentication, reviewer identity, RBAC, assignment, or automatic delivery of approved answers; reviewer actions are approve/reject with an optional note (no draft editing)
+* The runtime grounding validator is deterministic and lexical (citation-string and numeric-token matching); it is not semantic entailment validation
+* There is no filing comparison capability yet: no persistent comparison job, filing previous/current relationship model, section alignment, structured change schema, or comparison precision/recall evaluation — the impact CLI analyzes changed chunks of the *same* document against past answers
+* There is no document-level duplicate detection or filing registry; stable chunk IDs make re-ingesting the same file idempotent, but the same filing saved under two names is indexed twice
+* The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
+* There is no retry, dead-letter queue, replay, workflow state machine, or durable failed-task handling; the audit log is an append-only local file, not immutable storage
 
 ---
 
 ## What would make this more production-like
+
+**Maturity, stated plainly: this is a Stage 2 governed prototype** — a working governed Q&A loop with evidence, validation, risk routing, and a local human-review surface. The next target is a **Stage 2.5 filing-comparison prototype**, and after that a **Stage 3 controlled review workflow**. Neither of those is achieved yet.
+
+### Next: the financial filing comparison workflow (current roadmap)
+
+The next implementation phase is a governed two-filing change review for one company, built in this order (each step depends on the ones before it):
+
+1. Comparison output schema (structured, versioned — defined before any UI)
+2. Durable filing identity: filing date, reporting period, and a previous/current relationship between two filings of the same company
+3. Persistent comparison entity (create, list, reopen across restarts)
+4. Item 1A (Risk Factors) section alignment between the two filings
+5. Structured changes: added / removed / modified / undetermined — never inferring "removed" from a retrieval miss
+6. Previous-filing and current-filing evidence attached to every change
+7. Comparison-specific deterministic validation (entity, period, direction checks with reason codes)
+8. Reachable review routing for comparison results (reusing the mandatory-review policy)
+9. Reviewer attribution, required decision reasons, and draft-edit support
+10. Approved-only structured export
+11. A labeled comparison dataset with precision/recall metrics and CI regression gates
+12. Then Stage-3.5 reliability and authentication work (state machine, retries, durable failure handling, auth)
+
+Explicitly deferred until after that path: document-level permissions (formerly "Phase 6", now sequenced after the comparison workflow and basic authentication), new document formats, OCR, rerankers and vector-store migration, further generic chat UI redesign, additional generic chat eval expansion, LLM-as-judge evaluation (needs the labeled comparison dataset first), NIST documentation expansion, and Gradio parity.
+
+### Foundations already in place
 
 Checked items are partially addressed in the current build. Unchecked items are logical next steps:
 
@@ -665,8 +701,8 @@ Checked items are partially addressed in the current build. Unchecked items are 
 * [x] Multi-format ingestion (10 formats / 14 extensions via FormatHandler registry: PDF/MD/TXT + DOCX/XLSX/HTML/CSV + PPTX/EML/JSON)
 * [x] Section-aware chunking for filings and manuals (markdown headers; SEC `PART`/`ITEM` boundaries for 10-Ks)
 * [x] Improved table extraction
-* [x] Document versioning
-* [x] Deduplication across repeated filings (stable content-hash chunk IDs + Chroma upsert)
+* [x] Document version metadata (per-chunk content hash + version hash; no filing registry, lineage model, or lifecycle management yet)
+* [x] Chunk-level idempotent re-ingestion (stable content-hash chunk IDs upsert instead of duplicating); no document-level duplicate detection — the same filing saved under two names is indexed twice
 * [x] Metadata filters by company, filing type, and year
 * [x] Document change impact analysis CLI (`scripts/document_impact.py`) — given a document change, reports which past queries used now-stale chunks via excerpt-fingerprint matching against the audit log
 
@@ -681,7 +717,7 @@ After changing document-handling code or adding new corpus files, rerun
 * [x] Runtime grounding validation (citation coverage, grounding score, unsupported claims)
 * [x] Human review queue for high-risk answers (hold or flag mode via `HUMAN_REVIEW_HOLD`, CLI approve/reject via `scripts/review_queue.py`)
 * [x] Stricter policy around when web research is allowed (agent prompt enforces local-first)
-* [x] Clearer confidence and uncertainty handling (agent states when data is unavailable or weak)
+* [~] Prompt-level uncertainty statements (the agent is instructed to state when data is unavailable or weak; no measured confidence signal is captured or validated)
 * [x] Better handling for low-signal retrieval results (agent refuses to substitute wrong company data)
 
 ### 5. Enterprise-oriented deployment path

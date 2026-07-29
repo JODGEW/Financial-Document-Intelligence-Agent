@@ -18,8 +18,11 @@ index it as a corpus document.
 
 The agent must refuse the following topic categories regardless of question
 phrasing. On a match, Bedrock blocks the response and returns a
-`GUARDRAIL_INTERVENED` stop reason. The agent surfaces this as a structured
-"blocked by policy" answer to the user with the matched policy id.
+`GUARDRAIL_INTERVENED` stop reason. The agent surfaces Bedrock's configured
+block message to the user and records `guardrail_outcome="blocked"` in the
+audit record and governance report. (The specific matched topic id is not
+currently extracted or surfaced by the application — reviewers see the block
+outcome, not which category fired.)
 
 | ID | Topic | Definition |
 | --- | --- | --- |
