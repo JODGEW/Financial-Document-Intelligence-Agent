@@ -21,6 +21,14 @@ Examples:
 
     # JSON for piping.
     python scripts/review_queue.py list --output json
+
+    # Seed local demo data: one pending, one approved, one rejected item,
+    # generated through the real validation -> hold -> resolve pipeline under
+    # the shipped policy (no thresholds touched, no model call). Refuses to
+    # touch a non-empty queue unless --reset is given; --reset deletes only
+    # the three queue JSONL files under the queue directory.
+    python scripts/review_queue.py seed
+    python scripts/review_queue.py seed --reset
 """
 
 from __future__ import annotations
@@ -124,6 +132,134 @@ def _resolve(args, action) -> int:
     return 0
 
 
+# Demo seed cases. Each draft is deliberately ungrounded (fabricated numbers,
+# citation to a file that was never retrieved) so the real grounding validator
+# and risk scorer hold it via the mandatory grounding floor under the shipped
+# policy. Evidence excerpts use corpus-relative paths only - seeded records
+# must never carry a developer's absolute filesystem paths.
+_SEED_TOOL_CONTENT = (
+    "[Source 1: docs/acme-corp-10k-excerpt-2025.pdf, page 2]\n"
+    "Total revenue was $284.7 million, an increase of 18 percent over fiscal 2024."
+)
+
+_SEED_CASES = (
+    {
+        "question": "What did Acme report for security remediation costs in fiscal 2025?",
+        "draft": (
+            "## Result Summary\n\n"
+            "Internal Corpus Answer: Available. Acme Corporation reported "
+            "$512 million in security remediation costs for fiscal 2025 "
+            "[acme-shadow-report.pdf p.8].\n\n"
+            "External Context: Unavailable."
+        ),
+        "resolution": None,
+        "note": None,
+    },
+    {
+        "question": "How fast did Acme's cybersecurity spending grow year over year?",
+        "draft": (
+            "## Result Summary\n\n"
+            "Internal Corpus Answer: Available. Cybersecurity spending grew 63% "
+            "year over year while peer incidents fell sharply "
+            "[acme-shadow-report.pdf p.8].\n\n"
+            "External Context: Unavailable."
+        ),
+        "resolution": "approve",
+        "note": "Demo seed: reviewed for the walkthrough and approved.",
+    },
+    {
+        "question": "What share of Acme revenue came from its largest customer?",
+        "draft": (
+            "## Result Summary\n\n"
+            "Internal Corpus Answer: Available. The largest customer accounted "
+            "for 47% of total revenue [acme-shadow-report.pdf p.8].\n\n"
+            "External Context: Unavailable."
+        ),
+        "resolution": "reject",
+        "note": "Demo seed: numbers are not present in the retrieved evidence.",
+    },
+)
+
+_QUEUE_FILES = (
+    review_queue.PENDING_FILE,
+    review_queue.APPROVED_FILE,
+    review_queue.REJECTED_FILE,
+)
+
+
+def _cmd_seed(args) -> int:
+    """Seed one pending, one approved, and one rejected demo item.
+
+    Every item runs through the real pipeline: grounding validation, risk
+    scoring, decision routing, queue enqueue, and (for the terminal two) the
+    real approve/reject functions - so risk labels, reason codes, and audit
+    records come from the currently loaded policy, never from a snapshot.
+    Refuses to touch a non-empty queue without --reset; --reset removes only
+    the three queue JSONL files under the queue directory.
+    """
+    queue_dir = Path(args.queue_dir)
+    existing = len(review_queue.list_items(queue_dir, "all"))
+    if existing and not args.reset:
+        print(
+            f"Queue at {queue_dir} already holds {existing} item(s). "
+            "Rerun with --reset to replace them."
+        )
+        return 1
+    if args.reset:
+        for name in _QUEUE_FILES:
+            try:
+                (queue_dir / name).unlink()
+            except FileNotFoundError:
+                pass
+
+    # Heavy import kept out of list/show; no model call happens - finalize is
+    # validation + scoring + routing + persistence only.
+    from agent import _finalize_query_result
+
+    messages = [
+        {"type": "tool", "name": "local_search", "content": _SEED_TOOL_CONTENT}
+    ]
+    previous_queue_dir = config.REVIEW_QUEUE_DIR
+    config.REVIEW_QUEUE_DIR = str(queue_dir)
+    created: list[tuple[str, str]] = []
+    try:
+        for case in _SEED_CASES:
+            result = _finalize_query_result(
+                question=case["question"],
+                output=case["draft"],
+                result_messages=messages,
+                trace_messages=messages,
+                guardrail_outcome=None,
+            )
+            report = result.get("governance_report") or {}
+            if report.get("decision") != "held_for_review":
+                print(
+                    "Seed draft was not held for review under the current "
+                    f"policy (decision: {report.get('decision')!r}); aborting."
+                )
+                return 1
+            review_id = f"review_{report.get('auditId')}"
+            status = "pending"
+            if case["resolution"] == "approve":
+                review_queue.approve(review_id, queue_dir, note=case["note"])
+                status = "approved"
+            elif case["resolution"] == "reject":
+                review_queue.reject(review_id, queue_dir, note=case["note"])
+                status = "rejected"
+            created.append((review_id, status))
+    finally:
+        config.REVIEW_QUEUE_DIR = previous_queue_dir
+
+    print(f"Seeded {len(created)} demo review item(s) in {queue_dir}:")
+    for review_id, status in created:
+        print(f"  {status:8s} {review_id}")
+    print(
+        "Matching audit records were written to the local audit log, so the "
+        "reviewer UI's governance-report join works for these items."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Human review queue for held answers")
     common = argparse.ArgumentParser(add_help=False)
@@ -149,6 +285,16 @@ def main(argv: list[str] | None = None) -> int:
     reject_p.add_argument("--review-id", required=True)
     reject_p.add_argument("--note", default=None, help="Optional reviewer note")
 
+    seed_p = sub.add_parser(
+        "seed", parents=[common], help="Seed local demo review items"
+    )
+    seed_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="Replace existing queue files (deletes only the three queue "
+        "JSONL files under the queue directory).",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "list":
@@ -159,6 +305,8 @@ def main(argv: list[str] | None = None) -> int:
         return _resolve(args, review_queue.approve)
     if args.command == "reject":
         return _resolve(args, review_queue.reject)
+    if args.command == "seed":
+        return _cmd_seed(args)
     return 1
 
 

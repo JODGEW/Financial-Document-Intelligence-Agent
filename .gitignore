@@ -4,6 +4,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 chroma_db/
+# Review queue JSONL files are mutable runtime state (like audit_logs/): a
+# clean clone starts with an empty queue. The directory itself is kept via
+# review_queue/.gitkeep; seed local demo data with
+# `python scripts/review_queue.py seed`.
+review_queue/*.jsonl
 .DS_Store
 WALKTHROUGH.md
 .gradio/

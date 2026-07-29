@@ -24,7 +24,8 @@ Staging is explicit: the script prints what it substitutes before each act (the
 ungrounded draft in Act 2, the perturbed baseline copy in Act 3). Policy is
 never touched: thresholds, weights, and the hold mode all run at their shipped
 values. The one persistent side effect is intentional: Act 2 writes a real item
-into review_queue/. Reset with: git checkout -- review_queue/
+into review_queue/ (gitignored runtime state). Reset or rebuild local demo
+queue data with: python scripts/review_queue.py seed --reset
 
 Requirements: AWS credentials for Bedrock (same as cli.py) and an ingested
 corpus (python ingest.py) for Acts 1-2. Act 3 in default mode needs neither.
@@ -373,8 +374,9 @@ def main() -> int:
         return 1
 
     banner("Done")
-    print("Cleanup: Act 2 appended a real item to review_queue/ (tracked files).\n"
-          "Reset with: git checkout -- review_queue/")
+    print("Cleanup: Act 2 appended a real item to review_queue/ (gitignored\n"
+          "runtime state). Reset or rebuild local demo queue data with:\n"
+          "  python scripts/review_queue.py seed --reset")
     return 0
 
 
