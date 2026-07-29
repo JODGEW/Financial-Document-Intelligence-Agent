@@ -198,10 +198,92 @@ CREATE TABLE IF NOT EXISTS comparison_review_items (
                            REFERENCES comparison_governance_evaluations (evaluation_id),
     comparison_result_hash TEXT NOT NULL,
     governed_result_hash   TEXT NOT NULL,
-    status                 TEXT NOT NULL CHECK (status IN ('pending')),
+    status                 TEXT NOT NULL
+                           CHECK (status IN ('pending', 'approved', 'rejected')),
+    terminal_event_id      TEXT REFERENCES comparison_review_events (event_id),
+    decided_at             TEXT,
     created_at             TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS comparison_review_events (
+    -- Append-only decision history: no update or delete path exists in this
+    -- codebase. These are application records, NOT tamper-proof audit
+    -- storage — anyone with file access can alter a local SQLite database.
+    event_id                      TEXT PRIMARY KEY NOT NULL,  -- rev_evt_<sha[:16]>
+    review_id                     TEXT NOT NULL
+                                  REFERENCES comparison_review_items (review_id),
+    comparison_id                 TEXT NOT NULL
+                                  REFERENCES comparisons (comparison_id),
+    evaluation_id                 TEXT NOT NULL
+                                  REFERENCES comparison_governance_evaluations (evaluation_id),
+    action                        TEXT NOT NULL
+                                  CHECK (action IN ('approved', 'rejected')),
+    reviewer_id                   TEXT NOT NULL,  -- self-asserted local id, NOT authenticated
+    reason_code                   TEXT NOT NULL,  -- allowlisted stable code
+    reviewer_note                 TEXT NOT NULL,  -- bounded reviewer prose
+    request_hash                  TEXT NOT NULL,  -- canonical request, for idempotent replay
+    original_governed_result_hash TEXT NOT NULL,
+    final_reviewed_result_hash    TEXT NOT NULL,
+    reviewed_result_json          TEXT NOT NULL,  -- complete final comparison.v1 snapshot
+    edit_summary_json             TEXT,           -- JSON array of change_id/original/new summaries
+    created_at                    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_events_terminal
+    ON comparison_review_events (review_id);
 """
+
+
+def _migrate_review_items_vocabulary(db_path: Path) -> None:
+    """Rebuild comparison_review_items if its CHECK predates decisions.
+
+    Idempotent, same pattern as the comparisons status migration: only a
+    database whose stored DDL lacks 'approved' is rebuilt (pending-only
+    schema); existing pending rows are preserved with NULL terminal fields.
+    Plain connection (no FK pragma) so the rebuild is unconstrained.
+    """
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='comparison_review_items'"
+        ).fetchone()
+        if row is None or "'approved'" in (row[0] or ""):
+            return
+        with conn:
+            conn.execute(
+                "ALTER TABLE comparison_review_items "
+                "RENAME TO comparison_review_items_migrating"
+            )
+            conn.execute(
+                """
+                CREATE TABLE comparison_review_items (
+                    review_id              TEXT PRIMARY KEY NOT NULL,
+                    comparison_id          TEXT NOT NULL
+                                           REFERENCES comparisons (comparison_id),
+                    evaluation_id          TEXT NOT NULL UNIQUE
+                                           REFERENCES comparison_governance_evaluations (evaluation_id),
+                    comparison_result_hash TEXT NOT NULL,
+                    governed_result_hash   TEXT NOT NULL,
+                    status                 TEXT NOT NULL
+                                           CHECK (status IN ('pending', 'approved', 'rejected')),
+                    terminal_event_id      TEXT REFERENCES comparison_review_events (event_id),
+                    decided_at             TEXT,
+                    created_at             TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO comparison_review_items ("
+                "    review_id, comparison_id, evaluation_id,"
+                "    comparison_result_hash, governed_result_hash, status,"
+                "    terminal_event_id, decided_at, created_at"
+                ") SELECT review_id, comparison_id, evaluation_id,"
+                "    comparison_result_hash, governed_result_hash, status,"
+                "    NULL, NULL, created_at "
+                "FROM comparison_review_items_migrating"
+            )
+            conn.execute("DROP TABLE comparison_review_items_migrating")
 
 
 def _migrate_status_vocabulary(db_path: Path) -> None:
@@ -246,9 +328,10 @@ def _connect(db_path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(db_path: str | Path | None = None) -> None:
-    """Create tables/indexes and run the status-vocabulary migration. Idempotent."""
+    """Create tables/indexes and run the idempotent migrations."""
     db_path = Path(db_path or config.COMPARISON_DB_PATH)
     _migrate_status_vocabulary(db_path)
+    _migrate_review_items_vocabulary(db_path)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
 
@@ -764,6 +847,156 @@ def list_comparison_reviews(
         item["reason_codes"] = json.loads(item["reason_codes"])
         items.append(item)
     return items
+
+
+class ReviewAlreadyDecided(Exception):
+    """The review already has a terminal decision from a DIFFERENT request.
+
+    A byte-equivalent replay is handled idempotently before this is raised.
+    """
+
+    def __init__(self, review_id: str, status: str):
+        super().__init__(f"review is already {status}")
+        self.review_id = review_id
+        self.status = status
+
+
+def get_review_item(
+    review_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Fetch one comparison review item by id (any status), or None."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_review_items WHERE review_id = ?",
+            (review_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _event_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    record = dict(row)
+    record["reviewed_result"] = json.loads(record.pop("reviewed_result_json"))
+    record["edits"] = (
+        json.loads(record.pop("edit_summary_json"))
+        if record.get("edit_summary_json")
+        else []
+    )
+    record.pop("edit_summary_json", None)
+    return record
+
+
+def list_review_events(
+    review_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Append-only events for one review, oldest first (currently 0 or 1)."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_review_events WHERE review_id = ? "
+            "ORDER BY created_at, event_id",
+            (review_id,),
+        ).fetchall()
+    return [_event_row_to_record(row) for row in rows]
+
+
+def decide_review(
+    review_id: str,
+    *,
+    event_id: str,
+    action: str,
+    reviewer_id: str,
+    reason_code: str,
+    reviewer_note: str,
+    request_hash: str,
+    original_governed_result_hash: str,
+    final_reviewed_result_hash: str,
+    reviewed_result_json: str,
+    edit_summary_json: str | None,
+    db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Record one terminal decision: append the event and transition the item.
+
+    One BEGIN IMMEDIATE transaction covers the pending check, the append-only
+    event insert, and the item transition, so concurrent decisions serialize:
+    exactly one wins; a loser whose request is byte-equivalent (same
+    request_hash) gets the stored event back with created=False; any other
+    loser gets ReviewAlreadyDecided. There is no update or delete path for
+    events — decisions are never overwritten.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            item = conn.execute(
+                "SELECT * FROM comparison_review_items WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+            if item is None:
+                raise ComparisonLifecycleError(
+                    review_id, "absent", f"unknown review item {review_id!r}"
+                )
+            if item["status"] != "pending":
+                existing = conn.execute(
+                    "SELECT * FROM comparison_review_events WHERE review_id = ?",
+                    (review_id,),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["request_hash"] == request_hash
+                ):
+                    record = _event_row_to_record(existing)
+                    conn.execute("COMMIT")
+                    return record, False
+                raise ReviewAlreadyDecided(review_id, item["status"])
+
+            conn.execute(
+                """
+                INSERT INTO comparison_review_events (
+                    event_id, review_id, comparison_id, evaluation_id,
+                    action, reviewer_id, reason_code, reviewer_note,
+                    request_hash, original_governed_result_hash,
+                    final_reviewed_result_hash, reviewed_result_json,
+                    edit_summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    review_id,
+                    item["comparison_id"],
+                    item["evaluation_id"],
+                    action,
+                    reviewer_id,
+                    reason_code,
+                    reviewer_note,
+                    request_hash,
+                    original_governed_result_hash,
+                    final_reviewed_result_hash,
+                    reviewed_result_json,
+                    edit_summary_json,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE comparison_review_items SET status = ?, "
+                "terminal_event_id = ?, decided_at = ? "
+                "WHERE review_id = ? AND status = 'pending'",
+                (action, event_id, now, review_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM comparison_review_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return _event_row_to_record(row), True
 
 
 def mark_failed(

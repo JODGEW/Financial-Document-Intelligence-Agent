@@ -18,6 +18,7 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from agent import detect_guardrail_intervention, query, stream_query
 import comparison_detector
 import comparison_governance
+import comparison_review
 import comparison_store
 import config
 from governance import review_queue
@@ -246,6 +247,78 @@ class ComparisonReviewSummaryDTO(BaseModel):
     riskLevel: str
     reasonCodes: list[str]
     createdAt: str
+
+
+class ComparisonReviewEditRequest(BaseModel):
+    """One requested summary edit, addressed by change_id. Nothing else about
+    a change is editable."""
+
+    changeId: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class ComparisonReviewDecisionRequest(BaseModel):
+    """Body for the terminal comparison-review decision.
+
+    reviewerId is a SELF-ASSERTED local identifier (email-like string, local
+    username, test id) — it is recorded as attribution metadata and is NOT
+    authenticated identity. reasonCode must come from the action's allowlist;
+    reviewerNote is required, bounded prose.
+    """
+
+    action: Literal["approved", "rejected"]
+    reviewerId: str = Field(min_length=1)
+    reasonCode: str = Field(min_length=1)
+    reviewerNote: str = Field(min_length=1)
+    edits: list[ComparisonReviewEditRequest] | None = None
+
+
+class ComparisonReviewEventDTO(BaseModel):
+    """One append-only review decision event. Allowlisted fields."""
+
+    eventId: str
+    reviewId: str
+    comparisonId: str
+    evaluationId: str
+    action: Literal["approved", "rejected"]
+    reviewerId: str
+    reasonCode: str
+    reviewerNote: str
+    originalGovernedResultHash: str
+    finalReviewedResultHash: str
+    editedChangeIds: list[str]
+    createdAt: str
+
+
+class ComparisonReviewDecisionDTO(ComparisonReviewEventDTO):
+    """The terminal decision with the complete final reviewed comparison.v1
+    snapshot (the sanctioned wire contract, as with governed results)."""
+
+    reviewedResult: dict
+
+
+class ComparisonReviewDecisionResponse(BaseModel):
+    created: bool
+    decision: ComparisonReviewDecisionDTO
+
+
+class ComparisonReviewDetailDTO(BaseModel):
+    """Full review item: linkage, status, governance metadata, the governed
+    result, and the terminal decision when one exists."""
+
+    reviewId: str
+    comparisonId: str
+    evaluationId: str
+    status: Literal["pending", "approved", "rejected"]
+    riskScore: float
+    riskLevel: str
+    reasonCodes: list[str]
+    comparisonResultHash: str
+    governedResultHash: str
+    createdAt: str
+    decidedAt: str | None = None
+    governedResult: dict
+    decision: ComparisonReviewDecisionDTO | None = None
 
 
 class ComparisonDetectResponse(BaseModel):
@@ -812,6 +885,139 @@ def list_comparison_reviews(
         )
         for item in items
     ]
+
+
+def _to_review_event_dto(event: dict, with_result: bool) -> ComparisonReviewDecisionDTO | ComparisonReviewEventDTO:
+    """Map a stored decision event onto the allowlist, field by field."""
+    fields = dict(
+        eventId=event.get("event_id", ""),
+        reviewId=event.get("review_id", ""),
+        comparisonId=event.get("comparison_id", ""),
+        evaluationId=event.get("evaluation_id", ""),
+        action=event.get("action", "approved"),
+        reviewerId=event.get("reviewer_id", ""),
+        reasonCode=event.get("reason_code", ""),
+        reviewerNote=event.get("reviewer_note", ""),
+        originalGovernedResultHash=event.get("original_governed_result_hash", ""),
+        finalReviewedResultHash=event.get("final_reviewed_result_hash", ""),
+        editedChangeIds=[
+            edit.get("change_id", "") for edit in event.get("edits") or []
+        ],
+        createdAt=event.get("created_at", ""),
+    )
+    if with_result:
+        return ComparisonReviewDecisionDTO(
+            **fields, reviewedResult=event.get("reviewed_result") or {}
+        )
+    return ComparisonReviewEventDTO(**fields)
+
+
+@app.get(
+    "/api/comparison-reviews/{review_id}",
+    response_model=ComparisonReviewDetailDTO,
+)
+def get_comparison_review(review_id: str) -> ComparisonReviewDetailDTO:
+    """One review item with governance metadata, the governed result, and the
+    terminal decision (with final reviewed snapshot) when present."""
+    try:
+        item = comparison_store.get_review_item(review_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Review item not found.")
+        evaluation = comparison_store.get_evaluation(item["evaluation_id"])
+        events = comparison_store.list_review_events(review_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    decision = None
+    if item.get("terminal_event_id") and events:
+        decision = _to_review_event_dto(events[-1], with_result=True)
+    return ComparisonReviewDetailDTO(
+        reviewId=item.get("review_id", ""),
+        comparisonId=item.get("comparison_id", ""),
+        evaluationId=item.get("evaluation_id", ""),
+        status=item.get("status", "pending"),
+        riskScore=(evaluation or {}).get("risk_score", 0.0),
+        riskLevel=(evaluation or {}).get("risk_level", ""),
+        reasonCodes=list((evaluation or {}).get("reason_codes") or []),
+        comparisonResultHash=item.get("comparison_result_hash", ""),
+        governedResultHash=item.get("governed_result_hash", ""),
+        createdAt=item.get("created_at", ""),
+        decidedAt=item.get("decided_at"),
+        governedResult=(evaluation or {}).get("governed_result") or {},
+        decision=decision,
+    )
+
+
+@app.post(
+    "/api/comparison-reviews/{review_id}/decision",
+    response_model=ComparisonReviewDecisionResponse,
+)
+def decide_comparison_review(
+    review_id: str, request: ComparisonReviewDecisionRequest, response: Response
+) -> ComparisonReviewDecisionResponse:
+    """Apply the single terminal decision to a pending comparison review.
+
+    201 new decision; 200 byte-equivalent idempotent replay; 404 unknown
+    review; 409 already decided by a different request; 422 invalid reviewer /
+    reason / action-edit combination / unsupported edit; safe 500 otherwise.
+    """
+    try:
+        event, created = comparison_review.decide(
+            review_id,
+            action=request.action,
+            reviewer_id=request.reviewerId,
+            reason_code=request.reasonCode,
+            reviewer_note=request.reviewerNote,
+            edits=[
+                {"change_id": edit.changeId, "summary": edit.summary}
+                for edit in (request.edits or [])
+            ]
+            or None,
+        )
+    except comparison_review.ReviewNotFound:
+        raise HTTPException(status_code=404, detail="Review item not found.")
+    except comparison_store.ReviewAlreadyDecided as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "review_already_decided",
+                "message": f"review is already {exc.status} by a different "
+                "request; decisions are never overwritten",
+            },
+        ) from exc
+    except comparison_review.ReviewDecisionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return ComparisonReviewDecisionResponse(
+        created=created,
+        decision=_to_review_event_dto(event, with_result=True),
+    )
+
+
+@app.get(
+    "/api/comparison-reviews/{review_id}/events",
+    response_model=list[ComparisonReviewEventDTO],
+)
+def list_comparison_review_events(review_id: str) -> list[ComparisonReviewEventDTO]:
+    """Append-only decision history, oldest first (currently 0 or 1 terminal
+    event; the list shape leaves room for future non-terminal events)."""
+    try:
+        if comparison_store.get_review_item(review_id) is None:
+            raise HTTPException(status_code=404, detail="Review item not found.")
+        events = comparison_store.list_review_events(review_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_review_event_dto(event, with_result=False) for event in events]
 
 
 @app.get("/api/comparisons/{comparison_id}/result")
