@@ -349,3 +349,49 @@ def test_list_filters_by_filing_id_and_status(tmp_path, db):
     ready = list_comparisons(db_path=db, status=STATUS_READY_FOR_DETECTION)
     assert len(ready) == 2
     assert list_comparisons(db_path=db, status="failed") == []
+
+
+def test_status_vocabulary_migration_is_idempotent(tmp_path):
+    """A database created by the pre-detector schema (CHECK without
+    'detected') migrates in place, keeps its rows, and migrates only once."""
+    db = tmp_path / "old.db"
+    old_ddl = """
+    CREATE TABLE comparisons (
+        comparison_id       TEXT PRIMARY KEY,
+        schema_version      TEXT NOT NULL,
+        workflow_version    TEXT NOT NULL,
+        previous_filing_id  TEXT NOT NULL,
+        current_filing_id   TEXT NOT NULL,
+        section_scope       TEXT NOT NULL,
+        status              TEXT NOT NULL
+                            CHECK (status IN ('ready_for_detection', 'failed')),
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        failure_code        TEXT,
+        failure_summary     TEXT
+    )
+    """
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(old_ddl)
+        conn.execute(
+            "INSERT INTO comparisons VALUES ('cmp_old', 'comparison.v1', "
+            "'comparison_workflow.v1', 'p', 'c', '[\"item_1a_risk_factors\"]', "
+            "'ready_for_detection', 't0', 't0', NULL, NULL)"
+        )
+
+    for _ in range(2):  # idempotent
+        init_db(db)
+
+    with closing(sqlite3.connect(db)) as conn:
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='comparisons'"
+        ).fetchone()[0]
+        assert "'detected'" in ddl
+        rows = conn.execute("SELECT comparison_id, status FROM comparisons").fetchall()
+        assert rows == [("cmp_old", "ready_for_detection")]
+        # The new state is accepted post-migration.
+        with conn:
+            conn.execute(
+                "UPDATE comparisons SET status='detected' WHERE comparison_id='cmp_old'"
+            )
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

@@ -82,8 +82,9 @@ from governance.comparison_schema import (
 WORKFLOW_VERSION = "comparison_workflow.v1"
 
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
+STATUS_DETECTED = "detected"
 STATUS_FAILED = "failed"
-COMPARISON_STATUSES = (STATUS_READY_FOR_DETECTION, STATUS_FAILED)
+COMPARISON_STATUSES = (STATUS_READY_FOR_DETECTION, STATUS_DETECTED, STATUS_FAILED)
 
 # Section keys the v1 comparison workflow can actually target. The schema
 # itself accepts any non-empty key; this is the workflow capability set.
@@ -103,6 +104,19 @@ REASON_EMPTY_SCOPE = "empty_section_scope"
 REASON_UNSUPPORTED_SCOPE = "unsupported_section_scope"
 
 
+class ComparisonResultExists(Exception):
+    """A detection result is already stored; results are never overwritten."""
+
+
+class ComparisonLifecycleError(Exception):
+    """The comparison is not in a state that allows the requested transition."""
+
+    def __init__(self, comparison_id: str, status: str, message: str):
+        super().__init__(message)
+        self.comparison_id = comparison_id
+        self.status = status
+
+
 class ComparisonPairError(ValueError):
     """The requested filing pair is not eligible for a v1 comparison.
 
@@ -117,7 +131,7 @@ class ComparisonPairError(ValueError):
         self.detail = detail
 
 
-_SCHEMA_SQL = """
+_COMPARISONS_DDL = """
 CREATE TABLE IF NOT EXISTS comparisons (
     comparison_id       TEXT PRIMARY KEY,
     schema_version      TEXT NOT NULL,
@@ -126,19 +140,61 @@ CREATE TABLE IF NOT EXISTS comparisons (
     current_filing_id   TEXT NOT NULL,
     section_scope       TEXT NOT NULL,  -- JSON array, normalized (sorted, deduped)
     status              TEXT NOT NULL
-                        CHECK (status IN ('ready_for_detection', 'failed')),
+                        CHECK (status IN ('ready_for_detection', 'detected', 'failed')),
     created_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
     updated_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
-    failure_code        TEXT,           -- reserved: future detection failures
-    failure_summary     TEXT            -- reserved: safe one-line summary only
-);
+    failure_code        TEXT,           -- stable code when status='failed'
+    failure_summary     TEXT            -- safe one-line summary only
+)
+"""
+
+_SCHEMA_SQL = f"""
+{_COMPARISONS_DDL};
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comparisons_logical_key
     ON comparisons (
         schema_version, workflow_version,
         previous_filing_id, current_filing_id, section_scope
     );
 CREATE INDEX IF NOT EXISTS idx_comparisons_status ON comparisons (status);
+CREATE TABLE IF NOT EXISTS comparison_results (
+    comparison_id        TEXT PRIMARY KEY
+                         REFERENCES comparisons (comparison_id),
+    schema_version       TEXT NOT NULL,
+    detector_version     TEXT NOT NULL,
+    previous_source_hash TEXT NOT NULL,  -- registry source_hash at detect time
+    current_source_hash  TEXT NOT NULL,  -- registry source_hash at detect time
+    result_json          TEXT NOT NULL,  -- canonical comparison.v1 wire document
+    result_hash          TEXT NOT NULL,  -- sha256 over the timestamp-independent form
+    created_at           TEXT NOT NULL
+);
 """
+
+
+def _migrate_status_vocabulary(db_path: Path) -> None:
+    """Rebuild the comparisons table if its CHECK predates 'detected'.
+
+    Idempotent: inspects the stored DDL and only rebuilds a database created
+    by the pre-detector schema (whose CHECK listed only ready_for_detection
+    and failed — SQLite cannot ALTER a CHECK in place). Runs on a plain
+    connection (no foreign_keys pragma) so the rebuild is unconstrained; the
+    old schema had no child tables.
+    """
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='comparisons'"
+        ).fetchone()
+        if row is None or "'detected'" in (row[0] or ""):
+            return
+        with conn:
+            conn.execute("ALTER TABLE comparisons RENAME TO comparisons_migrating")
+            conn.execute(_COMPARISONS_DDL)
+            conn.execute(
+                "INSERT INTO comparisons SELECT * FROM comparisons_migrating"
+            )
+            conn.execute("DROP TABLE comparisons_migrating")
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
@@ -156,8 +212,9 @@ def _connect(db_path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(db_path: str | Path | None = None) -> None:
-    """Create the comparisons table and indexes. Idempotent."""
-    db_path = db_path or config.COMPARISON_DB_PATH
+    """Create tables/indexes and run the status-vocabulary migration. Idempotent."""
+    db_path = Path(db_path or config.COMPARISON_DB_PATH)
+    _migrate_status_vocabulary(db_path)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
 
@@ -402,3 +459,129 @@ def list_comparisons(
     with closing(_connect(db_path)) as conn:
         rows = conn.execute(query, params).fetchall()
     return [_row_to_record(row) for row in rows]
+
+
+# --- Detection results and lifecycle transitions -----------------------------
+
+
+def record_result(
+    comparison_id: str,
+    *,
+    result_json: str,
+    result_hash: str,
+    detector_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    db_path: str | Path | None = None,
+) -> None:
+    """Persist a detection result and transition the comparison to detected.
+
+    One BEGIN IMMEDIATE transaction covers the lifecycle check, the result
+    insert, and the status update, so concurrent detections serialize: the
+    loser observes the winner's committed result and gets
+    ComparisonResultExists (results are never overwritten). A comparison that
+    is not ready_for_detection raises ComparisonLifecycleError.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None  # manual transaction control
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT status FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if row is None:
+                raise ComparisonLifecycleError(
+                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                )
+            existing = conn.execute(
+                "SELECT 1 FROM comparison_results WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if existing is not None:
+                raise ComparisonResultExists(comparison_id)
+            if row["status"] != STATUS_READY_FOR_DETECTION:
+                raise ComparisonLifecycleError(
+                    comparison_id,
+                    row["status"],
+                    f"comparison is {row['status']}, not ready_for_detection",
+                )
+            conn.execute(
+                """
+                INSERT INTO comparison_results (
+                    comparison_id, schema_version, detector_version,
+                    previous_source_hash, current_source_hash,
+                    result_json, result_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comparison_id,
+                    COMPARISON_SCHEMA_VERSION,
+                    detector_version,
+                    previous_source_hash,
+                    current_source_hash,
+                    result_json,
+                    result_hash,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (STATUS_DETECTED, now, comparison_id, STATUS_READY_FOR_DETECTION),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def get_result(
+    comparison_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Fetch the stored detection result, or None. ``result`` is the parsed
+    comparison.v1 wire document; hashes/versions ride alongside for staleness
+    checks."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_results WHERE comparison_id = ?",
+            (comparison_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    stored = dict(row)
+    stored["result"] = json.loads(stored.pop("result_json"))
+    return stored
+
+
+def mark_failed(
+    comparison_id: str,
+    failure_code: str,
+    failure_summary: str,
+    db_path: str | Path | None = None,
+) -> bool:
+    """Transition ready_for_detection -> failed with a stable code + safe
+    summary. Returns False (and changes nothing) when the comparison is not
+    in ready_for_detection — a detected result is never clobbered."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn, conn:
+        cursor = conn.execute(
+            "UPDATE comparisons SET status = ?, failure_code = ?, "
+            "failure_summary = ?, updated_at = ? "
+            "WHERE comparison_id = ? AND status = ?",
+            (
+                STATUS_FAILED,
+                failure_code,
+                failure_summary[:200],
+                _utc_now_iso(),
+                comparison_id,
+                STATUS_READY_FOR_DETECTION,
+            ),
+        )
+        return cursor.rowcount == 1

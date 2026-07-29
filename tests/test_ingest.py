@@ -327,3 +327,66 @@ def test_build_source_metadata_manifest_entry_supplies_filing_identity(tmp_path)
     assert metadata["year"] == 2025  # from period_end, not the filename
     assert metadata["period_end"] == "2025-12-31"
     assert metadata["filing_date"] == "2026-02-19"
+
+
+def test_section_key_for_recognizes_item_1a_variants():
+    """Canonical Item 1A mapping over heading text, incl. common variants."""
+    from ingest import SECTION_KEY_ITEM_1A, section_key_for
+
+    for title in (
+        "ITEM 1A. RISK FACTORS",
+        "Item 1A – Risk Factors",
+        "ITEM 1A: RISK FACTORS",
+        "Item 1A Risk Factors",
+        "PART I > Item 1A. Risk Factors",
+        "ITEM 1A.  RISK FACTORS AND UNCERTAINTIES",
+    ):
+        assert section_key_for(title) == SECTION_KEY_ITEM_1A, title
+
+    # Not Item 1A headings — and never body text (the mapper only ever sees
+    # splitter-produced section titles, but reject lookalikes anyway).
+    for title in (
+        None,
+        "",
+        "ITEM 1. BUSINESS",
+        "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS",
+        "Risk Factors discussed in this research note",
+        "ITEM 1B. UNRESOLVED STAFF COMMENTS",
+    ):
+        assert section_key_for(title) is None, title
+
+
+def test_split_stamps_chunk_seq_and_section_key(tmp_path):
+    """Chunks get a deterministic per-source sequence; Item 1A chunks get the
+    canonical section_key; other sections and generic docs get none."""
+    from langchain_core.documents import Document
+
+    page = Document(
+        page_content=(
+            "ITEM 1. BUSINESS\nWe make things.\n"
+            "ITEM 1A. RISK FACTORS\nWe face risks including cyber incidents.\n"
+        ),
+        metadata={"source": "/repo/acme.pdf", "page": 0},
+    )
+    chunks = split_documents([page])
+
+    assert [c.metadata["chunk_seq"] for c in chunks] == list(range(len(chunks)))
+    risk_chunks = [c for c in chunks if "cyber incidents" in c.page_content]
+    assert risk_chunks
+    assert all(
+        c.metadata.get("section_key") == "item_1a_risk_factors" for c in risk_chunks
+    )
+    business_chunks = [c for c in chunks if "make things" in c.page_content]
+    assert business_chunks
+    assert all("section_key" not in c.metadata for c in business_chunks)
+
+    # Generic documents: chunk_seq only, never a section key.
+    generic = Document(
+        page_content="This policy mentions risk factors in passing. " * 10,
+        metadata={"source": "/repo/policy.txt"},
+    )
+    generic_chunks = split_documents([generic])
+    assert all("section_key" not in c.metadata for c in generic_chunks)
+    assert [c.metadata["chunk_seq"] for c in generic_chunks] == list(
+        range(len(generic_chunks))
+    )

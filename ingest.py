@@ -572,8 +572,42 @@ def _split_pdf(pages: list[Document]) -> list[Document]:
     return chunks
 
 
+# Canonical section keys (comparison roadmap step 4). Deliberately only Item
+# 1A: the mapping runs over splitter-produced section HEADINGS (section_title),
+# never over body text, so an arbitrary "risk factors" phrase inside a
+# paragraph can never classify a chunk. Variants covered: "ITEM 1A. RISK
+# FACTORS", "Item 1A – Risk Factors", "ITEM 1A: RISK FACTORS", "Item 1A Risk
+# Factors", markdown-derived titles like "Part I > Item 1A. Risk Factors".
+SECTION_KEY_ITEM_1A = "item_1a_risk_factors"
+_ITEM_1A_TITLE_RE = re.compile(
+    r"\bITEM\s+1A\b[\s.:–—-]*RISK\s+FACTORS\b", re.IGNORECASE
+)
+
+
+def section_key_for(section_title: str | None) -> str | None:
+    """Map a splitter-produced section title to its canonical section key.
+
+    Returns None for everything that is not a recognized Item 1A heading —
+    no broader SEC-section taxonomy exists yet on purpose.
+    """
+    if not section_title:
+        return None
+    if _ITEM_1A_TITLE_RE.search(section_title):
+        return SECTION_KEY_ITEM_1A
+    return None
+
+
 def split_documents(documents: list[Document]) -> list[Document]:
-    """Registry-driven splitter dispatch by file extension."""
+    """Registry-driven splitter dispatch by file extension.
+
+    Post-split, every chunk is stamped with two comparison-critical fields:
+    ``chunk_seq`` — the chunk's position in this source's split output, so a
+    section can be reconstructed in reading order after an unordered metadata
+    ``get`` from Chroma — and ``section_key`` (canonical key derived from
+    section_title via section_key_for) where one applies. Both are flat
+    scalars (Chroma requirement). Documents without recognized sections are
+    unaffected apart from chunk_seq.
+    """
     by_source: dict[str, list[Document]] = {}
     for doc in documents:
         by_source.setdefault(doc.metadata.get("source", ""), []).append(doc)
@@ -585,9 +619,15 @@ def split_documents(documents: list[Document]) -> list[Document]:
         ext = Path(source).suffix.lower()
         handler = handler_for(ext)
         if handler is not None and handler.splitter is not None:
-            chunks.extend(handler.splitter(source_docs))
+            source_chunks = handler.splitter(source_docs)
         else:
-            chunks.extend(fallback.split_documents(source_docs))
+            source_chunks = fallback.split_documents(source_docs)
+        for seq, chunk in enumerate(source_chunks):
+            chunk.metadata["chunk_seq"] = seq
+            section_key = section_key_for(chunk.metadata.get("section_title"))
+            if section_key:
+                chunk.metadata["section_key"] = section_key
+        chunks.extend(source_chunks)
 
     print(f"  Split into {len(chunks)} chunks")
     return chunks
@@ -651,8 +691,12 @@ def run():
     print("Splitting...")
     chunks = split_documents(documents)
 
+    # Count post-dedupe so registry chunk_count equals what the index will
+    # actually hold — the detector's section-completeness gate compares the
+    # two (embed_and_persist re-dedupes; the operation is idempotent).
+    unique_chunks, _ = _dedupe_by_id(chunks)
     counts: dict[str, int] = {}
-    for chunk in chunks:
+    for chunk in unique_chunks:
         rel_path = chunk.metadata.get("source_path")
         if rel_path:
             counts[rel_path] = counts.get(rel_path, 0) + 1

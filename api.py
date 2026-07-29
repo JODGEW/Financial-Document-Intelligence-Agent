@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent import detect_guardrail_intervention, query, stream_query
+import comparison_detector
 import comparison_store
 import config
 from governance import review_queue
@@ -188,7 +189,7 @@ class ComparisonRecordDTO(BaseModel):
     previousFilingId: str
     currentFilingId: str
     sectionScope: list[str]
-    status: Literal["ready_for_detection", "failed"]
+    status: Literal["ready_for_detection", "detected", "failed"]
     createdAt: str
     updatedAt: str
     failureCode: str | None = None
@@ -200,6 +201,19 @@ class ComparisonCreateResponse(BaseModel):
 
     created: bool
     comparison: ComparisonRecordDTO
+
+
+class ComparisonDetectResponse(BaseModel):
+    """POST /api/comparisons/{id}/detect response.
+
+    ``result`` is the validated comparison.v1 wire document exactly as
+    persisted (the schema contract IS the API shape for detection results —
+    it contains filing ids, section keys, chunk ids, and excerpts, never
+    absolute paths or storage detail).
+    """
+
+    created: bool
+    result: dict
 
 
 app = FastAPI(title="Financial Document Intelligence API")
@@ -573,7 +587,7 @@ def create_comparison(
 @app.get("/api/comparisons", response_model=list[ComparisonRecordDTO])
 def list_comparisons(
     filing_id: str | None = None,
-    status: Literal["ready_for_detection", "failed"] | None = None,
+    status: Literal["ready_for_detection", "detected", "failed"] | None = None,
 ) -> list[ComparisonRecordDTO]:
     """List comparisons, newest first. Minimal stable filters only:
     filing_id matches either side of the pair; status matches exactly."""
@@ -596,6 +610,78 @@ def get_comparison(comparison_id: str) -> ComparisonRecordDTO:
     if record is None:
         raise HTTPException(status_code=404, detail="Comparison not found.")
     return _to_comparison_dto(record)
+
+
+@app.post(
+    "/api/comparisons/{comparison_id}/detect",
+    response_model=ComparisonDetectResponse,
+)
+def detect_comparison(
+    comparison_id: str, response: Response
+) -> ComparisonDetectResponse:
+    """Run deterministic Item 1A change detection for a persisted comparison.
+
+    201 + created=true for a newly persisted result; 200 + created=false when
+    the same detector version already produced a result for the same source
+    hashes; 404 unknown comparison; 409 for lifecycle violations or stale
+    inputs; 422 when the filing pair no longer validates against the
+    registry; safe 500 with a correlation id for unexpected faults.
+    """
+    try:
+        result, created = comparison_detector.detect(comparison_id)
+    except comparison_detector.UnknownComparison:
+        raise HTTPException(status_code=404, detail="Comparison not found.")
+    except (
+        comparison_detector.DetectionNotReady,
+        comparison_detector.DetectionInputsStale,
+    ) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except comparison_store.ComparisonPairError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_comparison_pair",
+                "reasons": exc.reasons,
+                "message": exc.detail,
+            },
+        ) from exc
+    except comparison_detector.DetectionInternalError as exc:
+        error_id = _new_error_id()
+        logger.exception("Comparison detection failed (error_id=%s)", error_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": exc.code,
+                "message": "Detection failed unexpectedly. Please try again.",
+                "error_id": error_id,
+            },
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return ComparisonDetectResponse(created=created, result=result)
+
+
+@app.get("/api/comparisons/{comparison_id}/result")
+def get_comparison_result(comparison_id: str) -> dict:
+    """Return the persisted, validated comparison.v1 wire document.
+
+    404 when the comparison does not exist or has no detection result yet.
+    """
+    try:
+        stored = comparison_store.get_result(comparison_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No detection result exists for this comparison.",
+        )
+    return stored["result"]
 
 
 @app.post("/api/chat", response_model=ChatResponse)
