@@ -11,12 +11,13 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent import detect_guardrail_intervention, query, stream_query
 import comparison_detector
+import comparison_export
 import comparison_governance
 import comparison_review
 import comparison_store
@@ -319,6 +320,49 @@ class ComparisonReviewDetailDTO(BaseModel):
     decidedAt: str | None = None
     governedResult: dict
     decision: ComparisonReviewDecisionDTO | None = None
+
+
+class ComparisonExportCreateRequest(BaseModel):
+    """Body for creating an export. The evaluation id is the ONLY input.
+
+    Eligibility is resolved server-side from persisted records: the client
+    cannot submit a decision, review status, reviewer identity, result JSON,
+    result hashes, policy identity, or release basis — unknown fields are
+    rejected (422), not ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    evaluationId: str = Field(min_length=1)
+
+
+class ComparisonExportSummaryDTO(BaseModel):
+    """One export row for list views. The field set is an allowlist:
+    identity, linkage, basis, and hashes only — no comparison evidence, no
+    exported payload, no reviewer note."""
+
+    exportId: str
+    exportSchemaVersion: str
+    comparisonId: str
+    evaluationId: str
+    reviewId: str | None = None
+    releaseBasis: Literal[
+        "returned_by_policy",
+        "returned_with_warning_by_policy",
+        "approved_after_review",
+    ]
+    sourceResultHash: str
+    finalResultHash: str
+    exportPayloadHash: str
+    createdAt: str
+
+
+class ComparisonExportCreateResponse(BaseModel):
+    """POST exports response: the persisted comparison.export.v1 document
+    (verbatim, as with detection results) plus the idempotency outcome."""
+
+    created: bool
+    export: dict
 
 
 class ComparisonDetectResponse(BaseModel):
@@ -1036,6 +1080,98 @@ def get_comparison_result(comparison_id: str) -> dict:
             detail="No detection result exists for this comparison.",
         )
     return stored["result"]
+
+
+def _to_export_summary_dto(record: dict) -> ComparisonExportSummaryDTO:
+    """Map a stored export row onto the summary allowlist, field by field.
+
+    Deliberately payload-free: no comparison evidence and no reviewer note
+    ever appear in list responses.
+    """
+    return ComparisonExportSummaryDTO(
+        exportId=record.get("export_id", ""),
+        exportSchemaVersion=record.get("export_schema_version", ""),
+        comparisonId=record.get("comparison_id", ""),
+        evaluationId=record.get("evaluation_id", ""),
+        reviewId=record.get("review_id"),
+        releaseBasis=record.get("release_basis", "returned_by_policy"),
+        sourceResultHash=record.get("source_result_hash", ""),
+        finalResultHash=record.get("final_result_hash", ""),
+        exportPayloadHash=record.get("export_payload_hash", ""),
+        createdAt=record.get("created_at", ""),
+    )
+
+
+@app.post(
+    "/api/comparisons/{comparison_id}/exports",
+    response_model=ComparisonExportCreateResponse,
+)
+def create_comparison_export(
+    comparison_id: str, request: ComparisonExportCreateRequest, response: Response
+) -> ComparisonExportCreateResponse:
+    """Create (or idempotently return) the release-gated export for one
+    governance evaluation.
+
+    201 + created=true for a newly persisted export; 200 + created=false for
+    the idempotent replay (the ORIGINAL payload and exported_at are returned);
+    404 unknown comparison or evaluation; 409 with a stable reason code when
+    the persisted workflow state does not permit release (pending or rejected
+    review, stale hashes, mismatched linkage, blocked); safe 500 with a
+    correlation id for unexpected storage failures.
+    """
+    try:
+        record, created = comparison_export.export_comparison(
+            comparison_id, request.evaluationId.strip()
+        )
+    except comparison_export.ExportNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except comparison_export.ExportNotEligible as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return ComparisonExportCreateResponse(created=created, export=record["export"])
+
+
+@app.get(
+    "/api/comparisons/{comparison_id}/exports",
+    response_model=list[ComparisonExportSummaryDTO],
+)
+def list_comparison_exports(comparison_id: str) -> list[ComparisonExportSummaryDTO]:
+    """Export summaries for one comparison, newest first; 404 when the
+    comparison does not exist. Summaries only — the full artifact is served
+    by GET /api/comparison-exports/{export_id}."""
+    try:
+        if comparison_store.get_comparison(comparison_id) is None:
+            raise HTTPException(status_code=404, detail="Comparison not found.")
+        records = comparison_export.list_exports(comparison_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_export_summary_dto(record) for record in records]
+
+
+@app.get("/api/comparison-exports/{export_id}")
+def get_comparison_export(export_id: str) -> dict:
+    """Return the persisted comparison.export.v1 document verbatim
+    (application/json) — that schema IS the API contract for exports. 404
+    when no export with this id exists. No file is generated and no
+    filesystem path is exposed."""
+    try:
+        record = comparison_export.get_export(export_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Export not found.")
+    return record["export"]
 
 
 @app.post("/api/chat", response_model=ChatResponse)

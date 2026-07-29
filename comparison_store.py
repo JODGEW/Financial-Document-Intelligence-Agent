@@ -229,6 +229,32 @@ CREATE TABLE IF NOT EXISTS comparison_review_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_events_terminal
     ON comparison_review_events (review_id);
+CREATE TABLE IF NOT EXISTS comparison_exports (
+    -- Release-gated export artifacts: one row per (evaluation, released
+    -- snapshot hash, export schema version). Deterministic application
+    -- records, NOT signed or tamper-proof storage. Rows are never updated
+    -- or deleted; a replay reads the stored payload back verbatim.
+    export_id             TEXT PRIMARY KEY NOT NULL,  -- exp_<sha256[:16]>
+    export_schema_version TEXT NOT NULL,
+    comparison_id         TEXT NOT NULL
+                          REFERENCES comparisons (comparison_id),
+    evaluation_id         TEXT NOT NULL
+                          REFERENCES comparison_governance_evaluations (evaluation_id),
+    review_id             TEXT REFERENCES comparison_review_items (review_id),
+    release_basis         TEXT NOT NULL
+                          CHECK (release_basis IN (
+                              'returned_by_policy',
+                              'returned_with_warning_by_policy',
+                              'approved_after_review'
+                          )),
+    source_result_hash    TEXT NOT NULL,  -- the evaluation's governed hash
+    final_result_hash     TEXT NOT NULL,  -- hash of the released snapshot
+    export_payload_json   TEXT NOT NULL,  -- canonical comparison.export.v1 document
+    export_payload_hash   TEXT NOT NULL,  -- sha256 over the timestamp-independent form
+    created_at            TEXT NOT NULL   -- timezone-aware UTC ISO 8601
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_comparison_exports_logical_key
+    ON comparison_exports (evaluation_id, final_result_hash, export_schema_version);
 """
 
 
@@ -1025,3 +1051,108 @@ def mark_failed(
             ),
         )
         return cursor.rowcount == 1
+
+
+# --- Release-gated export artifacts ------------------------------------------
+
+
+def _export_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    record = dict(row)
+    record["export"] = json.loads(record.pop("export_payload_json"))
+    return record
+
+
+def record_export(
+    *,
+    export_id: str,
+    export_schema_version: str,
+    comparison_id: str,
+    evaluation_id: str,
+    review_id: str | None,
+    release_basis: str,
+    source_result_hash: str,
+    final_result_hash: str,
+    export_payload_json: str,
+    export_payload_hash: str,
+    db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Persist (or idempotently return) one release-gated export artifact.
+
+    One BEGIN IMMEDIATE transaction covers the conditional insert and the
+    read-back, so concurrent identical exports serialize: exactly one insert
+    wins and every caller reads back the SAME stored row — including its
+    original payload and created_at, which a replay must return unchanged.
+    Detector results, governance evaluations, review items, and events are
+    never touched. Returns (stored_export, created).
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO comparison_exports (
+                    export_id, export_schema_version, comparison_id,
+                    evaluation_id, review_id, release_basis,
+                    source_result_hash, final_result_hash,
+                    export_payload_json, export_payload_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    export_id,
+                    export_schema_version,
+                    comparison_id,
+                    evaluation_id,
+                    review_id,
+                    release_basis,
+                    source_result_hash,
+                    final_result_hash,
+                    export_payload_json,
+                    export_payload_hash,
+                    now,
+                ),
+            )
+            created = cursor.rowcount == 1
+            row = conn.execute(
+                "SELECT * FROM comparison_exports WHERE export_id = ?",
+                (export_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return _export_row_to_record(row), created
+
+
+def get_export(
+    export_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Fetch one stored export artifact by id, or None."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_exports WHERE export_id = ?",
+            (export_id,),
+        ).fetchone()
+    return _export_row_to_record(row) if row else None
+
+
+def list_exports(
+    comparison_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Every stored export for a comparison, newest first. Full records —
+    the API layer maps list responses onto a payload-free summary allowlist."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_exports WHERE comparison_id = ? "
+            "ORDER BY created_at DESC, export_id",
+            (comparison_id,),
+        ).fetchall()
+    return [_export_row_to_record(row) for row in rows]
