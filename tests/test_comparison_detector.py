@@ -448,15 +448,36 @@ def test_implemented_checks_populated_accurately(corpus, db):
         assert checks["period_consistency"]["status"] == "passed"
 
 
-def test_unimplemented_checks_are_not_run(corpus, db):
-    """Test 15: unimplemented validators are not_run, never silently passed."""
+def test_all_six_checks_are_implemented_or_not_applicable(corpus, db):
+    """No broad not_run remains: the three content validators now compute a
+    real status with a version and reason code on every change."""
     _record, result, _ = _detected(corpus, db)
     for change in result["changes"]:
         checks = {c["check"]: c for c in change["validation"]}
-        for name in ("citation_support", "numeric_consistency", "direction_consistency"):
-            assert checks[name]["status"] == "not_run"
-            assert checks[name]["reason_code"] == "validator_not_implemented"
-            assert checks[name]["validator_version"] is None
+        assert len(checks) == 6
+        assert all(c["status"] != "not_run" for c in checks.values())
+
+        assert checks["citation_support"]["status"] == "passed"
+        assert checks["citation_support"]["reason_code"] == "citation_summary_supported"
+        assert checks["citation_support"]["validator_version"] == "citation_support.v1"
+
+        # Deterministic summaries carry no numeric claims -> not_applicable,
+        # never a hollow "passed".
+        assert checks["numeric_consistency"]["status"] == "not_applicable"
+        assert checks["numeric_consistency"]["reason_code"] == "no_numeric_claim"
+        assert (
+            checks["numeric_consistency"]["validator_version"]
+            == "numeric_consistency.v1"
+        )
+
+        direction = checks["direction_consistency"]
+        assert direction["validator_version"] == "direction_consistency.v1"
+        if change["change_type"] in ("added", "removed"):
+            assert direction["status"] == "passed"
+            assert direction["reason_code"] == "direction_supported"
+        else:  # modified summaries make no increase/decrease/unchanged claim
+            assert direction["status"] == "not_applicable"
+            assert direction["reason_code"] == "no_directional_claim"
 
 
 def test_validation_summary_risk_and_review(corpus, db):
@@ -464,12 +485,15 @@ def test_validation_summary_risk_and_review(corpus, db):
     placeholders."""
     _record, result, _ = _detected(corpus, db)
     summary = result["validation_summary"]
+    # 5 changes x 6 checks: base three passed (15) + citation passed (5) +
+    # numeric not_applicable (5) + direction passed on added/removed (2) and
+    # not_applicable on the three modified changes.
     assert summary == {
         "total_checks": 30,
-        "passed": 15,
+        "passed": 22,
         "failed": 0,
-        "not_run": 15,
-        "not_applicable": 0,
+        "not_run": 0,
+        "not_applicable": 8,
     }
     assert result["risk"] == {
         "decision": "not_evaluated",
@@ -644,6 +668,38 @@ def test_detector_failure_transitions_to_failed(corpus, db, monkeypatch):
             registry_path=corpus.registry,
             chroma_client=corpus.chroma,
         )
+
+
+def test_old_version_result_superseded_not_stale_and_still_readable(corpus, db):
+    """A result stored by an older detector version: GET keeps serving it,
+    re-detection raises the SUPERSEDED code (not comparison_inputs_stale —
+    source hashes did not change), and nothing is overwritten."""
+    record, result, _ = _detected(corpus, db)
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(
+            "UPDATE comparison_results SET detector_version = 'item1a_detector.v1' "
+            "WHERE comparison_id = ?",
+            (record["comparison_id"],),
+        )
+
+    stored = comparison_store.get_result(record["comparison_id"], db_path=db)
+    assert stored["result"] == result  # old-version output remains readable
+
+    with pytest.raises(
+        comparison_detector.DetectionVersionSuperseded
+    ) as excinfo:
+        detect(
+            record["comparison_id"],
+            db_path=db,
+            registry_path=corpus.registry,
+            chroma_client=corpus.chroma,
+        )
+    assert excinfo.value.code == "detector_version_superseded"
+    assert "item1a_detector.v1" in str(excinfo.value)
+
+    after = comparison_store.get_result(record["comparison_id"], db_path=db)
+    assert after["detector_version"] == "item1a_detector.v1"  # untouched
+    assert after["result"] == result
 
 
 # --- API surface (tests 25-27) -----------------------------------------------

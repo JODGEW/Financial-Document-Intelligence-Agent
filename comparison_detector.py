@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 import comparison_store
+import comparison_validators
 import config
 import filing_registry
 from governance.comparison_schema import (
@@ -59,7 +60,13 @@ from governance.comparison_schema import (
 )
 from ingest import SECTION_KEY_ITEM_1A
 
-DETECTOR_VERSION = "item1a_detector.v1"
+# v2: the three previously not_run checks (citation_support,
+# numeric_consistency, direction_consistency) are now computed by
+# comparison_validators, which changes persisted validation output. Results
+# stored under v1 remain readable; re-detection of the same pair happens as a
+# NEW comparison under the bumped workflow version (comparison_store), never
+# by overwriting the v1 result.
+DETECTOR_VERSION = "item1a_detector.v2"
 
 # Stable reason codes. Section/data codes appear as the prefix of a change's
 # undetermined_reason; lifecycle codes surface through typed errors -> API.
@@ -71,6 +78,7 @@ REASON_SECTION_UNIT_PARSE_FAILED = "section_unit_parse_failed"
 REASON_AMBIGUOUS_UNIT_ALIGNMENT = "ambiguous_unit_alignment"
 REASON_EVIDENCE_RESOLUTION_FAILED = "evidence_resolution_failed"
 REASON_INPUTS_STALE = "comparison_inputs_stale"
+REASON_VERSION_SUPERSEDED = "detector_version_superseded"
 REASON_DETECTOR_INTERNAL_ERROR = "detector_internal_error"
 
 # Conservative risk-factor heading rule for v1: a standalone title-case line
@@ -88,11 +96,6 @@ _MAX_OVERLAP = 300
 _PREAMBLE_KEY = "item-1a-preamble"
 _PREAMBLE_HEADING = "Item 1A introductory text"
 
-_NOT_IMPLEMENTED_CHECKS = (
-    "citation_support",
-    "numeric_consistency",
-    "direction_consistency",
-)
 
 
 class DetectionError(Exception):
@@ -114,7 +117,18 @@ class DetectionNotReady(DetectionError):
 
 
 class DetectionInputsStale(DetectionError):
-    """A stored result exists but its inputs no longer match (API: 409)."""
+    """A stored result exists but its SOURCE INPUTS changed (API: 409)."""
+
+
+class DetectionVersionSuperseded(DetectionError):
+    """A stored result exists from an older detector version (API: 409).
+
+    Deliberately distinct from DetectionInputsStale: a validator/detector
+    version change is not an input source-hash change. The old result stays
+    readable via GET; re-detection of the pair requires creating the
+    comparison again under the current workflow version (which mints a new
+    comparison id) — the stored result is never overwritten.
+    """
 
 
 class DetectionInternalError(DetectionError):
@@ -568,16 +582,9 @@ def _validation_checks(
             )
         )
 
-    for name in _NOT_IMPLEMENTED_CHECKS:
-        checks.append(
-            _check(
-                name,
-                "not_run",
-                f"The {name} validator is not implemented in "
-                f"{DETECTOR_VERSION}.",
-                reason_code="validator_not_implemented",
-            )
-        )
+    # citation_support / numeric_consistency / direction_consistency are
+    # appended by detect_changes via comparison_validators.validate_change —
+    # they need the resolved chunk texts, which only the section loads hold.
     return checks
 
 
@@ -654,6 +661,36 @@ def _section_unavailable_changes(
     ]
 
 
+def _finalize_changes(
+    changes: list[dict[str, Any]],
+    previous_load: SectionLoad,
+    current_load: SectionLoad,
+    previous_filing_id: str,
+    current_filing_id: str,
+) -> list[dict[str, Any]]:
+    """Append the three content validators to every change.
+
+    The resolver maps chunk ids to the already loaded section chunks — the
+    same indexed chunks the evidence was built from, so citation/numeric
+    checks verify against full chunk text (stored excerpts are 700-char
+    capped and would false-fail headings that sit past the cap).
+    """
+    chunk_index = {
+        chunk.chunk_id: {"text": chunk.text, "filing_id": chunk.filing_id}
+        for chunk in previous_load.chunks + current_load.chunks
+    }
+    for change in changes:
+        change["validation"].extend(
+            comparison_validators.validate_change(
+                change,
+                resolve=chunk_index.get,
+                previous_filing_id=previous_filing_id,
+                current_filing_id=current_filing_id,
+            )
+        )
+    return changes
+
+
 def detect_changes(
     previous_load: SectionLoad,
     current_load: SectionLoad,
@@ -665,23 +702,29 @@ def detect_changes(
         previous_load, current_load, previous_filing_id, current_filing_id
     )
     if unavailable is not None:
-        return unavailable
+        return _finalize_changes(
+            unavailable, previous_load, current_load,
+            previous_filing_id, current_filing_id,
+        )
 
     try:
         previous_units = extract_units(previous_load.chunks, previous_filing_id)
         current_units = extract_units(current_load.chunks, current_filing_id)
     except _UnitParseFailure as failure:
-        return [
-            _change(
-                "undetermined",
-                "item-1a-section",
-                "The Item 1A section could not be compared because risk-factor "
-                "units could not be parsed deterministically.",
-                undetermined_reason=f"{REASON_SECTION_UNIT_PARSE_FAILED}: {failure}",
-                previous_filing_id=previous_filing_id,
-                current_filing_id=current_filing_id,
-            )
-        ]
+        return _finalize_changes(
+            [
+                _change(
+                    "undetermined",
+                    "item-1a-section",
+                    "The Item 1A section could not be compared because risk-factor "
+                    "units could not be parsed deterministically.",
+                    undetermined_reason=f"{REASON_SECTION_UNIT_PARSE_FAILED}: {failure}",
+                    previous_filing_id=previous_filing_id,
+                    current_filing_id=current_filing_id,
+                )
+            ],
+            previous_load, current_load, previous_filing_id, current_filing_id,
+        )
 
     pairs, unmatched_previous, unmatched_current, ambiguous = align_units(
         previous_units, current_units
@@ -830,7 +873,10 @@ def detect_changes(
             )
 
     keyed_changes.sort(key=lambda pair: (pair[0], pair[1]["change_type"]))
-    return [change for _key, change in keyed_changes]
+    return _finalize_changes(
+        [change for _key, change in keyed_changes],
+        previous_load, current_load, previous_filing_id, current_filing_id,
+    )
 
 
 def _result_hash(wire: dict[str, Any]) -> str:
@@ -889,17 +935,28 @@ def detect(
 
     stored = comparison_store.get_result(comparison_id, db_path=db_path)
     if stored is not None:
+        if stored["detector_version"] != DETECTOR_VERSION:
+            # Not an input change: the sources are whatever they were — the
+            # DETECTOR moved. The old result stays readable via GET; a re-run
+            # under the current version is a new comparison (new workflow
+            # version -> new comparison id), never an overwrite.
+            raise DetectionVersionSuperseded(
+                REASON_VERSION_SUPERSEDED,
+                f"a result from {stored['detector_version']} exists; the "
+                f"current detector is {DETECTOR_VERSION}. The stored result "
+                "remains readable as old-version output; re-detect by "
+                "creating the comparison under the current workflow version",
+            )
         if (
-            stored["detector_version"] == DETECTOR_VERSION
-            and stored["previous_source_hash"] == previous_hash
+            stored["previous_source_hash"] == previous_hash
             and stored["current_source_hash"] == current_hash
         ):
             return stored["result"], False
         raise DetectionInputsStale(
             REASON_INPUTS_STALE,
-            "a detection result exists but its inputs changed (source content "
-            "or detector version); re-comparison requires a new workflow "
-            "version — the stored result is not silently presented as current",
+            "a detection result exists but its source content changed; the "
+            "stored result is not silently presented as current and is never "
+            "overwritten",
         )
 
     if record["status"] != comparison_store.STATUS_READY_FOR_DETECTION:

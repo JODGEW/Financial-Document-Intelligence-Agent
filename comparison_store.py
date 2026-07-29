@@ -76,10 +76,12 @@ from governance.comparison_schema import (
     filing_pair_violations,
 )
 
-# Version of the (future) comparison workflow whose records this store holds.
-# Part of the logical identity key: a new workflow version may legitimately
-# re-compare the same pair.
-WORKFLOW_VERSION = "comparison_workflow.v1"
+# Version of the comparison workflow whose records this store holds. Part of
+# the logical identity key: a new workflow version legitimately re-compares
+# the same pair under a NEW comparison id, which is exactly how results
+# produced by an older detector version get re-detected without ever being
+# overwritten (v2: detector gained the citation/numeric/direction validators).
+WORKFLOW_VERSION = "comparison_workflow.v2"
 
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
 STATUS_DETECTED = "detected"

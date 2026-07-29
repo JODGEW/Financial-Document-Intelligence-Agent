@@ -634,6 +634,7 @@ def detect_comparison(
     except (
         comparison_detector.DetectionNotReady,
         comparison_detector.DetectionInputsStale,
+        comparison_detector.DetectionVersionSuperseded,
     ) as exc:
         raise HTTPException(
             status_code=409,
