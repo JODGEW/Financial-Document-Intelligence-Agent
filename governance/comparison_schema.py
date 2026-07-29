@@ -7,13 +7,13 @@ company in explicit chronological order, section-scoped structured changes with
 evidence on both sides, deterministic validation results, and placeholder risk
 and review state. Nothing in the runtime imports it yet — there is no
 comparison execution path, persistence, detector, API route, review
-integration, or UI. The next dependency is durable filing identity metadata
-(a per-filing id, filing_date / period_end, and a previous/current
-relationship), which today has no producer: ingest infers only ``year``, and
-ingest's ``document_id`` is a deliberately year-stripped *family* id
-(ingest._document_id), so successive filings of the same form share it — the
-future filing registry must mint per-filing ids before a real workflow can
-populate this schema.
+integration, or UI. Filing identity now has a producer: the filing registry
+(filing_registry.py) mints per-filing ids from explicit manifest metadata and
+``filing_registry.to_filing_reference`` builds a validated FilingReference
+from a parsed registry entry. Ingest's ``document_id`` remains a deliberately
+year-stripped *family* id (ingest._document_id) shared by successive filings —
+never a filing identity. The next dependency is the persistent comparison
+entity (roadmap step 3).
 
 Modeling choices, deliberately aligned with existing conventions:
 
@@ -126,11 +126,11 @@ class FilingReference(_ComparisonModel):
 
     document_id: NonEmptyStr = Field(
         description=(
-            "Unique id of THIS filing. No producer exists yet: ingest's "
-            "document_id is a year-stripped family id shared by successive "
-            "filings of one form (ingest._document_id), so it cannot "
-            "distinguish the two sides of a comparison. The future filing "
-            "registry mints per-filing ids."
+            "Unique id of THIS filing: the registry's filing_id "
+            "(company:form:period_end, filing_registry.filing_id_for). NOT "
+            "ingest's document_id — that is a year-stripped family id shared "
+            "by successive filings of one form and cannot distinguish the "
+            "two sides of a comparison."
         )
     )
     company_key: NonEmptyStr = Field(
@@ -190,9 +190,11 @@ class EvidenceReference(_ComparisonModel):
 
     document_id: NonEmptyStr = Field(
         description=(
-            "document_id of the filing this evidence belongs to. Must equal "
-            "the containing side's FilingReference.document_id (enforced on "
-            "ComparisonResult)."
+            "Id of the filing this evidence belongs to. Must equal the "
+            "containing side's FilingReference.document_id (enforced on "
+            "ComparisonResult). Producers map this from the chunk's "
+            "``filing_id`` metadata — never from the chunk's ``document_id``, "
+            "which is the shared family id."
         )
     )
     chunk_id: NonEmptyStr = Field(

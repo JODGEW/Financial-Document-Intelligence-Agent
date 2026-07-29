@@ -646,8 +646,8 @@ Known limitations:
 * There are no production-grade approval workflows or document-level permissions in the current build
 * There is no authentication, reviewer identity, RBAC, assignment, or automatic delivery of approved answers; reviewer actions are approve/reject with an optional note (no draft editing)
 * The runtime grounding validator is deterministic and lexical (citation-string and numeric-token matching); it is not semantic entailment validation
-* There is no filing comparison capability yet: no persistent comparison job, filing previous/current relationship model, section alignment, change detector, or comparison precision/recall evaluation — the impact CLI analyzes changed chunks of the *same* document against past answers. The structured comparison output schema (`comparison.v1`) exists as a validated contract with golden fixtures only; nothing produces or consumes it at runtime
-* There is no document-level duplicate detection or filing registry; stable chunk IDs make re-ingesting the same file idempotent, but the same filing saved under two names is indexed twice
+* There is no filing comparison capability yet: no persistent comparison job, section alignment, change detector, or comparison precision/recall evaluation — the impact CLI analyzes changed chunks of one document family (refusing families that span multiple filings) against past answers. The structured comparison output schema (`comparison.v1`) exists as a validated contract; the filing registry can now produce its `FilingReference` sides from the two controlled Acme filings, but nothing yet produces or consumes a `ComparisonResult` at runtime
+* The filing registry ([filing_registry.py](filing_registry.py)) detects exact-content duplicates (a renamed byte-identical file records a `duplicate` outcome and is not indexed twice) and identity conflicts (same company/form/period from different content records a `conflict` and is not indexed). Detection happens at ingest time within the local registry only — there is no fuzzy near-duplicate detection, and cross-process registry writes are unprotected (same JSONL limitation as the review queue)
 * The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
 * There is no retry, dead-letter queue, replay, workflow state machine, or durable failed-task handling; the audit log is an append-only local file, not immutable storage
 
@@ -661,9 +661,9 @@ Known limitations:
 
 The next implementation phase is a governed two-filing change review for one company, built in this order (each step depends on the ones before it):
 
-1. Comparison output schema (structured, versioned — defined before any UI) — **done as a contract**: `comparison.v1` in [governance/comparison_schema.py](governance/comparison_schema.py), machine-validated (Pydantic, cross-filing and evidence-side invariants) with golden fixtures in `tests/`. A contract only: no comparison execution path, ingestion change, persistence, detector, API route, review integration, or UI exists yet, so steps 2-11 remain open
-2. Durable filing identity: filing date, reporting period, a per-filing id (today's ingest `document_id` is a year-stripped family id shared by successive filings), and a previous/current relationship between two filings of the same company — **the next dependency**; the schema requires these fields but nothing produces them yet
-3. Persistent comparison entity (create, list, reopen across restarts)
+1. Comparison output schema (structured, versioned — defined before any UI) — **done as a contract**: `comparison.v1` in [governance/comparison_schema.py](governance/comparison_schema.py), machine-validated (Pydantic, cross-filing and evidence-side invariants) with golden fixtures in `tests/`
+2. Durable filing identity — **done**: [filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml). Explicit manifest metadata (company, form type, `period_end`, `filing_date` — never inferred from filenames or mtimes) mints a per-filing `filing_id` (`company:form:period_end`), distinct from the year-stripped `document_family_id` that successive filings share (kept, with `document_id` as its legacy alias, for the impact workflow). The registry records one durable outcome per attempted source (`parsed` / `duplicate` / `failed` / `conflict`, atomic JSONL writes), orders same-company/same-form filings chronologically by `period_end`, and builds validated `FilingReference` sides via `to_filing_reference`. Two controlled fictional Acme 10-K excerpts (FY2024 + FY2025, distinct periods, shared family) are the demo dataset — they prove identity and ordering, not comparison quality, and structured comparison itself still does not exist. **The next dependency is step 3 (persistent comparison entity)**
+3. Persistent comparison entity (create, list, reopen across restarts) — **the next step**
 4. Item 1A (Risk Factors) section alignment between the two filings
 5. Structured changes: added / removed / modified / undetermined — never inferring "removed" from a retrieval miss
 6. Previous-filing and current-filing evidence attached to every change
@@ -701,13 +701,20 @@ Checked items are partially addressed in the current build. Unchecked items are 
 * [x] Multi-format ingestion (10 formats / 14 extensions via FormatHandler registry: PDF/MD/TXT + DOCX/XLSX/HTML/CSV + PPTX/EML/JSON)
 * [x] Section-aware chunking for filings and manuals (markdown headers; SEC `PART`/`ITEM` boundaries for 10-Ks)
 * [x] Improved table extraction
-* [x] Document version metadata (per-chunk content hash + version hash; no filing registry, lineage model, or lifecycle management yet)
-* [x] Chunk-level idempotent re-ingestion (stable content-hash chunk IDs upsert instead of duplicating); no document-level duplicate detection — the same filing saved under two names is indexed twice
+* [x] Document version metadata (per-chunk content hash + version hash; no lifecycle management yet)
+* [x] Durable filing identity ([filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml)): explicit per-filing `filing_id` distinct from the shared `document_family_id`, with `period_end`/`filing_date` taken only from declared manifest metadata — never inferred from filenames or mtimes
+* [x] Chunk-level idempotent re-ingestion (stable content-hash chunk IDs upsert instead of duplicating), plus registry-level exact-duplicate detection — a byte-identical file under a second name records a `duplicate` outcome and is not indexed twice
+* [x] Ingestion outcome manifest: every attempted source records `parsed` / `duplicate` / `failed` / `conflict` in the filing registry (atomic JSONL), including failed loads with a safe error code
 * [x] Metadata filters by company, filing type, and year
-* [x] Document change impact analysis CLI (`scripts/document_impact.py`) — given a document change, reports which past queries used now-stale chunks via excerpt-fingerprint matching against the audit log
+* [x] Document change impact analysis CLI (`scripts/document_impact.py`) — given a document change, reports which past queries used now-stale chunks via excerpt-fingerprint matching against the audit log; family-scoped (`--document-id`) with an explicit refusal when a family spans multiple filings, or filing-scoped (`--filing-id`)
 
 After changing document-handling code or adding new corpus files, rerun
 `python ingest.py` so Chroma receives the latest table text and metadata.
+Re-ingestion is also what stamps the new filing-identity metadata
+(`filing_id`, `document_family_id`, `period_end`, `filing_date`) onto chunks
+and populates `filing_registry/registry.jsonl` — a store ingested before this
+feature simply lacks those fields until you re-run ingestion (existing
+filters and answers keep working in the meantime).
 
 ### 4. Safer workflow controls
 

@@ -32,7 +32,9 @@ from governance.impact import (
     compute_new_chunks,
     diff_chunks,
     document_version,
+    filing_ids_present,
     load_current_chunks,
+    load_filing_chunks,
     open_chroma,
     scan_audit_log,
 )
@@ -122,7 +124,23 @@ def _format_dependency_text(document_id: str, old_count: int, queries: list[dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Document change impact analysis")
-    parser.add_argument("--document-id", required=True, help="Document family id to check")
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument(
+        "--document-id",
+        help=(
+            "Document FAMILY id (year-stripped lineage key, e.g. "
+            "'acme-corp-10k-excerpt'). Successive filings of one form share "
+            "it; when it spans multiple filings this command refuses and asks "
+            "for --filing-id."
+        ),
+    )
+    selector.add_argument(
+        "--filing-id",
+        help=(
+            "One filing's identity (company:form:period_end, from the filing "
+            "registry) to scope the analysis to exactly one filing."
+        ),
+    )
     parser.add_argument(
         "--new-source",
         help="Path to the new version. Omit for a dependency scan against audit history only.",
@@ -135,16 +153,47 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
+    identifier = args.filing_id or args.document_id
     client = open_chroma()
-    old_chunks = load_current_chunks(args.document_id, client)
+    if args.filing_id:
+        old_chunks = load_filing_chunks(args.filing_id, client)
+    else:
+        old_chunks = load_current_chunks(args.document_id, client)
 
     if not old_chunks:
-        message = f"Document id {args.document_id!r} not found in the index."
+        message = f"Document id {identifier!r} not found in the index."
         if args.output == "json":
-            print(json.dumps({"documentId": args.document_id, "error": "not_found"}, indent=2))
+            print(json.dumps({"documentId": identifier, "error": "not_found"}, indent=2))
         else:
             print(message)
         return 1
+
+    if args.document_id:
+        # A family that spans multiple filings must not be diffed as one
+        # document: that would merge two reporting periods into one "edit".
+        filing_ids = filing_ids_present(old_chunks)
+        if len(filing_ids) > 1:
+            if args.output == "json":
+                print(
+                    json.dumps(
+                        {
+                            "documentId": args.document_id,
+                            "error": "family_spans_multiple_filings",
+                            "filingIds": filing_ids,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print(
+                    f"Document family {args.document_id!r} spans "
+                    f"{len(filing_ids)} distinct filings; a family-wide diff "
+                    "would merge reporting periods. Re-run with --filing-id "
+                    "and one of:"
+                )
+                for filing_id in filing_ids:
+                    print(f"  --filing-id {filing_id}")
+            return 2
 
     if args.new_source:
         # ingest's load/split print progress to stdout; keep stdout clean (JSON
@@ -155,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         affected_ids = {c["chunk_id"] for c in (diff["removed"] + [m["old"] for m in diff["modified"]])}
         affected_queries = scan_audit_log(args.audit_log, affected_ids)
         report = build_impact_report(
-            args.document_id,
+            identifier,
             diff,
             affected_queries,
             old_version_hash=document_version(old_chunks),
@@ -175,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "documentId": args.document_id,
+                    "documentId": identifier,
                     "mode": "dependency_scan",
                     "currentChunkCount": len(old_chunks),
                     "dependentPastQueries": dependent_queries,
@@ -185,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     else:
-        print(_format_dependency_text(args.document_id, len(old_chunks), dependent_queries))
+        print(_format_dependency_text(identifier, len(old_chunks), dependent_queries))
     return 0
 
 

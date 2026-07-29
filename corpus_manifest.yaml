@@ -1,0 +1,35 @@
+# Corpus manifest: explicit filing identity metadata for files in docs/.
+#
+# Entries are keyed by corpus-relative source path. A listed file is treated
+# as a dated filing: ingestion derives its filing_id from
+# (company_key, form_type, period_end) and records it in the filing registry.
+# Files NOT listed here ingest as generic documents exactly as before (no
+# filing_id, inferred filter metadata only).
+#
+# period_end and filing_date are explicit-only values. They are deliberately
+# never inferred from filenames, body-text year guesses, or file mtimes — if
+# they are not stated here, they stay unknown. All three of company_name,
+# form_type, and period_end are required per entry; an incomplete entry fails
+# ingestion before any indexing (filing_registry.ManifestError).
+#
+# This file lives OUTSIDE docs/ on purpose: anything inside docs/ becomes
+# retrievable corpus evidence, and this metadata is configuration, not
+# evidence.
+#
+# The two Acme entries are the controlled two-period dataset for the filing
+# comparison roadmap (same company, same form, different period_end). They
+# are fictional demo fixtures, not real SEC filings, and do not constitute a
+# comparison evaluation dataset.
+
+filings:
+  acme-corp-10k-excerpt-2025.pdf:
+    company_name: Acme Corporation
+    form_type: 10-K
+    period_end: 2025-12-31
+    filing_date: 2026-02-19
+
+  acme-corp-10k-excerpt-2024.pdf:
+    company_name: Acme Corporation
+    form_type: 10-K
+    period_end: 2024-12-31
+    filing_date: 2025-02-20

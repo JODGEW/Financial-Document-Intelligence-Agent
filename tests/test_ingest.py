@@ -240,3 +240,90 @@ def test_research_note_type_takes_precedence_over_discussed_filings():
     )
 
     assert filing_type == "research_note"
+
+
+def test_explicit_form_type_overrides_filename_and_body():
+    """Precedence layer 1 (tests 6/7): declared metadata always wins — an
+    explicit 10-Q stays 10-Q even when filename and body both say 10-K."""
+    filing_type = infer_filing_type(
+        "/repo/acme-annual-10k-package.pdf",
+        "Annual Report on Form 10-K for the fiscal year.",
+        explicit="10-Q",
+    )
+    assert filing_type == "10-q"
+
+
+def test_filename_form_beats_body_mentions_of_other_forms():
+    """Precedence layer 2 (test 7): a 10-Q that cites its 10-K in the body
+    still classifies from its own filename."""
+    filing_type = infer_filing_type(
+        "/repo/acme-corp-10q-q3.pdf",
+        "As described in our Annual Report on Form 10-K, results may vary.",
+    )
+    assert filing_type == "10-q"
+
+
+def test_generic_policy_body_text_does_not_shadow_sec_form():
+    """Test 8: the word 'policy' in a filing's body must not reclassify it."""
+    filing_type = infer_filing_type(
+        "/repo/acme-corp-10q-q3.pdf",
+        "Our accounting policy for revenue recognition is described below.",
+    )
+    assert filing_type == "10-q"
+
+    # And a policy named as such stays a policy even if it cites filings.
+    assert (
+        infer_filing_type(
+            "/repo/compliance-policy-personal-trading.md",
+            "See the annual report for details.",
+        )
+        == "policy"
+    )
+
+
+def test_body_only_heuristics_unchanged_as_last_resort():
+    """Layer 3: with no explicit metadata and no filename token, the ordered
+    body checks behave exactly as before."""
+    assert infer_filing_type("/repo/document.pdf", "quarterly report text") == "10-q"
+    assert infer_filing_type("/repo/document.pdf", "this policy applies") == "policy"
+    assert infer_filing_type("/repo/document.pdf", "") is None
+
+
+def test_build_source_metadata_writes_explicit_family_alias(tmp_path):
+    """document_family_id is the explicit name; document_id is its legacy alias."""
+    source = tmp_path / "acme-corp-10k-excerpt-2025.pdf"
+    source.write_bytes(b"Acme Corporation Form 10-K fiscal year 2025")
+
+    metadata = build_source_metadata(source, "Acme Corporation Form 10-K 2025")
+
+    assert metadata["document_family_id"] == metadata["document_id"]
+    assert "2025" not in metadata["document_family_id"]  # family strips the year
+    # No filing identity without explicit manifest metadata.
+    assert "filing_id" not in metadata
+
+
+def test_build_source_metadata_manifest_entry_supplies_filing_identity(tmp_path):
+    """A manifest entry decides identity fields and mints the filing_id."""
+    from datetime import date
+
+    source = tmp_path / "acme-corp-10k-excerpt-2025.pdf"
+    source.write_bytes(b"Acme Corporation Form 10-K fiscal year 2025")
+
+    metadata = build_source_metadata(
+        source,
+        "irrelevant body text mentioning policy and 10-Q",
+        manifest_entry={
+            "company_name": "Acme Corporation",
+            "form_type": "10-K",
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 19),
+        },
+    )
+
+    assert metadata["filing_id"] == "acme-corporation:10-k:2025-12-31"
+    assert metadata["company"] == "Acme Corporation"
+    assert metadata["company_key"] == "acme corporation"
+    assert metadata["filing_type"] == "10-k"  # explicit beats the body text
+    assert metadata["year"] == 2025  # from period_end, not the filename
+    assert metadata["period_end"] == "2025-12-31"
+    assert metadata["filing_date"] == "2026-02-19"

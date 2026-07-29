@@ -3,8 +3,19 @@
 Answer one question: when a document changes, which past answers used the chunks
 that are now gone or different, and should those answers be re-checked?
 
+Identity semantics (explicit since the filing registry landed): the
+``document_id`` this module filters on is the year-stripped document FAMILY id
+(``document_family_id``), a lineage key that successive filings of one form
+share. It is deliberately NOT a filing identity — ``filing_id``
+(company:form:period_end, minted by filing_registry from explicit manifest
+metadata) is. A family-scoped load may therefore span multiple filings; diffing
+across that span would treat two reporting periods as one edited document,
+which is wrong. Callers that mean one filing use load_filing_chunks, and the
+impact CLI refuses a family selector that spans multiple filing_ids.
+
 The pieces:
-- load_current_chunks: pull a document's chunks from Chroma (read-only).
+- load_current_chunks: pull a document family's chunks from Chroma (read-only).
+- load_filing_chunks: pull ONE filing's chunks by filing_id (read-only).
 - compute_new_chunks: re-run ingest's load + split on a new file version, in
   memory, without touching Chroma.
 - diff_chunks: compare old vs new and report added / removed / modified.
@@ -83,6 +94,7 @@ def _make_chunk(
     source: str | None,
     document_id: str | None,
     document_version: str | None,
+    filing_id: str | None,
     chroma_id: str | None,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
@@ -96,25 +108,17 @@ def _make_chunk(
         "source_name": source_name,
         "page": page,
         "section_title": section_title,
-        "document_id": document_id,
+        "document_id": document_id,  # family/lineage key (module docstring)
         "document_version": document_version,
+        "filing_id": filing_id,  # one filing's identity; None for non-filings
         "content": content,
         "excerpt": excerpt,
         "metadata": metadata,
     }
 
 
-def load_current_chunks(document_id: str, chroma_client) -> list[dict[str, Any]]:
-    """Fetch all chunks for a document_id from Chroma (read-only).
-
-    ``chroma_client`` is anything exposing Chroma's ``get`` (a langchain_chroma
-    ``Chroma`` or a raw chromadb collection). Returns chunk dicts; empty list if
-    the document_id is not present.
-    """
-    result = chroma_client.get(
-        where={"document_id": document_id},
-        include=["metadatas", "documents"],
-    )
+def _chunks_from_get(result) -> list[dict[str, Any]]:
+    """Shape a Chroma ``get`` result into this module's chunk dicts."""
     ids = result.get("ids") or []
     documents = result.get("documents") or []
     metadatas = result.get("metadatas") or []
@@ -131,11 +135,51 @@ def load_current_chunks(document_id: str, chroma_client) -> list[dict[str, Any]]
                 source=metadata.get("source"),
                 document_id=metadata.get("document_id"),
                 document_version=metadata.get("document_version"),
+                filing_id=metadata.get("filing_id"),
                 chroma_id=chroma_id,
                 metadata=metadata,
             )
         )
     return chunks
+
+
+def load_current_chunks(document_id: str, chroma_client) -> list[dict[str, Any]]:
+    """Fetch all chunks for a document FAMILY id from Chroma (read-only).
+
+    ``document_id`` is the year-stripped ``document_family_id`` (module
+    docstring): the result may span multiple filings of one form. Use
+    filing_ids_present to detect that, and load_filing_chunks to scope to one
+    filing. ``chroma_client`` is anything exposing Chroma's ``get`` (a
+    langchain_chroma ``Chroma`` or a raw chromadb collection). Returns chunk
+    dicts; empty list if the id is not present.
+    """
+    result = chroma_client.get(
+        where={"document_id": document_id},
+        include=["metadatas", "documents"],
+    )
+    return _chunks_from_get(result)
+
+
+def load_filing_chunks(filing_id: str, chroma_client) -> list[dict[str, Any]]:
+    """Fetch all chunks for ONE filing (by ``filing_id`` metadata), read-only.
+
+    Empty on legacy stores ingested before filing identity existed — re-run
+    ``python ingest.py`` to stamp filing_id onto the chunks.
+    """
+    result = chroma_client.get(
+        where={"filing_id": filing_id},
+        include=["metadatas", "documents"],
+    )
+    return _chunks_from_get(result)
+
+
+def filing_ids_present(chunks: list[dict[str, Any]]) -> list[str]:
+    """Distinct non-null filing_ids across chunks, sorted.
+
+    More than one element means the selection spans multiple filings and must
+    not be diffed as if it were one edited document.
+    """
+    return sorted({c.get("filing_id") for c in chunks if c.get("filing_id")})
 
 
 def compute_new_chunks(source_path: str) -> list[dict[str, Any]]:
@@ -174,6 +218,7 @@ def compute_new_chunks(source_path: str) -> list[dict[str, Any]]:
                 source=metadata.get("source"),
                 document_id=metadata.get("document_id"),
                 document_version=metadata.get("document_version"),
+                filing_id=metadata.get("filing_id"),
                 chroma_id=None,
                 metadata=metadata,
             )

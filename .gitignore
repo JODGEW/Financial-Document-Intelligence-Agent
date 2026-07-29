@@ -9,6 +9,10 @@ chroma_db/
 # review_queue/.gitkeep; seed local demo data with
 # `python scripts/review_queue.py seed`.
 review_queue/*.jsonl
+# Filing registry JSONL is mutable runtime state written by `python ingest.py`
+# (per-source ingestion outcomes + filing identities). A clean clone starts
+# empty; the directory is kept via filing_registry/.gitkeep.
+filing_registry/*.jsonl
 .DS_Store
 WALKTHROUGH.md
 .gradio/

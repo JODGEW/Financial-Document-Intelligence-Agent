@@ -47,6 +47,22 @@ REVIEW_QUEUE_DIR = os.getenv(
     os.path.join(os.path.dirname(__file__), "review_queue"),
 )
 
+# Filing identity (comparison roadmap step 2). The corpus manifest declares
+# explicit filing identity metadata (company, form type, period_end,
+# filing_date) for corpus files — values that must never be inferred from
+# filenames or mtimes. The filing registry records one durable outcome per
+# attempted source (parsed / duplicate / failed / conflict) plus the derived
+# filing_id. Registry files are runtime state (gitignored), same as the
+# review queue.
+CORPUS_MANIFEST_PATH = os.getenv(
+    "CORPUS_MANIFEST_PATH",
+    os.path.join(os.path.dirname(__file__), "corpus_manifest.yaml"),
+)
+FILING_REGISTRY_PATH = os.getenv(
+    "FILING_REGISTRY_PATH",
+    os.path.join(os.path.dirname(__file__), "filing_registry", "registry.jsonl"),
+)
+
 # Document ingestion. Two-tier PII redaction dispatch:
 # - PII_REDACT_AT_INGEST (global, default off) forces redaction on every format.
 # - PII_REDACT_TABULAR_AT_INGEST (default on) redacts CSV / XLSX only.

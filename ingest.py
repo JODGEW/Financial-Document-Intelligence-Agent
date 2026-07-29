@@ -26,6 +26,7 @@ from langchain_text_splitters import (
 )
 
 import config
+import filing_registry
 import loaders  # noqa: F401  (side-effect: register format handlers)
 from loaders.pii import redact as _pii_redact, should_redact as _should_redact
 from loaders.registry import handler_for
@@ -131,24 +132,50 @@ _EXTRA_FILING_TYPE_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
-def infer_filing_type(source_path: str | Path, text_hint: str = "") -> str | None:
-    """Infer a document/filing type for metadata filtering."""
-    source_name = Path(source_path).name.lower()
-    combined = f"{source_name} {text_hint}".lower()
-    if "research note" in source_name or "research note" in combined:
+def _match_filing_type(text: str) -> str | None:
+    """Ordered filing-type checks over one lowercased string (unchanged order:
+    research_note > policy > 10-K > 10-Q > 8-K > PR2/PR3 extras)."""
+    if "research note" in text:
         return "research_note"
-    if "policy" in source_name or "policy" in combined:
+    if "policy" in text:
         return "policy"
-    if re.search(r"\b10[-_ ]?k\b|annual report", combined):
+    if re.search(r"\b10[-_ ]?k\b|annual report", text):
         return "10-k"
-    if re.search(r"\b10[-_ ]?q\b|quarterly report", combined):
+    if re.search(r"\b10[-_ ]?q\b|quarterly report", text):
         return "10-q"
-    if re.search(r"\b8[-_ ]?k\b|current report", combined):
+    if re.search(r"\b8[-_ ]?k\b|current report", text):
         return "8-k"
     for pattern, filing_type in _EXTRA_FILING_TYPE_PATTERNS:
-        if re.search(pattern, combined):
+        if re.search(pattern, text):
             return filing_type
     return None
+
+
+def infer_filing_type(
+    source_path: str | Path, text_hint: str = "", explicit: str | None = None
+) -> str | None:
+    """Infer a document/filing type for metadata filtering.
+
+    Precedence, most authoritative first:
+
+    1. ``explicit`` — declared metadata (the corpus manifest's form_type).
+       Always wins: an explicitly declared 10-Q stays 10-Q no matter what the
+       filename or body says.
+    2. Filename tokens — deliberate naming beats body text, so a 10-Q whose
+       body cites "our Annual Report on Form 10-K", or a filing whose body
+       contains the generic word "policy", still classifies from its own
+       filename.
+    3. Body-text heuristics — last resort, fragile by nature; the ordered
+       checks themselves are unchanged from the previous single-pass
+       behavior.
+    """
+    if explicit:
+        return filing_registry.normalize_form_type(explicit)
+    source_name = Path(source_path).name.lower()
+    from_name = _match_filing_type(source_name)
+    if from_name:
+        return from_name
+    return _match_filing_type(f"{source_name} {text_hint}".lower())
 
 
 def infer_document_year(source_path: str | Path, text_hint: str = "") -> int | None:
@@ -179,18 +206,61 @@ def _document_id(source_path: str) -> str:
     return _metadata_key(stem).replace(" ", "-")
 
 
-def build_source_metadata(source_path: str | Path, text_hint: str = "") -> dict:
-    """Build file-level metadata used for versioning and retrieval filters."""
+def _filing_identity(manifest_entry: dict | None) -> dict | None:
+    """Explicit filing identity from a validated manifest entry, or None.
+
+    period_end / filing_date are the manifest's explicit dates and are never
+    inferred here — a document without a manifest entry has no filing identity
+    and ingests as a generic document.
+    """
+    if not manifest_entry:
+        return None
+    company_key = company_metadata_key(manifest_entry["company_name"])
+    period_end = manifest_entry["period_end"]
+    return {
+        "company": manifest_entry["company_name"],
+        "company_key": company_key,
+        "filing_type": filing_registry.normalize_form_type(
+            manifest_entry["form_type"]
+        ),
+        "period_end": period_end,
+        "filing_date": manifest_entry.get("filing_date"),
+        "filing_id": filing_registry.filing_id_for(
+            company_key, manifest_entry["form_type"], period_end
+        ),
+    }
+
+
+def build_source_metadata(
+    source_path: str | Path, text_hint: str = "", manifest_entry: dict | None = None
+) -> dict:
+    """Build file-level metadata used for versioning and retrieval filters.
+
+    Identity fields follow the documented precedence: an explicit manifest
+    entry fully decides company / filing_type / year (from period_end) and
+    adds filing_id, period_end, and filing_date; otherwise the pre-existing
+    filename/body inference applies and no filing identity is minted.
+
+    ``document_id`` is the year-stripped document FAMILY id (successive
+    filings of one form share it); ``document_family_id`` carries the same
+    value under its explicit name. Neither is a filing identity — that is
+    ``filing_id``. All values are flat scalars (Chroma requirement).
+    """
     path = Path(source_path)
     file_bytes = path.read_bytes()
     document_hash = hashlib.sha256(file_bytes).hexdigest()
     relative_path = _relative_source_path(path)
     stat = path.stat()
 
+    family_id = _document_id(relative_path)
     metadata = {
         "source_name": path.name,
         "source_path": relative_path,
-        "document_id": _document_id(relative_path),
+        # Legacy alias of document_family_id (same value): kept so existing
+        # Chroma stores, audit tooling, and the impact CLI keep working. Do
+        # not treat it as a filing id.
+        "document_id": family_id,
+        "document_family_id": family_id,
         "document_hash": document_hash,
         "document_version": document_hash[:12],
         "file_size": stat.st_size,
@@ -199,6 +269,18 @@ def build_source_metadata(source_path: str | Path, text_hint: str = "") -> dict:
             tz=timezone.utc,
         ).isoformat(),
     }
+
+    identity = _filing_identity(manifest_entry)
+    if identity:
+        metadata["company"] = identity["company"]
+        metadata["company_key"] = identity["company_key"]
+        metadata["filing_type"] = identity["filing_type"]
+        metadata["year"] = identity["period_end"].year
+        metadata["filing_id"] = identity["filing_id"]
+        metadata["period_end"] = identity["period_end"].isoformat()
+        if identity["filing_date"]:
+            metadata["filing_date"] = identity["filing_date"].isoformat()
+        return metadata
 
     company = infer_company(path, text_hint)
     if company:
@@ -277,28 +359,149 @@ def _maybe_redact(docs: list[Document], handler) -> None:
                 doc.metadata[f"pii_redaction_{pii_type}"] = n
 
 
-def load_documents(docs_dir: str = config.DOCS_DIR):
-    """Walk the docs directory and load all supported files."""
-    documents = []
+def _safe_error_summary(exc: Exception) -> str:
+    """One-line, truncated error summary safe to persist (no traceback/content)."""
+    return " ".join(str(exc).split())[:200]
+
+
+def load_documents(
+    docs_dir: str = config.DOCS_DIR,
+    *,
+    manifest: dict | None = None,
+    registry_path: str | Path | None = None,
+):
+    """Walk the docs directory and load all supported files.
+
+    ``manifest`` maps corpus-relative source paths to explicit filing identity
+    metadata (filing_registry.load_manifest). ``registry_path``, when given,
+    records exactly one durable outcome per attempted source — parsed,
+    duplicate, failed, or conflict — and excludes duplicate/conflict sources
+    from the returned documents so their chunks are never indexed. Both
+    default to None so library and test callers keep the pre-registry
+    behavior; run() passes the configured paths.
+
+    Load order is deterministic and identity-first: manifest-listed sources
+    load before unlisted ones (each group sorted by relative path). This makes
+    duplicate/conflict outcomes independent of filename sort order — a
+    byte-identical unlisted copy is always the ``duplicate`` of the
+    manifest-listed filing, never the other way around, so a stray copy can
+    never capture a filing's canonical identity.
+    """
+    candidates: list[tuple[str, str]] = []  # (rel_path, abs_path)
     for root, _dirs, files in os.walk(docs_dir):
         for fname in sorted(files):
-            ext = os.path.splitext(fname)[1].lower()
-            handler = handler_for(ext)
-            if handler is None:
+            if handler_for(os.path.splitext(fname)[1].lower()) is None:
                 continue
             path = os.path.join(root, fname)
-            try:
-                docs = handler.loader(path)
-                _maybe_redact(docs, handler)
-                text_hint = "\n".join(doc.page_content[:4000] for doc in docs[:2])
-                source_metadata = build_source_metadata(path, text_hint)
-                for doc in docs:
-                    doc.metadata.setdefault("source", path)
-                    doc.metadata.update(source_metadata)
-                documents.extend(docs)
-                print(f"  Loaded {len(docs)} page(s) from {fname}")
-            except Exception as exc:
-                print(f"  WARN: failed to load {fname}: {exc}")
+            candidates.append((_relative_source_path(Path(path)), path))
+    candidates.sort(
+        key=lambda pair: (0 if pair[0] in (manifest or {}) else 1, pair[0])
+    )
+
+    documents = []
+    for rel_path, path in candidates:
+        fname = os.path.basename(path)
+        handler = handler_for(os.path.splitext(fname)[1].lower())
+        manifest_entry = (manifest or {}).get(rel_path)
+        identity = _filing_identity(manifest_entry)
+        identity_fields = {
+            "document_family_id": _document_id(rel_path),
+            "filing_id": identity["filing_id"] if identity else None,
+            "company_key": identity["company_key"] if identity else None,
+            "company_name": identity["company"] if identity else None,
+            "form_type": identity["filing_type"] if identity else None,
+            "period_end": identity["period_end"].isoformat() if identity else None,
+            "filing_date": (
+                identity["filing_date"].isoformat()
+                if identity and identity["filing_date"]
+                else None
+            ),
+            "identity_source": "manifest" if identity else None,
+        }
+
+        source_hash = None
+        if registry_path is not None:
+            source_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            status, related = filing_registry.resolve_outcome(
+                rel_path, source_hash, identity_fields["filing_id"], registry_path
+            )
+            if status == filing_registry.DUPLICATE:
+                filing_registry.record_outcome(
+                    registry_path,
+                    source_path=rel_path,
+                    source_name=fname,
+                    source_hash=source_hash,
+                    parse_status=filing_registry.DUPLICATE,
+                    duplicate_of=related["source_path"],
+                    **identity_fields,
+                )
+                print(
+                    f"  SKIP duplicate content: {fname} is byte-identical to "
+                    f"already-indexed {related['source_path']}; not indexed twice"
+                )
+                continue
+            if status == filing_registry.CONFLICT:
+                filing_registry.record_outcome(
+                    registry_path,
+                    source_path=rel_path,
+                    source_name=fname,
+                    source_hash=source_hash,
+                    parse_status=filing_registry.CONFLICT,
+                    conflict_with=related["source_path"],
+                    **identity_fields,
+                )
+                print(
+                    f"  CONFLICT: {fname} claims filing "
+                    f"{identity_fields['filing_id']} already held by "
+                    f"{related['source_path']} with different content; "
+                    "not indexed — resolve the manifest or sources"
+                )
+                continue
+
+        try:
+            docs = handler.loader(path)
+            _maybe_redact(docs, handler)
+            text_hint = "\n".join(doc.page_content[:4000] for doc in docs[:2])
+            source_metadata = build_source_metadata(
+                path, text_hint, manifest_entry=manifest_entry
+            )
+            for doc in docs:
+                doc.metadata.setdefault("source", path)
+                doc.metadata.update(source_metadata)
+            documents.extend(docs)
+            print(f"  Loaded {len(docs)} page(s) from {fname}")
+            if registry_path is not None:
+                if identity_fields["identity_source"] is None:
+                    # Record what inference produced, marked as inferred —
+                    # never as filing identity (filing_id stays None).
+                    identity_fields.update(
+                        company_key=source_metadata.get("company_key"),
+                        company_name=source_metadata.get("company"),
+                        form_type=source_metadata.get("filing_type"),
+                        identity_source="inferred",
+                    )
+                filing_registry.record_outcome(
+                    registry_path,
+                    source_path=rel_path,
+                    source_name=fname,
+                    source_hash=source_metadata["document_hash"],
+                    parse_status=filing_registry.PARSED,
+                    loader=handler.loader.__module__,
+                    **identity_fields,
+                )
+        except Exception as exc:
+            if registry_path is not None:
+                filing_registry.record_outcome(
+                    registry_path,
+                    source_path=rel_path,
+                    source_name=fname,
+                    source_hash=source_hash,
+                    parse_status=filing_registry.FAILED,
+                    error_code=type(exc).__name__,
+                    error_summary=_safe_error_summary(exc),
+                    **identity_fields,
+                )
+            print(f"  WARN: failed to load {fname}: {exc}")
     return documents
 
 
@@ -435,13 +638,25 @@ def embed_and_persist(chunks):
 def run():
     """Full ingestion pipeline."""
     print("Loading documents...")
-    documents = load_documents()
+    # Fails fast on an invalid manifest: filing identity problems surface
+    # before any indexing, not as silently wrong filing ids.
+    manifest = filing_registry.load_manifest()
+    documents = load_documents(
+        manifest=manifest, registry_path=config.FILING_REGISTRY_PATH
+    )
     if not documents:
         print("No documents found in", config.DOCS_DIR)
         sys.exit(1)
 
     print("Splitting...")
     chunks = split_documents(documents)
+
+    counts: dict[str, int] = {}
+    for chunk in chunks:
+        rel_path = chunk.metadata.get("source_path")
+        if rel_path:
+            counts[rel_path] = counts.get(rel_path, 0) + 1
+    filing_registry.update_chunk_counts(counts, config.FILING_REGISTRY_PATH)
 
     print("Embedding and persisting...")
     vectorstore = embed_and_persist(chunks)

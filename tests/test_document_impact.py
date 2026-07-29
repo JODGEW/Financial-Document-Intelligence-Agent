@@ -315,3 +315,81 @@ def test_cli_document_id_not_found(chroma, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 1
     assert "not found" in out.lower()
+
+
+def test_family_spanning_multiple_filings_is_refused(chroma, tmp_path, monkeypatch, capsys):
+    """A family selector over two reporting periods must not diff as one doc."""
+    v2024 = compute_new_chunks(_write(tmp_path, "acme-10k-2024.md", _V1))
+    for c in v2024:
+        c["metadata"]["document_id"] = "acme-10k"
+        c["metadata"]["filing_id"] = "acme-corporation:10-k:2024-12-31"
+    v2025 = compute_new_chunks(_write(tmp_path, "acme-10k-2025.md", _V2))
+    for c in v2025:
+        c["metadata"]["document_id"] = "acme-10k"
+        c["metadata"]["filing_id"] = "acme-corporation:10-k:2025-12-31"
+    _seed(chroma, v2024 + v2025)
+
+    monkeypatch.setattr(cli, "open_chroma", lambda: chroma)
+    capsys.readouterr()
+    code = cli.main(["--document-id", "acme-10k", "--output", "json"])
+    out = capsys.readouterr().out
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["error"] == "family_spans_multiple_filings"
+    assert payload["filingIds"] == [
+        "acme-corporation:10-k:2024-12-31",
+        "acme-corporation:10-k:2025-12-31",
+    ]
+
+
+def test_filing_id_selector_scopes_to_one_filing(chroma, tmp_path, monkeypatch, capsys):
+    """--filing-id analyzes exactly one filing even when the family has two."""
+    v2024 = compute_new_chunks(_write(tmp_path, "acme-10k-2024.md", _V1))
+    for c in v2024:
+        c["metadata"]["document_id"] = "acme-10k"
+        c["metadata"]["filing_id"] = "acme-corporation:10-k:2024-12-31"
+    v2025 = compute_new_chunks(_write(tmp_path, "acme-10k-2025.md", _V2))
+    for c in v2025:
+        c["metadata"]["document_id"] = "acme-10k"
+        c["metadata"]["filing_id"] = "acme-corporation:10-k:2025-12-31"
+    _seed(chroma, v2024 + v2025)
+    log = tmp_path / "audit.jsonl"
+    log.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "open_chroma", lambda: chroma)
+    capsys.readouterr()
+    code = cli.main(
+        [
+            "--filing-id",
+            "acme-corporation:10-k:2024-12-31",
+            "--audit-log",
+            str(log),
+            "--output",
+            "json",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["documentId"] == "acme-corporation:10-k:2024-12-31"
+    assert payload["mode"] == "dependency_scan"
+    # Only the 2024 filing's chunks are in scope.
+    assert payload["currentChunkCount"] == len(v2024)
+
+
+def test_single_filing_family_still_works(chroma, tmp_path, monkeypatch, capsys):
+    """Legacy behavior: one filing (or no filing_id at all) diffs as before."""
+    v1 = compute_new_chunks(_write(tmp_path, "policy.md", _V1))
+    for c in v1:
+        c["metadata"]["document_id"] = "policy"
+    _seed(chroma, v1)
+    log = tmp_path / "audit.jsonl"
+    log.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "open_chroma", lambda: chroma)
+    new_source = _write(tmp_path, "v2.md", _V2)
+    capsys.readouterr()
+    code = cli.main(
+        ["--document-id", "policy", "--new-source", new_source, "--audit-log", str(log)]
+    )
+    assert code == 0
