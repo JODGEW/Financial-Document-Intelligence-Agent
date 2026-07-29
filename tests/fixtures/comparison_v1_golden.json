@@ -1,0 +1,206 @@
+{
+  "schema_version": "comparison.v1",
+  "comparison_id": "cmp-acme-corp-10k-fy2023-fy2024",
+  "previous_filing": {
+    "document_id": "acme-corp-10k-fy2023",
+    "company_key": "acme corp",
+    "company_name": "Acme Corp",
+    "form_type": "10-K",
+    "filing_date": "2024-02-20",
+    "period_end": "2023-12-31",
+    "source_name": "acme-corp-10k-2023.pdf",
+    "version_hash": "3f2a9c1d4e5b"
+  },
+  "current_filing": {
+    "document_id": "acme-corp-10k-fy2024",
+    "company_key": "acme corp",
+    "company_name": "Acme Corp",
+    "form_type": "10-K",
+    "filing_date": "2025-02-18",
+    "period_end": "2024-12-31",
+    "source_name": "acme-corp-10k-2024.pdf",
+    "version_hash": "9b8c7d6e5f4a"
+  },
+  "section_scope": [
+    "item_1a_risk_factors"
+  ],
+  "changes": [
+    {
+      "change_id": "chg-0001",
+      "change_type": "modified",
+      "category": "risk_factor",
+      "section_key": "item_1a_risk_factors",
+      "summary": "Supply-chain risk factor expanded: the FY2024 filing narrows 'a limited number of suppliers' to single-source suppliers and adds explicit materiality language.",
+      "previous_evidence": [
+        {
+          "document_id": "acme-corp-10k-fy2023",
+          "chunk_id": "acme-corp-10k-2023.pdf:41:1a2b3c4d5e6f",
+          "source_name": "acme-corp-10k-2023.pdf",
+          "page": 41,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "We rely on a limited number of suppliers for key components.",
+          "content_hash": "1a2b3c4d5e6f"
+        }
+      ],
+      "current_evidence": [
+        {
+          "document_id": "acme-corp-10k-fy2024",
+          "chunk_id": "acme-corp-10k-2024.pdf:44:6f5e4d3c2b1a",
+          "source_name": "acme-corp-10k-2024.pdf",
+          "page": 44,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "We rely on single-source suppliers for key components, and any disruption could materially harm our results.",
+          "content_hash": "6f5e4d3c2b1a"
+        },
+        {
+          "document_id": "acme-corp-10k-fy2024",
+          "chunk_id": "acme-corp-10k-2024.pdf:45:7a6b5c4d3e2f",
+          "source_name": "acme-corp-10k-2024.pdf",
+          "page": 45,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "Qualifying an alternative supplier could take twelve months or longer.",
+          "content_hash": "7a6b5c4d3e2f"
+        }
+      ],
+      "validation": [
+        {
+          "check": "evidence_presence",
+          "status": "passed",
+          "reason_code": null,
+          "detail": "Evidence present on both sides.",
+          "validator_version": "evidence_presence.v1"
+        },
+        {
+          "check": "numeric_consistency",
+          "status": "not_run",
+          "reason_code": null,
+          "detail": "Numeric consistency validator not implemented yet.",
+          "validator_version": null
+        },
+        {
+          "check": "direction_consistency",
+          "status": "not_applicable",
+          "reason_code": "no_directional_claim",
+          "detail": "No directional numeric claim in this change.",
+          "validator_version": null
+        }
+      ],
+      "undetermined_reason": null
+    },
+    {
+      "change_id": "chg-0002",
+      "change_type": "added",
+      "category": "risk_factor",
+      "section_key": "item_1a_risk_factors",
+      "summary": "New AI-regulation risk factor added in FY2024; the FY2023 Item 1A was fully parsed and contains no counterpart.",
+      "previous_evidence": [],
+      "current_evidence": [
+        {
+          "document_id": "acme-corp-10k-fy2024",
+          "chunk_id": "acme-corp-10k-2024.pdf:47:8b7c6d5e4f3a",
+          "source_name": "acme-corp-10k-2024.pdf",
+          "page": 47,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "Evolving regulation of artificial intelligence could restrict our products or increase compliance costs.",
+          "content_hash": "8b7c6d5e4f3a"
+        }
+      ],
+      "validation": [
+        {
+          "check": "evidence_presence",
+          "status": "passed",
+          "reason_code": null,
+          "detail": "Current-side evidence present; previous section parsed without a counterpart.",
+          "validator_version": "evidence_presence.v1"
+        }
+      ],
+      "undetermined_reason": null
+    },
+    {
+      "change_id": "chg-0003",
+      "change_type": "removed",
+      "category": "risk_factor",
+      "section_key": "item_1a_risk_factors",
+      "summary": "LIBOR-transition risk factor removed in FY2024; the FY2024 Item 1A was fully parsed and contains no counterpart.",
+      "previous_evidence": [
+        {
+          "document_id": "acme-corp-10k-fy2023",
+          "chunk_id": "acme-corp-10k-2023.pdf:43:2b3c4d5e6f7a",
+          "source_name": "acme-corp-10k-2023.pdf",
+          "page": 43,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "The transition away from LIBOR could affect our floating-rate borrowings.",
+          "content_hash": "2b3c4d5e6f7a"
+        }
+      ],
+      "current_evidence": [],
+      "validation": [
+        {
+          "check": "evidence_presence",
+          "status": "passed",
+          "reason_code": null,
+          "detail": "Previous-side evidence present; current section parsed without a counterpart.",
+          "validator_version": "evidence_presence.v1"
+        }
+      ],
+      "undetermined_reason": null
+    },
+    {
+      "change_id": "chg-0004",
+      "change_type": "undetermined",
+      "category": "risk_factor",
+      "section_key": "item_1a_risk_factors",
+      "summary": "Cybersecurity risk subsection could not be compared: the FY2024 pages containing it did not parse.",
+      "previous_evidence": [
+        {
+          "document_id": "acme-corp-10k-fy2023",
+          "chunk_id": "acme-corp-10k-2023.pdf:42:3c4d5e6f7a8b",
+          "source_name": "acme-corp-10k-2023.pdf",
+          "page": 42,
+          "section_key": "item_1a_risk_factors",
+          "section_title": "PART I > ITEM 1A. RISK FACTORS",
+          "excerpt": "A significant cybersecurity incident could disrupt our operations and damage our reputation.",
+          "content_hash": "3c4d5e6f7a8b"
+        }
+      ],
+      "current_evidence": [],
+      "validation": [
+        {
+          "check": "evidence_presence",
+          "status": "failed",
+          "reason_code": "current_section_unparsed",
+          "detail": "Current-side section unavailable; comparison not possible.",
+          "validator_version": null
+        }
+      ],
+      "undetermined_reason": "current filing Item 1A cybersecurity subsection could not be parsed (pages 46-48 produced no extractable text)"
+    }
+  ],
+  "validation_summary": {
+    "total_checks": 6,
+    "passed": 3,
+    "failed": 1,
+    "not_run": 1,
+    "not_applicable": 1
+  },
+  "risk": {
+    "decision": "held_for_review",
+    "reason_codes": [
+      "removed_risk_factor_present",
+      "undetermined_change_present"
+    ],
+    "risk_score": 0.78,
+    "risk_level": "high"
+  },
+  "review": {
+    "status": "pending",
+    "review_id": "review_cmp-acme-corp-10k-fy2023-fy2024"
+  },
+  "created_at": "2026-07-01T12:00:00Z",
+  "producer": "fixture.v1"
+}

@@ -646,7 +646,7 @@ Known limitations:
 * There are no production-grade approval workflows or document-level permissions in the current build
 * There is no authentication, reviewer identity, RBAC, assignment, or automatic delivery of approved answers; reviewer actions are approve/reject with an optional note (no draft editing)
 * The runtime grounding validator is deterministic and lexical (citation-string and numeric-token matching); it is not semantic entailment validation
-* There is no filing comparison capability yet: no persistent comparison job, filing previous/current relationship model, section alignment, structured change schema, or comparison precision/recall evaluation — the impact CLI analyzes changed chunks of the *same* document against past answers
+* There is no filing comparison capability yet: no persistent comparison job, filing previous/current relationship model, section alignment, change detector, or comparison precision/recall evaluation — the impact CLI analyzes changed chunks of the *same* document against past answers. The structured comparison output schema (`comparison.v1`) exists as a validated contract with golden fixtures only; nothing produces or consumes it at runtime
 * There is no document-level duplicate detection or filing registry; stable chunk IDs make re-ingesting the same file idempotent, but the same filing saved under two names is indexed twice
 * The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
 * There is no retry, dead-letter queue, replay, workflow state machine, or durable failed-task handling; the audit log is an append-only local file, not immutable storage
@@ -661,8 +661,8 @@ Known limitations:
 
 The next implementation phase is a governed two-filing change review for one company, built in this order (each step depends on the ones before it):
 
-1. Comparison output schema (structured, versioned — defined before any UI)
-2. Durable filing identity: filing date, reporting period, and a previous/current relationship between two filings of the same company
+1. Comparison output schema (structured, versioned — defined before any UI) — **done as a contract**: `comparison.v1` in [governance/comparison_schema.py](governance/comparison_schema.py), machine-validated (Pydantic, cross-filing and evidence-side invariants) with golden fixtures in `tests/`. A contract only: no comparison execution path, ingestion change, persistence, detector, API route, review integration, or UI exists yet, so steps 2-11 remain open
+2. Durable filing identity: filing date, reporting period, a per-filing id (today's ingest `document_id` is a year-stripped family id shared by successive filings), and a previous/current relationship between two filings of the same company — **the next dependency**; the schema requires these fields but nothing produces them yet
 3. Persistent comparison entity (create, list, reopen across restarts)
 4. Item 1A (Risk Factors) section alignment between the two filings
 5. Structured changes: added / removed / modified / undetermined — never inferring "removed" from a retrieval miss
