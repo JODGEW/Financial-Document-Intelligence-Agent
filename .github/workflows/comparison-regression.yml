@@ -63,6 +63,7 @@ jobs:
             tests/test_comparison_review.py \
             tests/test_comparison_export.py \
             tests/test_comparison_detection_attempts.py \
+            tests/test_comparison_detection_jobs.py \
             tests/test_detection_recovery.py \
             tests/test_comparison_reliability.py \
             tests/test_access_control.py \

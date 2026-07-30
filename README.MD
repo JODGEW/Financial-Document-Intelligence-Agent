@@ -79,7 +79,7 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds answers that meet a mandatory-review policy condition in a human review queue — either weighted risk at/above the 0.75 threshold or grounding strictly below the 0.50 review floor, each with an explicit reason code (a low weighted-risk answer can still be held by the floor). Hold or flag mode via `HUMAN_REVIEW_HOLD`; resolved in the React reviewer workspace or the CLI (approve/reject with an optional note — no draft editing yet)
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 866 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), comparison workflows, local access control, and thread safety
+- [x] 884 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), durable comparison-detection jobs, local access control, and thread safety
 
 ## Best-fit use cases
 
@@ -385,7 +385,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 866 tests (including comparison regression, reliability, authenticated actors, and access control)
+├── tests/           # 884 tests (including durable detection jobs, comparison regression, reliability, authenticated actors, and access control)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -543,7 +543,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-866 tests are collected. In the credential-free run, **854 pass, 2 optional
+884 tests are collected. In the credential-free run, **872 pass, 2 optional
 Tavily integration tests skip, and 10 live Bedrock tests are deselected**.
 Those 10 require live Bedrock credentials plus an ingested corpus — five in `test_agent.py`
 (`test_query_returns_output`, `test_query_uses_local_search`,
@@ -554,7 +554,7 @@ Those 10 require live Bedrock credentials plus an ingested corpus — five in `t
 `test_concurrent_local_search`). The 104-test access-control suite is
 credential-free and uses a deterministic test-only signing secret; it requires
 no real AWS credentials, GitHub repository secret, or network. The configured
-full live run passes all 866 tests. The table below
+full live run passes all 884 tests. The table below
 predates the comparison workflow and covers only the suites it lists. Run with:
 
 ```bash
@@ -653,11 +653,85 @@ A compact baseline lives at [eval/comparison_regression_baseline.json](eval/comp
 
 ---
 
+## Durable API detection jobs
+
+Authenticated initial detection is asynchronous. `POST
+/api/comparisons/{comparison_id}/detect` still requires
+`comparison.detect`, but it now performs only registry/source-hash validation
+and one atomic SQLite enqueue. A new or equivalent active request returns
+**202** with `created`, `comparisonId`, `jobId`, `jobStatus`,
+`comparisonStatus`, `queuedAt`, and nullable `attemptId`; it does not open
+Chroma, load Item 1A, construct a result, or run the detector. A current
+already-detected comparison still returns the existing result contract with
+**200** and creates no job.
+
+The API lifecycle is `ready_for_detection → queued_for_detection → detecting
+→ detected | failed`. `queued_for_detection` means one active queued job,
+no running attempt, and no detector execution. A separate process claims the
+job and creates the existing durable running attempt in the same transaction
+that records `detection_started` and `detection_job_claimed`. It then calls the
+existing deterministic detector execution seam. Success or failure is one
+terminal transaction spanning the job, attempt, transition events, comparison,
+and, on success, the canonical result. Direct library detection and the
+comparison regression runner remain synchronous
+(`ready_for_detection → detecting → detected | failed`) and create no API job.
+Operator-controlled stale replay also remains synchronous and creates no
+initial-detection job.
+
+Run one queued job, or a specific queued job, with:
+
+```bash
+python scripts/run_comparison_detection_worker.py \
+    --db-path comparisons/comparisons.db \
+    --registry-path filing_registry/registry.jsonl \
+    --worker-id local-worker-1 \
+    --once
+
+python scripts/run_comparison_detection_worker.py \
+    --db-path comparisons/comparisons.db \
+    --registry-path filing_registry/registry.jsonl \
+    --worker-id local-worker-1 \
+    --job-id djob_example \
+    --once --json
+```
+
+Each invocation claims and executes at most one job; there is no polling loop.
+No available job exits 0 and writes nothing. A successfully persisted detector
+success or domain failure also exits 0 because the worker completed its
+responsibility; invalid arguments exit 2, and storage/configuration/unexpected
+worker failures exit 1 with a bounded message. The worker imports neither the
+API nor authentication boundary and requires no `FDIA_AUTH_SECRET`. Its
+`worker_id` is bounded local process metadata, not authenticated human
+identity. Authenticated requester fields on a job come from the verified local
+HS256 Principal; bearer tokens, shared secrets, arbitrary claims, and token
+contents are never stored in a job or included in its idempotency hash.
+
+Queued jobs survive an API process restart. A process death after enqueue
+leaves the job queued and claimable with no attempt. A process death after
+claim leaves the job and attempt `running`, the comparison `detecting`, and no
+result; another worker cannot claim it in this commit. A death after the
+terminal commit but before CLI output leaves the terminal state intact, and a
+later worker does not repeat the detector work. There is deliberately no lease,
+heartbeat, fencing generation beyond the initial claim, timeout reclaim,
+automatic retry, scheduler, daemon loop, external queue, or multi-node
+coordination. This local SQLite queue is a single-node reference
+implementation; safe lease/reclaim behavior is the next bounded dependency.
+
+Read-only job visibility uses
+`GET /api/comparisons/{comparison_id}/detection-jobs`,
+`GET /api/comparison-detection-jobs/{job_id}`, and
+`GET /api/comparison-detection-jobs/{job_id}/events`, all protected by
+`detection_attempt.read`. Their closed DTOs omit request and claim hashes,
+token ids, result JSON, failure summaries, evidence, notes, paths, and SQL.
+Job events are insert-only application records, not tamper-proof storage.
+
+---
+
 ## Reliability visibility and operations
 
-**Read-only, transitively.** [comparison_reliability.py](comparison_reliability.py) aggregates the workflow records the two previous reliability steps already persist. It never repairs, retries, replays, deletes, or mutates anything, and its only SQLite access is one `mode=ro` snapshot read — a write is refused by the driver rather than merely avoided by convention. Replay eligibility is calculated from those already-loaded records through a **pure recovery calculation** in [detection_recovery.py](detection_recovery.py) (`build_recovery_view_from_records`, the same function the single-attempt recovery endpoint delegates to), so **no reliability API or CLI path calls `init_db`, an initializing store getter, or `recovery_view` — nothing reachable from a reliability request can create a database, create a table or index, run a migration, change database bytes or mtime, or leave a journal/WAL sidecar**, which an AST guard and poisoned-`init_db` tests pin. Filing-registry reads stay external JSONL file reads that never create or rewrite the registry. **A stale attempt reported here stays exactly as stale as it was** — resolving it still means an operator explicitly POSTing to `/api/detection-attempts/{id}/replay`. Everything derives from local persisted records plus the checked-in recovery policy: no AWS credentials, no Bedrock, no embeddings, no vector retrieval, no network.
+**Read-only, transitively.** [comparison_reliability.py](comparison_reliability.py) aggregates comparisons, detection jobs, attempts, and replays without repairing, retrying, reclaiming, replaying, deleting, or mutating anything. Its only SQLite access is one `mode=ro` snapshot read — a write is refused by the driver rather than merely avoided by convention. Replay eligibility is calculated from those already-loaded records through a **pure recovery calculation** in [detection_recovery.py](detection_recovery.py) (`build_recovery_view_from_records`, the same function the single-attempt recovery endpoint delegates to), so **no reliability API or CLI path calls `init_db`, an initializing store getter, or `recovery_view` — nothing reachable from a reliability request can create a database, create a table or index, run a migration, change database bytes or mtime, or leave a journal/WAL sidecar**, which an AST guard and poisoned-`init_db` tests pin. Filing-registry reads stay external JSONL file reads that never create or rewrite the registry. **A stale attempt reported here stays exactly as stale as it was** — direct/replay attempts still require an explicit operator replay, while a worker-owned running attempt is reported as non-reclaimable in this commit. Everything derives from local persisted records plus the checked-in recovery policy: no AWS credentials, no Bedrock, no embeddings, no vector retrieval, no network.
 
-**An unobservable store is not an empty one.** A correctly initialized comparison database holding **zero records is a valid empty system** and produces the explicit empty report — zero counters, `null` zero-denominator rates, empty issue and failure listings, exit 0. But a **missing** database (`reliability_storage_unavailable`), an **unreadable or corrupt** one (`reliability_storage_unavailable`), and one **missing a required workflow table** — `comparisons`, `comparison_detection_attempts`, or `comparison_detection_replays` (`reliability_data_invalid`, naming the absent table) — all **fail closed**. Reporting any of those as "zero detecting comparisons, zero failed attempts, zero unresolved issues" would be a false clean signal produced at exactly the moment the service cannot see workflow state. All three surfaces behave identically, and no partial metrics are returned. Full storage diagnostics — the configured path, the SQLite fault, which table is absent — stay **server-side only**; the API returns a stable code plus a correlation `error_id`, and the CLI prints stable codes with nothing on stdout.
+**An unobservable store is not an empty one.** A correctly initialized comparison database holding **zero records is a valid empty system** and produces the explicit empty report — zero counters, `null` zero-denominator rates, empty issue and failure listings, exit 0. But a **missing** database (`reliability_storage_unavailable`), an **unreadable or corrupt** one (`reliability_storage_unavailable`), and one **missing a required workflow table** — `comparisons`, `comparison_detection_jobs`, `comparison_detection_attempts`, or `comparison_detection_replays` (`reliability_data_invalid`, naming the absent table) — all **fail closed**. Reporting any of those as "zero detecting comparisons, zero failed attempts, zero unresolved issues" would be a false clean signal produced at exactly the moment the service cannot see workflow state. All three surfaces behave identically, and no partial metrics are returned. Full storage diagnostics — the configured path, the SQLite fault, which table is absent — stay **server-side only**; the API returns a stable code plus a correlation `error_id`, and the CLI prints stable codes with nothing on stdout.
 
 ```bash
 python scripts/comparison_reliability_report.py                     # human summary
@@ -671,11 +745,11 @@ python scripts/comparison_reliability_report.py \
 
 Three GET routes expose the same service: `GET /api/comparison-reliability/summary`, `.../issues`, and `.../failures`. DTOs are camelCase allowlists; `limit` is bounded (default 100, max 500) and the listings carry `total` / `returned` / `truncated` so a cap is never silent. Invalid timestamps, ranges, filters, and limits are 422 with stable codes (`invalid_timestamp`, `invalid_time_range`). Refusals are safe 500s carrying only a stable code, a concise message, and a correlation `error_id` — never a database path, SQLite error, SQL, schema text, raw exception, or any counter, gauge, issue, or partial report: `reliability_storage_unavailable`, `reliability_data_invalid`, and `reliability_dependency_unavailable` stay distinguishable so an operator can tell unreadable storage from unusable records from an unanswerable dependency. **None of the three mutates state, and the existing recovery and replay routes are unchanged.**
 
-**Time windows.** `since` / `until` are optional, timezone-aware, and inclusive (`since <= t <= until`); a naive timestamp is rejected rather than assumed to be UTC, and `until` must not precede `since`. Historical attempt metrics are windowed on `started_at`, historical replay metrics on `requested_at`. **Current-state gauges and the entire issue set are evaluated at query time and are never windowed** — "how many attempts are stuck right now" is not a question about a past interval, which is also why `unresolvedOperationalIssues` always equals the unfiltered issue total.
+**Time windows.** `since` / `until` are optional, timezone-aware, and inclusive (`since <= t <= until`); a naive timestamp is rejected rather than assumed to be UTC, and `until` must not precede `since`. Historical job metrics are windowed on `queued_at`, attempt metrics on `started_at`, and replay metrics on `requested_at`. **Current-state gauges and the entire issue set are evaluated at query time and are never windowed** — "how much work is queued or stuck right now" is not a question about a past interval, which is also why `unresolvedOperationalIssues` always equals the unfiltered issue total.
 
 **Denominators, stated exactly.** `success_rate`, `failure_rate`, and `timeout_rate` are each over `terminal_attempts` (`succeeded + failed + timed_out`); `replay_success_rate` is over terminal replay replacements. **Running work never enters a terminal denominator** — a running attempt is not a failure, and neither is a still-running replay replacement — so `attemptsRunningInWindow` is reported separately and `attemptsStarted` reconciles. A zero denominator is reported as `value: null` with its numerator, denominator, and `zeroDenominator: true` visible: never NaN, never silently 0.0, never omitted. Failure breakdowns are keyed by stable failure code, and the two version breakdowns count **failed and timed-out** attempts together.
 
-**Percentiles.** One definition everywhere: **nearest-rank**, stdlib only — sort ascending, `rank = ceil(p × n)`, take index `rank − 1`. For n = 1 every percentile is the sole value; for n = 2, p50 is the lower value and p95 the upper. Duration is `finished_at − started_at` over terminal attempts. A **negative** duration is excluded from the statistics, counted in `negativeDurationAttempts`, and raised as an issue — never folded into a min or mean that would then be quietly wrong.
+**Job and duration metrics.** Current gauges expose queued/running/succeeded/failed detection jobs. Historical counters expose jobs queued, claimed, succeeded, and failed. Queue wait is `claimed_at − queued_at`; execution duration is `finished_at − claimed_at` for terminal claimed jobs. One percentile definition applies to jobs and attempts: **nearest-rank**, stdlib only — sort ascending, `rank = ceil(p × n)`, take index `rank − 1`. For n = 1 every percentile is the sole value; for n = 2, p50 is the lower value and p95 the upper. Attempt duration is `finished_at − started_at` over terminal attempts. A **negative** duration is excluded from statistics and counted separately — never folded into a min or mean that would then be quietly wrong.
 
 **Operational issues** are calculated from source records, not persisted: there is no issue table and **no acknowledgement state**, so an issue keeps appearing for exactly as long as the record state producing it exists. Each record carries a closed allowlist of stable codes and identifiers — no evidence, result JSON, filing content, reviewer or operator notes, paths, SQL, or exception text — and its `recommendedActionCode` is a machine-readable code, never prose instructions. Ordering is deterministic: severity, then oldest condition first, then stable ids.
 
@@ -684,22 +758,28 @@ Three GET routes expose the same service: `GET /api/comparison-reliability/summa
 | `invalid_negative_duration` | a terminal attempt finished before it started | `inspect_clock_integrity` |
 | `attempt_limit_exhausted` | a `detecting` comparison has used all `max_attempts_per_comparison` attempts | `create_new_workflow_version` |
 | `stale_running_attempt` | a `running` attempt reached the configured stale threshold | `inspect_and_replay_if_valid`, or `no_replay_available` when a replay would currently be refused |
+| `running_detection_job_without_lease` | a worker-owned running job has crossed the conservative stale threshold; visibility only, because this commit has no lease or safe reclaim | `inspect_running_job_no_automatic_recovery` |
 | `replacement_attempt_failed` | a replay's replacement attempt itself `failed` | `inspect_failure` |
 | `comparison_failed` | the comparison is in `failed` | `inspect_failure` |
+| `queued_detection_job` | an initial-detection job is queued and needs a one-shot worker invocation | `run_one_shot_detection_worker` |
 
 The gauge `attemptLimitExhaustedComparisons` uses **exactly the same scope** as the `attempt_limit_exhausted` issue — `status == detecting` **and** `attempts_used >= max_attempts_per_comparison` — so the two always agree. A comparison that spent its whole attempt budget and then reached a terminal state is deliberately excluded: the `detected` one succeeded, and the `failed` one is reported as `comparison_failed`, where the attempt budget is not the operative constraint (a failed attempt is not replayable at any attempt count). Historical attempt counters are unaffected by this scope. A `timed_out` replacement is not reported as `replacement_attempt_failed`, because `timed_out` is reachable only inside a replay transaction that starts a successor — that successor's state is the live signal.
 
 **Dependency handling is also fail-closed.** Replay eligibility is a statement about filing-registry truth, so it is the one metric here with an external dependency. When at least one attempt needs a recovery evaluation and the registry is absent, unreadable, malformed, or empty, the report is refused with the stable code `reliability_dependency_unavailable` (safe 500 + `error_id` on the API; exit 1 and no partial output on the CLI). An unanswerable question is **never** converted into `replayEligibleAttempts: 0`, an empty issue list, or a `no_replay_available` action code — that would tell an operator nothing needs action at exactly the moment the system cannot tell. When nothing needs a recovery evaluation (no stale running attempt), the count is an exact zero and the registry is not read at all; the failures listing never requires eligibility, so it never depends on the registry. Note that `filing_registry/registry.jsonl` is gitignored runtime state, so a clean clone that has not run `python ingest.py` will legitimately hit this refusal as soon as a stale attempt exists.
 
-**Fail-closed data validation.** Metrics come from stored rows, so contradictory rows would otherwise produce clean-looking numbers that are false. The report is **refused** with the stable code `reliability_data_invalid` when it finds a terminal attempt without `finished_at`, a running attempt with one, an attempt or comparison status outside the store's vocabulary, a replay whose source or replacement attempt is missing, or a stored timestamp that is not parseable as timezone-aware UTC. No partial metrics are returned after a structural error, on any surface. The one deliberate exception is a negative duration, which becomes an issue instead — a single skewed clock should not suppress the whole report. Detection transition *events* are deliberately not consumed: no metric in this contract needs them.
+**Fail-closed data validation.** Metrics come from stored rows, so contradictory rows would otherwise produce clean-looking numbers that are false. The report is **refused** with the stable code `reliability_data_invalid` when it finds an incoherent job lifecycle or missing job linkage, a terminal attempt without `finished_at`, a running attempt with one, a job/attempt/comparison status outside the store's vocabulary, a replay whose source or replacement attempt is missing, or a stored timestamp that is not parseable as timezone-aware UTC. No partial metrics are returned after a structural error, on any surface. The one deliberate exception is a negative duration, which becomes an issue instead — a single skewed clock should not suppress the whole report. Detection transition *events* are deliberately not consumed: no metric in this contract needs them.
 
-**Structured logging.** Lifecycle records cover comparison creation, detection
-attempt start and terminal transitions, replay creation/completion, governance
-evaluation, authenticated comparison-review decisions, and export creation.
+**Structured logging.** Lifecycle records cover comparison creation, durable
+detection-job queue/claim/success/failure, detection attempt start and terminal
+transitions, replay creation/completion, governance evaluation, authenticated
+comparison-review decisions, and export creation.
 Their allowlisted LogRecord fields include the existing workflow identifiers
 plus Principal-derived `actor_subject`,
 `actor_auth_method`, `actor_token_id`, and `required_permission` on
-authenticated mutations. They never include a bearer token, shared secret,
+authenticated mutations. Job enqueue logging deliberately omits token id and
+records only subject, auth method, and required permission; claim/terminal job
+records carry local worker metadata and timings but no actor fields. They never
+include a raw claim token or its hash, bearer token, shared secret,
 arbitrary claims, Authorization header, notes, evidence, document text, paths,
 SQL, environment values, or raw exception text. **These are structured fields
 through stdlib logging, not guaranteed JSON**; rendering still depends on the
@@ -709,8 +789,10 @@ that change nothing emit no duplicate lifecycle record.
 
 **What does not exist here.** No dashboard, no frontend surface, no alerting,
 no notifications (email, Slack, SNS), no external monitoring integration
-(Prometheus, OpenTelemetry, CloudWatch), and no scheduler, worker, queue, or
-polling loop. Reliability API reads now require a verified local access token
+(Prometheus, OpenTelemetry, CloudWatch), and no scheduler, daemon/polling
+worker, external queue, lease, heartbeat, automatic retry, or safe reclaim.
+The only worker is an explicitly invoked one-shot local process over the
+single-node SQLite queue. Reliability API reads require a verified local access token
 with `reliability.read`; the credential-free local report CLI still reads the
 database directly for an operator who already has filesystem access. Local
 SQLite records and process logs are **application records, not tamper-proof
@@ -814,10 +896,10 @@ Known limitations:
 * The comparison regression suite and its `comparison-regression` CI gate protect deterministic behavior over **five controlled synthetic fixture pairs** (fictional companies, hand-written chunk fixtures plus the two Acme excerpts). Exact gates there mean "nothing drifted", **not** "the detector is accurate": no metric in this repository has been measured against real SEC filings, and real public-filing evaluation with a labeled EDGAR dataset remains future work. The gated limitations remain Item 1A only, lexical heading alignment with no similarity stage, local SQLite storage, and a local shared-secret authentication boundary
 * The filing registry ([filing_registry.py](filing_registry.py)) detects exact-content duplicates (a renamed byte-identical file records a `duplicate` outcome and is not indexed twice) and identity conflicts (same company/form/period from different content records a `conflict` and is not indexed). Detection happens at ingest time within the local registry only — there is no fuzzy near-duplicate detection, and cross-process registry writes are unprotected (same JSONL limitation as the review queue)
 * The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
-* Comparison detection has a durable execution record, an explicit lifecycle, and **operator-controlled** recovery (see below), but **there is still no automatic retry, automatic replay, dead-letter queue, message queue, scheduler, background worker, polling loop, or exponential backoff anywhere**. An interrupted detection is now *resolvable* rather than permanent, but only by a human: crossing the configured stale threshold changes nothing on its own — the attempt keeps its `running` status and the comparison keeps its `detecting` status until an operator explicitly POSTs a replay request, and reading the recovery endpoint never mutates anything. Nothing infers termination from age alone, wall-clock, or file mtime; nothing marks an attempt failed on a guess; nothing starts a replacement by itself. Replay is bounded by `max_attempts_per_comparison`, and general retry of an already-*failed* attempt is deliberately out of scope. The generic chat side has no durable task record at all, and the audit log remains an append-only local file, not immutable storage
+* Authenticated initial comparison detection has a durable SQLite job and a separate one-shot worker, but this is a **single-node reference queue**, not a distributed or highly available execution system. There is no lease, heartbeat, lease expiry, timeout reclaim, fencing generation beyond the initial claim, automatic retry/replay, dead-letter queue, scheduler, daemon loop, backoff, or external queue. A queued job survives API restart and can be claimed later; a worker crash after claim leaves the job and attempt `running` and the comparison `detecting` indefinitely. Another worker cannot reclaim that work in this commit. The reliability view reports the condition but never repairs it. Direct library/regression detection and operator-controlled stale replay remain synchronous; a worker-owned claim is deliberately not eligible for stale replay because that would bypass the missing fencing/reclaim protocol. The generic chat side still has no durable task record, and the audit log remains an append-only local file, not immutable storage
 * Replay through the protected API requires `recovery.replay`, and every API-created replay stores the verified Principal subject with `local_hs256` attribution; an optional deprecated `operatorId` is accepted only when it exactly matches that subject. Direct library calls and historical rows stay marked `legacy_self_asserted`. Replay records and detection transition events are append-only **application records** in a local SQLite file, not tamper-proof storage
 * Detection attempts and their transition events are append-only **application records** in a local SQLite file — not tamper-proof storage. Anyone with file access can alter them
-* Reliability visibility is **read-only and exposes state only**: it never repairs, retries, replays, deletes, or mutates a workflow record. Its API routes require `reliability.read`; the local report CLI remains available to an operator with filesystem access. There is still no dashboard, frontend, alerting, notification, external monitoring integration, scheduler, worker, queue, or polling loop. Lifecycle fields travel through stdlib logging but are not guaranteed JSON. Replay eligibility still depends on the filing registry and fails closed when it cannot be evaluated. Local SQLite records and process logs remain application records, not tamper-proof storage
+* Reliability visibility is **read-only and exposes state only**: it never repairs, retries, reclaims, replays, deletes, or mutates a workflow record. Its API routes require `reliability.read`; the local report CLI remains available to an operator with filesystem access. There is still no dashboard, frontend, alerting, notification, external monitoring integration, scheduler, daemon loop, lease manager, or external queue. Lifecycle fields travel through stdlib logging but are not guaranteed JSON. Replay eligibility still depends on the filing registry and fails closed when it cannot be evaluated. Local SQLite records and process logs remain application records, not tamper-proof storage
 
 ---
 
@@ -837,24 +919,27 @@ and export artifacts are local files and SQLite, not immutable or tamper-proof
 storage. This is not enterprise-ready, not compliance-grade, and carries no
 production security posture.
 
-**Stage 3.5 work is in progress and not complete.** Four bounded steps have
+**Stage 3.5 work is in progress and not complete.** Five bounded steps have
 landed (roadmap step 12): durable detection attempts and lifecycle events;
 explicit bounded stale replay; read-only reliability metrics and correlated
 structured logs; and now signed local access tokens, policy-derived route
 permissions, plus authenticated attribution for new protected-API replay and
-review actions.
+review actions; followed by durable authenticated initial-detection jobs and a
+credential-free one-shot worker.
 The authentication step proves callers inside one local shared-secret trust
 boundary; possession of that secret permits token issuance, revocation is not
 implemented, and rotation invalidates every outstanding token. It does not
 make SQLite or logs tamper-proof and does not protect the generic chat/RAG
 surface.
 
-What still does not exist is durable background execution: no automatic retry
-or replay, timeout takeover, scheduler, queue, worker, lease, or heartbeat.
-An interrupted detection stays `detecting`/`running` until an authorized human
-acts, and a failed attempt is not retryable. Maturity therefore remains
-**Stage 3**. Stage 3.5 remains in progress; the next major dependency is
-**durable background execution with leases and heartbeats**.
+The queue is local SQLite and the worker is explicitly invoked, one job at a
+time. What still does not exist is safe crash recovery: no lease, heartbeat,
+lease expiry, fencing generation, timeout takeover, reclaim, automatic retry,
+scheduler, daemon loop, or external queue. A worker crash after claim leaves
+the job and attempt `running`; even an authorized human cannot safely replay
+that worker-owned attempt in this commit. Maturity therefore remains **Stage
+3**. Stage 3.5 remains in progress; the next dependency is **lease, heartbeat,
+fencing, and safe reclaim**.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 
@@ -862,7 +947,7 @@ The next implementation phase is a governed two-filing change review for one com
 
 1. Comparison output schema (structured, versioned — defined before any UI) — **done as a contract**: `comparison.v1` in [governance/comparison_schema.py](governance/comparison_schema.py), machine-validated (Pydantic, cross-filing and evidence-side invariants) with golden fixtures in `tests/`
 2. Durable filing identity — **done**: [filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml). Explicit manifest metadata (company, form type, `period_end`, `filing_date` — never inferred from filenames or mtimes) mints a per-filing `filing_id` (`company:form:period_end`), distinct from the year-stripped `document_family_id` that successive filings share (kept, with `document_id` as its legacy alias, for the impact workflow). The registry records one durable outcome per attempted source (`parsed` / `duplicate` / `failed` / `conflict`, atomic JSONL writes), orders same-company/same-form filings chronologically by `period_end`, and builds validated `FilingReference` sides via `to_filing_reference`. Two controlled fictional Acme 10-K excerpts (FY2024 + FY2025, distinct periods, shared family) are the demo dataset — they prove identity and ordering, not comparison quality, and structured comparison itself still does not exist. **The next dependency is step 3 (persistent comparison entity)**
-3. Persistent comparison entity (create, list, reopen across restarts) — **done**: [comparison_store.py](comparison_store.py) (stdlib SQLite, no ORM — chosen over JSONL because comparisons are mutable workflow records that later commits transition and attach children to) plus `POST /api/comparisons`, `GET /api/comparisons/{id}`, and `GET /api/comparisons` (filters: `filing_id`, `status` — including `detecting`). Creation validates the pair against the filing registry (existence, parsed status, undisputed identity, complete metadata, same company/form, strictly increasing `period_end`, supported section scope) and returns stable 422 reason codes; identical requests are idempotent (deterministic `cmp_` id + unique logical-key constraint, `created` flag, no duplicate rows under concurrent creates). Records persist in an explicit **`ready_for_detection`** state: no changes, evidence, validation, risk, or review fields exist on them — a pre-detection record cannot masquerade as a completed comparison. **The next dependency is step 4 (Item 1A section alignment and structured change detection)**
+3. Persistent comparison entity (create, list, reopen across restarts) — **done**: [comparison_store.py](comparison_store.py) (stdlib SQLite, no ORM — chosen over JSONL because comparisons are mutable workflow records that later commits transition and attach children to) plus `POST /api/comparisons`, `GET /api/comparisons/{id}`, and `GET /api/comparisons` (filters: `filing_id`, `status` — including `queued_for_detection` and `detecting`). Creation validates the pair against the filing registry (existence, parsed status, undisputed identity, complete metadata, same company/form, strictly increasing `period_end`, supported section scope) and returns stable 422 reason codes; identical requests are idempotent (deterministic `cmp_` id + unique logical-key constraint, `created` flag, no duplicate rows under concurrent creates). Records persist in an explicit **`ready_for_detection`** state: no changes, evidence, validation, risk, or review fields exist on them — a pre-detection record cannot masquerade as a completed comparison. **The next dependency is step 4 (Item 1A section alignment and structured change detection)**
 4. Item 1A (Risk Factors) section alignment between the two filings — **done**: ingestion stamps a canonical `section_key` (`item_1a_risk_factors`, mapped from splitter-produced headings only — body text can never classify) plus a `chunk_seq` ordering; [comparison_detector.py](comparison_detector.py) loads complete sections by `filing_id` + `section_key` via metadata `get` (no vector retrieval anywhere in the path) with an explicit completeness proof (registry chunk_count vs indexed count)
 5. Structured changes: added / removed / modified / undetermined — **done** with deterministic rules only (exact normalized heading match, then exact content match; deliberately no similarity stage in v1). "Removed" is never inferred from a retrieval miss: added/removed are emitted only when both sections are proven complete, and anything unprovable or ambiguous becomes `undetermined` with a stable reason code
 6. Previous-filing and current-filing evidence attached to every change — **done**: every `EvidenceReference` resolves back to an indexed chunk (chunk_id, page, section, excerpt from the indexed text), with the comparison.v1 side rules enforced by schema validation over detector output
@@ -871,13 +956,15 @@ The next implementation phase is a governed two-filing change review for one com
 9. Reviewer attribution, required decision reasons, and draft-edit support — **done** ([comparison_review.py](comparison_review.py)): one terminal approve/reject per pending comparison review, recorded as an append-only SQLite decision event with an action-specific allowlisted reason code (edits ⇔ `approved_with_summary_edits`), a required bounded note, both result hashes, and the complete final reviewed comparison.v1 snapshot. New API decisions require `review.decide` and derive the reviewer id from the verified Principal; the deprecated request field cannot override it. Existing rows remain readable as `legacy_self_asserted`. Editing remains summary-only by change_id and is revalidated against original evidence; rejection, idempotency, concurrency, and transactional semantics are unchanged. `GET/POST /api/comparison-reviews/{id}[...]` + `/events`
 10. Release-gated structured export (formerly phrased "approved-only export") — **done** ([comparison_export.py](comparison_export.py), contract in [governance/comparison_export_schema.py](governance/comparison_export_schema.py)): a persisted, deterministic `comparison.export.v1` JSON artifact created only when the persisted governance workflow already released the result. Eligibility is resolved from stored records, never client-submitted state: `returned` and `returned_with_warning` evaluations export their governed snapshot directly, held evaluations export the final reviewed snapshot from their approved terminal review event, and pending, rejected, and blocked outcomes refuse with stable reason codes. Export creation now requires `export.create` and reads require `export.read`; release eligibility, payload construction, and payload hashing are unchanged, and no new token or policy metadata is inserted into the export payload. For version/hash compatibility, `comparison.export.v1` retains its legacy `reviewer_id_basis=self_asserted_local_metadata` field and omits the workflow record's authenticated provenance; carrying that provenance requires a future versioned export contract. Export rows remain application records, **not signed or tamper-proof storage**. `POST/GET /api/comparisons/{id}/exports` + `GET /api/comparison-exports/{export_id}` — persisted JSON only: no delivery, downloads, webhooks, or frontend
 11. A labeled comparison dataset with precision/recall metrics and CI regression gates — **done** ([scripts/eval_comparison_regression.py](scripts/eval_comparison_regression.py), labels in [tests/fixtures/comparison_regression_labels.json](tests/fixtures/comparison_regression_labels.json), fixtures in [tests/fixtures/comparison_regression/](tests/fixtures/comparison_regression/), CI in [.github/workflows/comparison-regression.yml](.github/workflows/comparison-regression.yml)): a versioned human-readable label contract (`comparison-regression.v1`) over five **controlled synthetic** fixture pairs — standard (modified/added/removed/unchanged), no-change, missing-section, ambiguous-heading, and retitled-and-reworded — each run end to end from fresh temporary state, twice, with ten metrics reported at explicit denominators and exact CI gates. The suite also pins the workflow invariants (idempotency, one pending review per held result, pending/rejected refusing release, approved releasing the reviewed snapshot, snapshot preservation after export, SQLite integrity). Branch-protection check name `comparison-regression`; credential-free (no AWS, no Bedrock, no network); baseline regeneration requires `--write-baseline` and is refused in CI. **Coverage is controlled and synthetic — the metrics measure deterministic-behavior stability, not real-filing accuracy. Real public-filing evaluation remains future work.** The next dependency is step 12
-12. Then Stage-3.5 reliability and authentication work (state machine, retries, durable failure handling, auth) — **in progress, not complete**. The first reliability step is done: comparison detection now has **durable execution attempts and an explicit lifecycle**. The comparison lifecycle is `ready_for_detection → detecting → detected | failed`, with `detecting` meaning a durable `running` attempt exists and no result has been committed for it. Every execution that starts gets an attempt row (stable id, monotonically increasing `attempt_number` per comparison, detector and workflow versions, the filing source hashes captured at start, `started_at`/`finished_at`, terminal result hash or safe failure code and bounded safe summary) plus append-only `detection_started` / `detection_succeeded` / `detection_failed` transition events. This holds for **every** runtime detection path — the API route, the CLI, and the comparison-regression runner all go through the same public entry point, and no production code persists a result without its attempt (the low-level `comparison_store.record_result` is a test-fixture primitive only, enforced by an audit test). A known post-start failure keeps its **own** stable domain code; only unexpected non-domain faults are recorded as `detector_internal_error`, and persisted summaries are always derived from the code, never from exception text. Both terminal transitions are **transactional**: start commits the attempt, the started event, and the `detecting` state in one transaction before any data is read, and exactly one of the completion or failure transactions finalizes it — so a committed result can never coexist with a running attempt, and a succeeded attempt can never exist without its result (enforced by storage CHECK constraints as well as by the transactions). Concurrent requests no longer duplicate detector work: a storage-level constraint admits at most one running attempt per comparison, and the loser gets `409 detection_in_progress` (or the winner's result if it already committed). Attempts and events are readable at `GET /api/comparisons/{id}/detection-attempts`, `GET /api/detection-attempts/{id}`, and `GET /api/detection-attempts/{id}/events`; the detect response additionally carries `attemptId` beside the unchanged `comparison.v1` result contract. **They are append-only application records, not tamper-proof storage.**
+12. Then Stage-3.5 reliability and authentication work (state machine, retries, durable failure handling, auth) — **in progress, not complete**. The first reliability step is done: comparison detection has **durable execution attempts and an explicit lifecycle**. Both the direct synchronous path (`ready_for_detection → detecting → detected | failed`) and the asynchronous worker path (`queued_for_detection → detecting → detected | failed`) create the same attempt record and append-only `detection_started` / terminal event before computation. Attempt ids, monotonic attempt numbers, versions, source hashes, timestamps, result hash or stable safe failure fields remain transactionally coherent with the comparison and result. The authenticated API no longer starts an attempt inline; its attempt exists only after a worker claims the durable job. Attempts and events remain readable at `GET /api/comparisons/{id}/detection-attempts`, `GET /api/detection-attempts/{id}`, and `GET /api/detection-attempts/{id}/events`. **They are append-only application records, not tamper-proof storage.**
 
-    The second reliability step is also done: **bounded stale-detection recognition and operator-controlled replay** ([detection_recovery.py](detection_recovery.py), policy in [policies/detection_recovery_policy.yaml](policies/detection_recovery_policy.yaml)). Staleness remains eligibility, never an automatic action: the read-only recovery view mutates nothing, and only an explicit replay transaction retires the stale attempt, starts its bounded replacement, and records the linkage. Protected-API replay now requires `recovery.replay`; its actor and idempotency hash use the verified Principal subject, never a token or caller-supplied identity. Direct library callers retain the explicit legacy attribution path. Reason/note, input/version checks, attempt limits, transactional behavior, and synchronous execution remain unchanged. There is still no automatic retry, replay, takeover, scheduler, queue, or worker
+    The second reliability step is also done: **bounded stale-detection recognition and operator-controlled replay** ([detection_recovery.py](detection_recovery.py), policy in [policies/detection_recovery_policy.yaml](policies/detection_recovery_policy.yaml)). Staleness remains eligibility, never an automatic action: the read-only recovery view mutates nothing, and only an explicit replay transaction retires an eligible direct/replay attempt, starts its bounded replacement, and records the linkage. Protected-API replay requires `recovery.replay`; its actor and idempotency hash use the verified Principal subject, never a token or caller-supplied identity. Direct library callers retain the explicit legacy attribution path. Replay remains synchronous and creates no initial-detection job. A worker-owned running attempt is refused until leases and fencing make reclaim safe
 
     The third reliability step is also done: **read-only operator visibility, structured reliability metrics, and correlated transition logging** ([comparison_reliability.py](comparison_reliability.py), CLI in [scripts/comparison_reliability_report.py](scripts/comparison_reliability_report.py), full contract in [Reliability visibility and operations](#reliability-visibility-and-operations)). The APIs require `reliability.read`; the credential-free local CLI remains a direct operator tool. Read-only SQLite behavior, exact denominators, fail-closed validation, issue calculation, and post-commit logging semantics remain unchanged
 
-    The fourth bounded Stage-3.5 step is now done: **authenticated comparison-workflow actors and permission-based authorization**. A fail-fast checked-in policy defines local HS256 token verification, allowlisted roles, and exact permissions. Every comparison route declares its permission; authentication and authorization happen before resource lookup or mutation. New protected-API replay and review records derive actor identity from the immutable verified Principal and persist a narrow `local_hs256` source marker; direct library calls and historical rows remain `legacy_self_asserted`. Missing/invalid credentials use sanitized 401 responses and insufficient permissions use sanitized 403 responses. An offline local token CLI (no network or cloud credentials) supports controlled issuance from the required runtime signing secret. This is deliberately local shared-secret authentication, not OAuth/OIDC/SSO or account management. **Stage 3.5 remains in progress; the next major dependency is durable background execution with leases and heartbeats**
+    The fourth bounded Stage-3.5 step is done: **authenticated comparison-workflow actors and permission-based authorization**. A fail-fast checked-in policy defines local HS256 token verification, allowlisted roles, and exact permissions. Every comparison route declares its permission; authentication and authorization happen before resource lookup or mutation. New protected-API replay, review, and detection-job requester records derive actor identity from the immutable verified Principal; direct library calls and historical replay/review rows retain their explicit legacy attribution. This is deliberately local shared-secret authentication, not OAuth/OIDC/SSO or account management
+
+    The fifth bounded Stage-3.5 step is now done: **durable asynchronous authenticated initial-detection jobs and one-shot worker execution**. API detect atomically enqueues and returns 202 without detector/Chroma work; a separate credential-free invocation claims at most one job, creates the existing running attempt, executes the existing deterministic seam, and atomically finalizes job, attempt, events, result, and comparison. Equivalent enqueues and claim races are storage-constrained and idempotent. Queued and claimed state survives process restart. This is still a local single-node reference queue: worker identity is process metadata, there is no scheduler or daemon, and a crash after claim is stuck because no lease, heartbeat, fencing, or safe reclaim exists. **Stage 3.5 remains in progress; the next dependency is lease, heartbeat, fencing, and safe reclaim**
 
 Explicitly deferred until after that path: document-level permissions (formerly "Phase 6"), broader authentication for generic chat/RAG, new document formats, OCR, rerankers and vector-store migration, further generic chat UI redesign, additional generic chat eval expansion, LLM-as-judge evaluation, NIST documentation expansion, and Gradio parity.
 

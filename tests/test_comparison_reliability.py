@@ -235,6 +235,7 @@ def test_empty_database_reports_explicit_zero_denominators(db):
 
     assert report["gauges"] == {
         "comparisons_ready_for_detection": 0,
+        "comparisons_queued_for_detection": 0,
         "comparisons_detecting": 0,
         "comparisons_detected": 0,
         "comparisons_failed": 0,
@@ -242,6 +243,10 @@ def test_empty_database_reports_explicit_zero_denominators(db):
         "stale_running_attempts": 0,
         "replay_eligible_attempts": 0,
         "attempt_limit_exhausted_comparisons": 0,
+        "detection_jobs_queued": 0,
+        "detection_jobs_running": 0,
+        "detection_jobs_succeeded": 0,
+        "detection_jobs_failed": 0,
         "unresolved_operational_issues": 0,
     }
     assert report["attempts"]["terminal_attempts"] == 0
@@ -1470,11 +1475,12 @@ _UNRELATED_TABLES = (
     "comparison_review_events",
     "comparison_exports",
     "comparison_detection_events",
+    "comparison_detection_job_events",
 )
 
 
 def _partial_reliability_db(path):
-    """A database holding EXACTLY the three reliability source tables.
+    """A database holding EXACTLY the four reliability source tables.
 
     Hand-written DDL with the real column names, so the allowlisted SELECTs
     succeed while every unrelated store table is deliberately missing.
@@ -1494,6 +1500,13 @@ def _partial_reliability_db(path):
             "previous_source_hash TEXT, current_source_hash TEXT, started_at TEXT, "
             "finished_at TEXT, result_hash TEXT, failure_code TEXT, "
             "failure_summary TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE comparison_detection_jobs (job_id TEXT PRIMARY KEY, "
+            "comparison_id TEXT, attempt_id TEXT, trigger_type TEXT, status TEXT, "
+            "detector_version TEXT, workflow_version TEXT, queued_at TEXT, "
+            "claimed_at TEXT, finished_at TEXT, worker_id TEXT, result_hash TEXT, "
+            "failure_code TEXT)"
         )
         conn.execute(
             "CREATE TABLE comparison_detection_replays (replay_id TEXT PRIMARY "
@@ -1516,7 +1529,7 @@ def _table_names(path):
 
 
 def test_partial_schema_service_reads_are_correct_and_create_nothing(tmp_path):
-    """Partial-schema tests 4-6: the three reliability tables suffice, and no
+    """Partial-schema tests 4-6: the four reliability tables suffice, and no
     absent unrelated table comes into existence."""
     path = _partial_reliability_db(tmp_path / "partial.db")
     _write_registry(tmp_path / "registry.jsonl")
@@ -1835,7 +1848,7 @@ def test_pure_recovery_functions_touch_no_storage():
         }
         assert store_attrs <= {
             "evaluate_staleness", "STATUS_DETECTING", "ATTEMPT_RUNNING",
-            "WORKFLOW_VERSION",
+            "JOB_RUNNING", "WORKFLOW_VERSION",
         }, (function.name, store_attrs)
         referenced = {
             node.id for node in ast.walk(function) if isinstance(node, ast.Name)
@@ -1855,7 +1868,7 @@ def test_snapshot_is_read_only_and_column_allowlisted(db):
     assert hashlib.sha256(Path(db).read_bytes()).hexdigest() == before
 
     assert set(snapshot) == {
-        "comparisons", "attempts", "replays", "attempts_per_comparison",
+        "comparisons", "attempts", "jobs", "replays", "attempts_per_comparison",
     }
     assert set(snapshot["comparisons"][0]) == set(
         comparison_store._RELIABILITY_COMPARISON_COLUMNS
@@ -1863,6 +1876,7 @@ def test_snapshot_is_read_only_and_column_allowlisted(db):
     assert set(snapshot["attempts"][0]) == set(
         comparison_store._RELIABILITY_ATTEMPT_COLUMNS
     )
+    assert snapshot["jobs"] == []
     replay_keys = set(snapshot["replays"][0])
     assert replay_keys == set(comparison_store._RELIABILITY_REPLAY_COLUMNS)
     # Operator prose can never reach reliability output: it is not even read.
@@ -2013,6 +2027,9 @@ def test_a_legacy_store_predating_detection_attempts_fails_closed(tmp_path):
             "comparison_detection_attempts"
         ),
         comparison_reliability.data_missing_table_reason(
+            "comparison_detection_jobs"
+        ),
+        comparison_reliability.data_missing_table_reason(
             "comparison_detection_replays"
         ),
     ]
@@ -2028,7 +2045,7 @@ def test_store_snapshot_distinguishes_every_storage_case(tmp_path):
     comparison_store.init_db(valid)
     snapshot = comparison_store.read_reliability_snapshot(valid)
     assert snapshot == {
-        "comparisons": [], "attempts": [], "replays": [],
+        "comparisons": [], "attempts": [], "jobs": [], "replays": [],
         "attempts_per_comparison": {},
     }
     # B: missing.
@@ -2117,14 +2134,27 @@ def test_api_summary_dto_is_allowlisted(api_db):
     assert set(body) == {
         "contractVersion", "generatedAt", "since", "until", "detectorVersions",
         "workflowVersions", "recoveryPolicyId", "recoveryPolicyVersion",
-        "staleAfterSeconds", "maxAttemptsPerComparison", "gauges", "attempts",
-        "attemptRates", "replays", "replayRates", "durations", "failureBreakdown",
+        "staleAfterSeconds", "maxAttemptsPerComparison", "gauges", "jobs",
+        "jobDurations", "attempts", "attemptRates", "replays", "replayRates",
+        "durations", "failureBreakdown",
     }
     assert set(body["gauges"]) == {
-        "comparisonsReadyForDetection", "comparisonsDetecting", "comparisonsDetected",
-        "comparisonsFailed", "runningAttempts", "staleRunningAttempts",
-        "replayEligibleAttempts", "attemptLimitExhaustedComparisons",
+        "comparisonsReadyForDetection", "comparisonsQueuedForDetection",
+        "comparisonsDetecting", "comparisonsDetected", "comparisonsFailed",
+        "runningAttempts", "staleRunningAttempts", "replayEligibleAttempts",
+        "attemptLimitExhaustedComparisons", "detectionJobsQueued",
+        "detectionJobsRunning", "detectionJobsSucceeded", "detectionJobsFailed",
         "unresolvedOperationalIssues",
+    }
+    assert set(body["jobs"]) == {
+        "jobsQueued", "jobsClaimed", "jobsSucceeded", "jobsFailed",
+    }
+    assert set(body["jobDurations"]) == {
+        "queueWaitCount", "queueWaitSecondsMin", "queueWaitSecondsMax",
+        "queueWaitSecondsMean", "queueWaitSecondsP50", "queueWaitSecondsP95",
+        "executionCount", "executionSecondsMin", "executionSecondsMax",
+        "executionSecondsMean", "executionSecondsP50", "executionSecondsP95",
+        "negativeQueueWaitJobs", "negativeExecutionJobs", "percentileMethod",
     }
     assert set(body["attempts"]) == {
         "attemptsStarted", "attemptsSucceeded", "attemptsFailed", "attemptsTimedOut",
@@ -2175,10 +2205,11 @@ def test_api_issue_and_failure_dtos_expose_nothing_sensitive(api_db):
     assert issues.json()["total"] >= 1
     for issue in issues.json()["issues"]:
         assert set(issue) == {
-            "issueType", "comparisonId", "attemptId", "replayId", "status",
-            "failureCode", "startedAt", "createdAt", "detectedAt", "ageSeconds",
-            "staleAt", "attemptsUsed", "maxAttempts", "detectorVersion",
-            "workflowVersion", "recommendedActionCode",
+            "issueType", "comparisonId", "jobId", "attemptId", "replayId",
+            "status", "failureCode", "startedAt", "queuedAt", "claimedAt",
+            "createdAt", "detectedAt", "ageSeconds", "staleAt", "attemptsUsed",
+            "maxAttempts", "detectorVersion", "workflowVersion",
+            "recommendedActionCode",
         }
     assert set(failures.json()) == {
         "contractVersion", "generatedAt", "since", "until", "total", "returned",
@@ -3025,7 +3056,11 @@ def test_reliability_service_only_calls_read_only_store_functions():
         # vocabulary constants
         "ATTEMPT_STATUSES", "ATTEMPT_RUNNING", "ATTEMPT_SUCCEEDED",
         "ATTEMPT_FAILED", "ATTEMPT_TIMED_OUT", "STATUS_READY_FOR_DETECTION",
-        "STATUS_DETECTING", "STATUS_DETECTED", "STATUS_FAILED",
+        "STATUS_QUEUED_FOR_DETECTION", "STATUS_DETECTING", "STATUS_DETECTED",
+        "STATUS_FAILED", "JOB_STATUSES", "JOB_QUEUED", "JOB_RUNNING",
+        "JOB_SUCCEEDED", "JOB_FAILED",
+        "EVENT_JOB_QUEUED", "EVENT_JOB_CLAIMED", "EVENT_JOB_SUCCEEDED",
+        "EVENT_JOB_FAILED",
         # exception types only: one classifies a registry answer, two carry the
         # store's read-path storage/schema verdicts. None of them writes.
         "ComparisonPairError",
@@ -3097,6 +3132,7 @@ _WORKFLOW = REPO_ROOT / ".github" / "workflows" / "comparison-regression.yml"
 # a regression in it, which is exactly what this test exists to prevent.
 _REQUIRED_CI_SUITES = (
     # Stage 3.5 reliability
+    "tests/test_comparison_detection_jobs.py",
     "tests/test_comparison_detection_attempts.py",
     "tests/test_detection_recovery.py",
     "tests/test_comparison_reliability.py",

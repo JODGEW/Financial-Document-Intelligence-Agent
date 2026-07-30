@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from langchain_core.embeddings import Embeddings
 
 import api
+import comparison_detection_worker
 import comparison_detector
 import comparison_store
 import config
@@ -1074,9 +1075,8 @@ def api_env(corpus, tmp_path, monkeypatch):
     return SimpleNamespace(db=db)
 
 
-def test_detect_route_exposes_attempt_id_without_touching_the_result(api_env):
-    """The additive attemptId rides beside the unchanged result contract, and
-    the comparison.v1 document itself gains no attempt metadata."""
+def test_detect_route_queues_before_worker_exposes_attempt_id(api_env):
+    """The API queues with no attempt; the worker creates it separately."""
     created = client.post(
         "/api/comparisons",
         json={"previousFilingId": PREV_ID, "currentFilingId": CURR_ID},
@@ -1084,26 +1084,28 @@ def test_detect_route_exposes_attempt_id_without_touching_the_result(api_env):
     assert created.status_code == 201
     comparison_id = created.json()["comparison"]["comparisonId"]
 
-    detected = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert detected.status_code == 201
-    body = detected.json()
+    queued = client.post(f"/api/comparisons/{comparison_id}/detect")
+    assert queued.status_code == 202
+    assert queued.json()["attemptId"] is None
+    assert comparison_store.list_detection_attempts(
+        comparison_id, db_path=api_env.db
+    ) == []
+
+    outcome = comparison_detection_worker.run_one_job(
+        worker_id="attempt-api-test"
+    )
+    assert outcome["attempt_id"].startswith("att_")
+    body = client.post(f"/api/comparisons/{comparison_id}/detect").json()
     assert set(body) == {"created", "result", "attemptId"}
-    assert body["created"] is True
-    assert body["attemptId"].startswith("att_")
+    assert body["created"] is False
+    assert body["attemptId"] == outcome["attempt_id"]
     # comparison.v1 is untouched: no attempt fields leaked into the schema.
     for key in ("attempt_id", "attemptId", "attempt_number", "status"):
         assert key not in body["result"]
 
-    replay = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert replay.status_code == 200
-    assert replay.json()["created"] is False
-    assert replay.json()["attemptId"] == body["attemptId"]
-    assert replay.json()["result"] == body["result"]
-
     listed = client.get("/api/comparisons", params={"status": "detected"})
     assert listed.status_code == 200
     assert comparison_id in {row["comparisonId"] for row in listed.json()}
-    return comparison_id
 
 
 def test_attempt_routes_expose_only_the_allowlist(api_env):
@@ -1115,6 +1117,10 @@ def test_attempt_routes_expose_only_the_allowlist(api_env):
     attempt_id = client.post(
         f"/api/comparisons/{comparison_id}/detect"
     ).json()["attemptId"]
+    assert attempt_id is None
+    attempt_id = comparison_detection_worker.run_one_job(
+        worker_id="attempt-route-test"
+    )["attempt_id"]
 
     listing = client.get(f"/api/comparisons/{comparison_id}/detection-attempts")
     assert listing.status_code == 200
@@ -1174,10 +1180,13 @@ def test_attempt_list_order_is_deterministic(api_env, corpus):
             "detect_changes",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
         )
-        failing = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert failing.status_code == 500
-    assert failing.json()["detail"]["code"] == "detector_internal_error"
-    assert failing.json()["detail"]["error_id"].startswith("err_")
+        queued = client.post(f"/api/comparisons/{comparison_id}/detect")
+        assert queued.status_code == 202
+        failing = comparison_detection_worker.run_one_job(
+            worker_id="attempt-order-test"
+        )
+    assert failing["job_status"] == "failed"
+    assert failing["failure_code"] == "detector_internal_error"
 
     previous_hash, current_hash = _hashes(corpus)
     for number in (2, 3):
@@ -1240,7 +1249,7 @@ def test_api_preserves_the_409_422_500_distinction(api_env, corpus):
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "detection_in_progress"
 
-    # 500: an unexpected fault, safe body with a correlation id and no raw text.
+    # The API still queues; an unexpected worker fault is persisted safely.
     # Retire the running attempt and reset the comparison so the next request
     # gets past the start guard and reaches the detector.
     _sql(
@@ -1264,10 +1273,12 @@ def test_api_preserves_the_409_422_500_distinction(api_env, corpus):
             ),
         )
         internal = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert internal.status_code == 500
-    detail = internal.json()["detail"]
-    assert detail["code"] == "detector_internal_error"
-    assert detail["error_id"].startswith("err_")
+        assert internal.status_code == 202
+        worker_outcome = comparison_detection_worker.run_one_job(
+            worker_id="attempt-error-test"
+        )
+    assert worker_outcome["job_status"] == "failed"
+    assert worker_outcome["failure_code"] == "detector_internal_error"
     for forbidden in ("/abs/secret", "SELECT", "boom", "Traceback"):
         assert forbidden not in internal.text
 
@@ -1288,15 +1299,15 @@ def test_api_preserves_the_409_422_500_distinction(api_env, corpus):
 # --- Boundary: nothing added beyond durable attempts (test 30) ----------------
 
 
-def test_no_automatic_retry_scheduler_or_worker_was_introduced():
+def test_no_automatic_retry_scheduler_or_daemon_was_introduced():
     """Test 30: no AUTOMATIC recovery machinery exists in any module.
 
     Operator-controlled replay landed in the following commit, so the guard is
     no longer "no replay code at all" — it is the invariant that actually
-    matters: nothing recovers on its own. There is no timer, scheduler, worker,
-    queue, backoff, or retry counter, and nothing infers termination from file
-    mtime. Replay is reachable only through an explicit operator request, which
-    the accompanying recovery tests pin end to end.
+    matters: nothing recovers on its own. The initial-detection queue has an
+    explicitly invoked one-shot worker, but there is no timer, scheduler,
+    daemon loop, backoff, retry counter, or file-mtime inference. Replay is
+    reachable only through an explicit operator request.
     """
     import ast
 
@@ -1310,8 +1321,10 @@ def test_no_automatic_retry_scheduler_or_worker_was_introduced():
     for name in (
         "comparison_store.py",
         "comparison_detector.py",
+        "comparison_detection_worker.py",
         "detection_recovery.py",
         "api.py",
+        "scripts/run_comparison_detection_worker.py",
     ):
         # AST-based: a raw substring scan cannot distinguish a scheduler from a
         # docstring promising there is no scheduler.

@@ -60,7 +60,9 @@ inside a transaction (``with conn:``).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -85,11 +87,13 @@ from governance.comparison_schema import (
 WORKFLOW_VERSION = "comparison_workflow.v2"
 
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
+STATUS_QUEUED_FOR_DETECTION = "queued_for_detection"
 STATUS_DETECTING = "detecting"
 STATUS_DETECTED = "detected"
 STATUS_FAILED = "failed"
 COMPARISON_STATUSES = (
     STATUS_READY_FOR_DETECTION,
+    STATUS_QUEUED_FOR_DETECTION,
     STATUS_DETECTING,
     STATUS_DETECTED,
     STATUS_FAILED,
@@ -121,6 +125,27 @@ DETECTION_EVENT_TYPES = (
     EVENT_DETECTION_TIMED_OUT,
 )
 
+# Durable initial-detection jobs (Stage 3.5 reliability step 5). Only the
+# authenticated API enqueue path creates these rows. Direct library detection
+# and operator replay remain synchronous and create attempts without jobs.
+JOB_TRIGGER_INITIAL_DETECTION = "initial_detection"
+JOB_QUEUED = "queued"
+JOB_RUNNING = "running"
+JOB_SUCCEEDED = "succeeded"
+JOB_FAILED = "failed"
+JOB_STATUSES = (JOB_QUEUED, JOB_RUNNING, JOB_SUCCEEDED, JOB_FAILED)
+
+EVENT_JOB_QUEUED = "detection_job_queued"
+EVENT_JOB_CLAIMED = "detection_job_claimed"
+EVENT_JOB_SUCCEEDED = "detection_job_succeeded"
+EVENT_JOB_FAILED = "detection_job_failed"
+JOB_EVENT_TYPES = (
+    EVENT_JOB_QUEUED,
+    EVENT_JOB_CLAIMED,
+    EVENT_JOB_SUCCEEDED,
+    EVENT_JOB_FAILED,
+)
+
 # Deterministic event ordering key: started is always 0, the single terminal
 # event is always 1, so ordering never depends on timestamp resolution.
 _EVENT_SEQ = {
@@ -143,8 +168,22 @@ REASON_ATTEMPT_LIMIT_REACHED = "detection_attempt_limit_reached"
 REASON_REPLAY_ALREADY_EXISTS = "detection_replay_already_exists"
 REASON_REPLAY_INPUTS_CHANGED = "detection_replay_inputs_changed"
 REASON_REPLAY_VERSION_CHANGED = "detection_replay_version_changed"
+REASON_JOB_ACTIVE_CONFLICT = "detection_job_conflict"
+REASON_JOB_NOT_FOUND = "detection_job_not_found"
+REASON_JOB_NOT_QUEUED = "detection_job_not_queued"
+REASON_JOB_NOT_RUNNING = "detection_job_not_running"
+REASON_JOB_CLAIM_INVALID = "detection_job_claim_invalid"
+REASON_JOB_WORKER_MISMATCH = "detection_job_worker_mismatch"
+REASON_JOB_ATTEMPT_MISMATCH = "detection_job_attempt_mismatch"
+REASON_JOB_RESULT_HASH_MISMATCH = "detection_job_result_hash_mismatch"
+REASON_JOB_INPUTS_CHANGED = "detection_job_inputs_changed"
+REASON_JOB_VERSION_CHANGED = "detection_job_version_changed"
+REASON_JOB_RECLAIM_NOT_SUPPORTED = "detection_job_reclaim_not_supported"
+REASON_RESULT_INPUTS_STALE = "comparison_inputs_stale"
+REASON_RESULT_VERSION_SUPERSEDED = "detector_version_superseded"
 
 MAX_FAILURE_SUMMARY_CHARS = 200
+MAX_WORKER_ID_CHARS = 120
 
 # The one failure code a timed-out attempt carries.
 FAILURE_ATTEMPT_TIMED_OUT = "detection_attempt_timed_out"
@@ -250,7 +289,8 @@ CREATE TABLE IF NOT EXISTS comparisons (
     current_filing_id   TEXT NOT NULL,
     section_scope       TEXT NOT NULL,  -- JSON array, normalized (sorted, deduped)
     status              TEXT NOT NULL
-                        CHECK (status IN ('ready_for_detection', 'detecting',
+                        CHECK (status IN ('ready_for_detection',
+                                          'queued_for_detection', 'detecting',
                                           'detected', 'failed')),
     created_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
     updated_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
@@ -385,6 +425,156 @@ CREATE TABLE IF NOT EXISTS comparison_detection_replays (
             AND length(trim(actor_token_id)) BETWEEN 1 AND 128
             AND length(trim(actor_policy_id)) BETWEEN 1 AND 128
             AND length(trim(actor_policy_version)) BETWEEN 1 AND 64)
+    )
+)
+"""
+
+_DETECTION_JOBS_DDL = """
+CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
+    -- Durable single-node SQLite queue for authenticated initial detection.
+    -- No bearer token, secret, arbitrary JWT claims, filing content, evidence,
+    -- result JSON, SQL, paths, or raw exception text is stored here.
+    job_id                       TEXT PRIMARY KEY NOT NULL,
+    comparison_id                TEXT NOT NULL
+                                 REFERENCES comparisons (comparison_id),
+    attempt_id                   TEXT UNIQUE
+                                 REFERENCES comparison_detection_attempts (attempt_id),
+    trigger_type                 TEXT NOT NULL
+                                 CHECK (trigger_type = 'initial_detection'),
+    status                       TEXT NOT NULL
+                                 CHECK (status IN (
+                                     'queued', 'running', 'succeeded', 'failed'
+                                 )),
+    request_hash                 TEXT NOT NULL,
+    detector_version             TEXT NOT NULL,
+    workflow_version             TEXT NOT NULL,
+    previous_source_hash         TEXT NOT NULL,
+    current_source_hash          TEXT NOT NULL,
+    requested_by_subject         TEXT NOT NULL,
+    requested_by_auth_method     TEXT NOT NULL
+                                 CHECK (requested_by_auth_method = 'local_hs256'),
+    requested_by_token_id        TEXT NOT NULL,
+    requested_by_policy_id       TEXT NOT NULL,
+    requested_by_policy_version  TEXT NOT NULL,
+    queued_at                    TEXT NOT NULL,
+    claimed_at                   TEXT,
+    finished_at                  TEXT,
+    worker_id                    TEXT,
+    claim_token_hash             TEXT,
+    result_hash                  TEXT,
+    failure_code                 TEXT,
+    failure_summary              TEXT,
+    CHECK (length(trim(request_hash)) = 64),
+    CHECK (length(trim(requested_by_subject)) BETWEEN 1 AND 120),
+    CHECK (length(trim(requested_by_token_id)) BETWEEN 1 AND 128),
+    CHECK (length(trim(requested_by_policy_id)) BETWEEN 1 AND 128),
+    CHECK (length(trim(requested_by_policy_version)) BETWEEN 1 AND 64),
+    CHECK (
+        (status = 'queued'
+            AND attempt_id IS NULL
+            AND claimed_at IS NULL
+            AND finished_at IS NULL
+            AND worker_id IS NULL
+            AND claim_token_hash IS NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'running'
+            AND attempt_id IS NOT NULL
+            AND claimed_at IS NOT NULL
+            AND finished_at IS NULL
+            AND worker_id IS NOT NULL
+            AND length(trim(worker_id)) BETWEEN 1 AND 120
+            AND claim_token_hash IS NOT NULL
+            AND length(claim_token_hash) = 64
+            AND result_hash IS NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'succeeded'
+            AND attempt_id IS NOT NULL
+            AND claimed_at IS NOT NULL
+            AND finished_at IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND length(trim(worker_id)) BETWEEN 1 AND 120
+            AND claim_token_hash IS NOT NULL
+            AND length(claim_token_hash) = 64
+            AND result_hash IS NOT NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'failed'
+            AND finished_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_summary IS NOT NULL
+            AND length(failure_summary) BETWEEN 1 AND 200
+            AND (
+                (attempt_id IS NULL
+                    AND claimed_at IS NULL
+                    AND worker_id IS NULL
+                    AND claim_token_hash IS NULL)
+                OR (attempt_id IS NOT NULL
+                    AND claimed_at IS NOT NULL
+                    AND worker_id IS NOT NULL
+                    AND length(trim(worker_id)) BETWEEN 1 AND 120
+                    AND claim_token_hash IS NOT NULL
+                    AND length(claim_token_hash) = 64)
+            ))
+    )
+)
+"""
+
+_DETECTION_JOB_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS comparison_detection_job_events (
+    -- Insert-only application transition records. They are not tamper-proof.
+    -- No tokens, hashes of tokens, secrets, evidence, notes, paths, SQL, or
+    -- exception text are stored.
+    event_id       TEXT PRIMARY KEY NOT NULL,
+    job_id         TEXT NOT NULL
+                   REFERENCES comparison_detection_jobs (job_id),
+    comparison_id  TEXT NOT NULL
+                   REFERENCES comparisons (comparison_id),
+    attempt_id     TEXT
+                   REFERENCES comparison_detection_attempts (attempt_id),
+    event_type     TEXT NOT NULL
+                   CHECK (event_type IN (
+                       'detection_job_queued', 'detection_job_claimed',
+                       'detection_job_succeeded', 'detection_job_failed'
+                   )),
+    event_seq      INTEGER NOT NULL CHECK (event_seq BETWEEN 0 AND 2),
+    created_at     TEXT NOT NULL,
+    worker_id      TEXT,
+    result_hash    TEXT,
+    failure_code   TEXT,
+    UNIQUE (job_id, event_type),
+    UNIQUE (job_id, event_seq),
+    CHECK (
+        (event_type = 'detection_job_queued'
+            AND event_seq = 0
+            AND attempt_id IS NULL
+            AND worker_id IS NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL)
+        OR (event_type = 'detection_job_claimed'
+            AND event_seq = 1
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL)
+        OR (event_type = 'detection_job_succeeded'
+            AND event_seq = 2
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND result_hash IS NOT NULL
+            AND failure_code IS NULL)
+        OR (event_type = 'detection_job_failed'
+            AND event_seq IN (1, 2)
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND (
+                (event_seq = 1 AND attempt_id IS NULL AND worker_id IS NULL)
+                OR (event_seq = 2
+                    AND attempt_id IS NOT NULL AND worker_id IS NOT NULL)
+            ))
     )
 )
 """
@@ -580,6 +770,19 @@ CREATE INDEX IF NOT EXISTS idx_detection_attempts_comparison
 {_DETECTION_EVENTS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_events_attempt
     ON comparison_detection_events (attempt_id, event_seq);
+{_DETECTION_JOBS_DDL};
+-- Storage-level concurrency invariant: one active initial-detection job per
+-- comparison, regardless of how many API or worker processes race.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_active
+    ON comparison_detection_jobs (comparison_id)
+    WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_detection_jobs_queue
+    ON comparison_detection_jobs (status, queued_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_detection_jobs_comparison
+    ON comparison_detection_jobs (comparison_id, queued_at, job_id);
+{_DETECTION_JOB_EVENTS_DDL};
+CREATE INDEX IF NOT EXISTS idx_detection_job_events_job
+    ON comparison_detection_job_events (job_id, event_seq, created_at, event_id);
 {_DETECTION_REPLAYS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_replays_comparison
     ON comparison_detection_replays (comparison_id, requested_at);
@@ -815,6 +1018,48 @@ def _migrate_detecting_status(db_path: Path) -> None:
             conn.execute("ALTER TABLE comparisons_rebuilt RENAME TO comparisons")
 
 
+def _migrate_queued_for_detection_status(db_path: Path) -> None:
+    """Add ``queued_for_detection`` to the comparison CHECK, idempotently.
+
+    A write lock is acquired before schema discovery, so concurrent first-open
+    initialization cannot make two processes rebuild the same table. Existing
+    comparisons and every child row are copied unchanged; legacy_alter_table
+    prevents SQLite from retargeting child foreign keys to the temporary name.
+    """
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparisons'"
+            ).fetchone()
+            if row is not None and "'queued_for_detection'" not in (row[0] or ""):
+                conn.execute(
+                    _COMPARISONS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS comparisons",
+                        "CREATE TABLE comparisons_queued_rebuilt",
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO comparisons_queued_rebuilt "
+                    "SELECT * FROM comparisons"
+                )
+                conn.execute("DROP TABLE comparisons")
+                conn.execute(
+                    "ALTER TABLE comparisons_queued_rebuilt "
+                    "RENAME TO comparisons"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
 def _migrate_attempt_timed_out(db_path: Path) -> None:
     """Rebuild the attempt/event tables if their CHECKs predate 'timed_out'.
 
@@ -885,6 +1130,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     db_path = Path(db_path or config.COMPARISON_DB_PATH)
     _migrate_status_vocabulary(db_path)
     _migrate_detecting_status(db_path)
+    _migrate_queued_for_detection_status(db_path)
     _migrate_attempt_timed_out(db_path)
     _migrate_review_items_vocabulary(db_path)
     _migrate_actor_attribution(db_path)
@@ -1288,6 +1534,12 @@ def _insert_result(
     )
 
 
+def _result_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    stored = dict(row)
+    stored["result"] = json.loads(stored.pop("result_json"))
+    return stored
+
+
 def record_result(
     comparison_id: str,
     *,
@@ -1383,9 +1635,7 @@ def get_result(
         ).fetchone()
     if row is None:
         return None
-    stored = dict(row)
-    stored["result"] = json.loads(stored.pop("result_json"))
-    return stored
+    return _result_row_to_record(row)
 
 
 def record_evaluation(
@@ -1763,14 +2013,15 @@ def mark_failed(
 # re-read and re-verify state inside their own transaction rather than trusting
 # the caller to pass a valid state.
 #
-#   comparison: ready_for_detection -> detecting -> detected | failed
-#   attempt:                  (none) -> running  -> succeeded | failed
+#   direct comparison: ready_for_detection -> detecting -> detected | failed
+#   API job comparison: ready -> queued -> detecting -> detected | failed
+#   attempt:                          (none) -> running -> succeeded | failed
 #
-# Terminal states do not transition in this commit: there is no retry, replay,
-# timeout takeover, or background worker. A process killed mid-execution leaves
-# comparison='detecting' with a running attempt indefinitely, which is
-# deliberately VISIBLE (queryable through the attempt and event readers) rather
-# than silently recovered — see the module note in comparison_detector.
+# Terminal states do not transition. Explicit bounded replay remains available
+# for eligible direct/replay attempts, but there is no automatic retry or
+# timeout takeover. The one-shot initial-detection worker has no lease,
+# heartbeat, or reclaim: a process killed after claim leaves the comparison
+# detecting with its job and attempt running indefinitely and visibly.
 
 
 def detection_attempt_id_for(
@@ -2252,6 +2503,1040 @@ def list_detection_events(
     return [dict(row) for row in rows]
 
 
+# --- Durable asynchronous initial-detection jobs -----------------------------
+
+
+def validate_worker_id(worker_id: Any) -> str:
+    """Validate local process metadata used to own one claim."""
+    return _bounded_actor_value(
+        worker_id, field="worker_id", max_chars=MAX_WORKER_ID_CHARS
+    )
+
+
+def detection_job_request_hash(
+    *,
+    comparison_id: str,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    requested_by_subject: str,
+    requested_by_auth_method: str,
+    requested_by_policy_id: str,
+    requested_by_policy_version: str,
+    trigger_type: str = JOB_TRIGGER_INITIAL_DETECTION,
+) -> str:
+    """Canonical idempotency hash with no bearer token, secret, or JTI."""
+    canonical = json.dumps(
+        {
+            "comparison_id": comparison_id,
+            "detector_version": detector_version,
+            "workflow_version": workflow_version,
+            "previous_source_hash": previous_source_hash,
+            "current_source_hash": current_source_hash,
+            "requested_by_subject": requested_by_subject,
+            "requested_by_auth_method": requested_by_auth_method,
+            "requested_by_policy_id": requested_by_policy_id,
+            "requested_by_policy_version": requested_by_policy_version,
+            "trigger_type": trigger_type,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def detection_job_id_for(request_hash: str) -> str:
+    """Stable collision-resistant identity for an idempotent request."""
+    return f"djob_{hashlib.sha256(request_hash.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _detection_job_event_id(job_id: str, event_type: str) -> str:
+    key = f"{job_id}|{event_type}"
+    return f"djob_evt_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _insert_detection_job_event(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    comparison_id: str,
+    event_type: str,
+    event_seq: int,
+    now: str,
+    attempt_id: str | None = None,
+    worker_id: str | None = None,
+    result_hash: str | None = None,
+    failure_code: str | None = None,
+) -> None:
+    """Append one job transition. There is no update/delete event path."""
+    conn.execute(
+        """
+        INSERT INTO comparison_detection_job_events (
+            event_id, job_id, comparison_id, attempt_id, event_type,
+            event_seq, created_at, worker_id, result_hash, failure_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _detection_job_event_id(job_id, event_type),
+            job_id,
+            comparison_id,
+            attempt_id,
+            event_type,
+            event_seq,
+            now,
+            worker_id,
+            result_hash,
+            failure_code,
+        ),
+    )
+
+
+def _safe_job_failure(
+    failure_code: Any, failure_summary: Any
+) -> tuple[str, str]:
+    code = _bounded_actor_value(
+        failure_code, field="failure_code", max_chars=120
+    )
+    summary = _bounded_actor_value(
+        failure_summary,
+        field="failure_summary",
+        max_chars=MAX_FAILURE_SUMMARY_CHARS,
+    )
+    return code, summary
+
+
+def enqueue_detection_job(
+    comparison_id: str,
+    *,
+    detector_version: str,
+    workflow_version: str,
+    previous_filing_id: str,
+    current_filing_id: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    requested_by_subject: str,
+    requested_by_auth_method: str,
+    requested_by_token_id: str,
+    requested_by_policy_id: str,
+    requested_by_policy_version: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Atomically enqueue one authenticated initial-detection request.
+
+    Registry reads happen in the caller before this transaction. The persisted
+    comparison identity, current result, active job, and running-attempt state
+    are re-read under one BEGIN IMMEDIATE. Returns a tagged outcome:
+    ``{"kind": "job", "job": ..., "created": bool}`` or
+    ``{"kind": "result", "result": ..., "attempt_id": ...}``.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    if requested_by_auth_method != ACTOR_AUTH_LOCAL_HS256:
+        raise ValueError("detection jobs require local_hs256 attribution")
+    subject = _bounded_actor_value(
+        requested_by_subject,
+        field="requested_by_subject",
+        max_chars=120,
+    )
+    attribution = validated_actor_attribution(
+        actor_auth_method=requested_by_auth_method,
+        actor_token_id=requested_by_token_id,
+        actor_policy_id=requested_by_policy_id,
+        actor_policy_version=requested_by_policy_version,
+    )
+    detector_version = _bounded_actor_value(
+        detector_version, field="detector_version", max_chars=120
+    )
+    workflow_version = _bounded_actor_value(
+        workflow_version, field="workflow_version", max_chars=120
+    )
+    request_hash = detection_job_request_hash(
+        comparison_id=comparison_id,
+        detector_version=detector_version,
+        workflow_version=workflow_version,
+        previous_source_hash=previous_source_hash,
+        current_source_hash=current_source_hash,
+        requested_by_subject=subject,
+        requested_by_auth_method=requested_by_auth_method,
+        requested_by_policy_id=attribution["actor_policy_id"],
+        requested_by_policy_version=attribution["actor_policy_version"],
+    )
+    job_id = detection_job_id_for(request_hash)
+    now = _utc_now_iso()
+    init_db(db_path)
+
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            comparison = conn.execute(
+                "SELECT * FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if comparison is None:
+                raise ComparisonLifecycleError(
+                    comparison_id, "absent", "unknown comparison"
+                )
+            if (
+                comparison["previous_filing_id"] != previous_filing_id
+                or comparison["current_filing_id"] != current_filing_id
+            ):
+                raise DetectionStateError(
+                    REASON_JOB_INPUTS_CHANGED,
+                    "the comparison filing identity changed before enqueue",
+                    comparison_id=comparison_id,
+                )
+            if comparison["workflow_version"] != workflow_version:
+                raise DetectionStateError(
+                    REASON_JOB_VERSION_CHANGED,
+                    "the comparison workflow version does not match the "
+                    "enqueue request",
+                    comparison_id=comparison_id,
+                )
+
+            stored = conn.execute(
+                "SELECT * FROM comparison_results WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if stored is not None:
+                if stored["detector_version"] != detector_version:
+                    raise DetectionStateError(
+                        REASON_RESULT_VERSION_SUPERSEDED,
+                        "a result from an older detector version already exists",
+                        comparison_id=comparison_id,
+                    )
+                if (
+                    stored["previous_source_hash"] != previous_source_hash
+                    or stored["current_source_hash"] != current_source_hash
+                ):
+                    raise DetectionStateError(
+                        REASON_RESULT_INPUTS_STALE,
+                        "a detection result exists but its source content changed",
+                        comparison_id=comparison_id,
+                    )
+                attempt = conn.execute(
+                    "SELECT attempt_id FROM comparison_detection_attempts "
+                    "WHERE comparison_id = ? AND status = ? AND result_hash = ? "
+                    "ORDER BY attempt_number LIMIT 1",
+                    (
+                        comparison_id,
+                        ATTEMPT_SUCCEEDED,
+                        stored["result_hash"],
+                    ),
+                ).fetchone()
+                conn.execute("COMMIT")
+                return {
+                    "kind": "result",
+                    "result": _result_row_to_record(stored),
+                    "attempt_id": attempt["attempt_id"] if attempt else None,
+                }
+
+            active = conn.execute(
+                "SELECT * FROM comparison_detection_jobs "
+                "WHERE comparison_id = ? AND status IN (?, ?)",
+                (comparison_id, JOB_QUEUED, JOB_RUNNING),
+            ).fetchone()
+            if active is not None:
+                if active["request_hash"] == request_hash:
+                    conn.execute("COMMIT")
+                    return {
+                        "kind": "job",
+                        "job": dict(active),
+                        "created": False,
+                    }
+                raise DetectionStateError(
+                    REASON_JOB_ACTIVE_CONFLICT,
+                    "a different active detection job already exists for this "
+                    "comparison",
+                    comparison_id=comparison_id,
+                    attempt_id=active["attempt_id"],
+                )
+
+            running = conn.execute(
+                "SELECT attempt_id FROM comparison_detection_attempts "
+                "WHERE comparison_id = ? AND status = ?",
+                (comparison_id, ATTEMPT_RUNNING),
+            ).fetchone()
+            if running is not None:
+                raise DetectionStateError(
+                    REASON_DETECTION_IN_PROGRESS,
+                    "a direct or replay detection attempt is already running",
+                    comparison_id=comparison_id,
+                    attempt_id=running["attempt_id"],
+                )
+            if comparison["status"] != STATUS_READY_FOR_DETECTION:
+                raise DetectionStateError(
+                    REASON_COMPARISON_NOT_READY,
+                    f"comparison is '{comparison['status']}', not "
+                    "'ready_for_detection'",
+                    comparison_id=comparison_id,
+                )
+
+            conn.execute(
+                """
+                INSERT INTO comparison_detection_jobs (
+                    job_id, comparison_id, attempt_id, trigger_type, status,
+                    request_hash, detector_version, workflow_version,
+                    previous_source_hash, current_source_hash,
+                    requested_by_subject, requested_by_auth_method,
+                    requested_by_token_id, requested_by_policy_id,
+                    requested_by_policy_version, queued_at, claimed_at,
+                    finished_at, worker_id, claim_token_hash, result_hash,
+                    failure_code, failure_summary
+                ) VALUES (
+                    ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                )
+                """,
+                (
+                    job_id,
+                    comparison_id,
+                    JOB_TRIGGER_INITIAL_DETECTION,
+                    JOB_QUEUED,
+                    request_hash,
+                    detector_version,
+                    workflow_version,
+                    previous_source_hash,
+                    current_source_hash,
+                    subject,
+                    requested_by_auth_method,
+                    attribution["actor_token_id"],
+                    attribution["actor_policy_id"],
+                    attribution["actor_policy_version"],
+                    now,
+                ),
+            )
+            _insert_detection_job_event(
+                conn,
+                job_id=job_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_JOB_QUEUED,
+                event_seq=0,
+                now=now,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (
+                    STATUS_QUEUED_FOR_DETECTION,
+                    now,
+                    comparison_id,
+                    STATUS_READY_FOR_DETECTION,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to "
+                    "'queued_for_detection'",
+                    comparison_id=comparison_id,
+                )
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return {"kind": "job", "job": dict(row), "created": True}
+
+
+def peek_queued_detection_job(
+    *,
+    job_id: str | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Read the next claim candidate without initializing or writing storage."""
+    path = Path(db_path or config.COMPARISON_DB_PATH)
+    with closing(_connect_readonly(path)) as conn:
+        if job_id is not None:
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_jobs "
+                "WHERE job_id = ? AND status = ?",
+                (job_id, JOB_QUEUED),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE status = ? "
+                "ORDER BY queued_at, job_id LIMIT 1",
+                (JOB_QUEUED,),
+            ).fetchone()
+    return dict(row) if row else None
+
+
+def _fail_queued_job_in_transaction(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    *,
+    failure_code: str,
+    failure_summary: str,
+    now: str,
+) -> sqlite3.Row:
+    comparison_id = job["comparison_id"]
+    comparison = conn.execute(
+        "SELECT status FROM comparisons WHERE comparison_id = ?",
+        (comparison_id,),
+    ).fetchone()
+    if (
+        comparison is None
+        or comparison["status"] != STATUS_QUEUED_FOR_DETECTION
+    ):
+        raise DetectionStateError(
+            REASON_TRANSITION_INVALID,
+            "the queued job's comparison is not queued_for_detection",
+            comparison_id=comparison_id,
+        )
+    conn.execute(
+        "UPDATE comparison_detection_jobs SET status = ?, finished_at = ?, "
+        "failure_code = ?, failure_summary = ? "
+        "WHERE job_id = ? AND status = ?",
+        (
+            JOB_FAILED,
+            now,
+            failure_code,
+            failure_summary,
+            job["job_id"],
+            JOB_QUEUED,
+        ),
+    )
+    _insert_detection_job_event(
+        conn,
+        job_id=job["job_id"],
+        comparison_id=comparison_id,
+        event_type=EVENT_JOB_FAILED,
+        event_seq=1,
+        now=now,
+        failure_code=failure_code,
+    )
+    conn.execute(
+        "UPDATE comparisons SET status = ?, failure_code = ?, "
+        "failure_summary = ?, updated_at = ? "
+        "WHERE comparison_id = ? AND status = ?",
+        (
+            STATUS_FAILED,
+            failure_code,
+            failure_summary,
+            now,
+            comparison_id,
+            STATUS_QUEUED_FOR_DETECTION,
+        ),
+    )
+    return conn.execute(
+        "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+        (job["job_id"],),
+    ).fetchone()
+
+
+def fail_queued_detection_job(
+    job_id: str,
+    *,
+    failure_code: str,
+    failure_summary: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Fail a still-queued job before an attempt exists; race-safe."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    code, summary = _safe_job_failure(failure_code, failure_summary)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if job is None or job["status"] != JOB_QUEUED:
+                conn.execute("COMMIT")
+                return None
+            row = _fail_queued_job_in_transaction(
+                conn,
+                job,
+                failure_code=code,
+                failure_summary=summary,
+                now=now,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(row)
+
+
+def claim_detection_job(
+    *,
+    worker_id: str,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    job_id: str | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Claim one queued job and create its running attempt atomically.
+
+    Returns ``None`` when no matching queued job remains, a ``kind=failed``
+    outcome when captured inputs/versions changed before claim, or a
+    ``kind=claimed`` outcome carrying the raw claim token exactly once.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    worker = validate_worker_id(worker_id)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if job_id is None:
+                job = conn.execute(
+                    "SELECT * FROM comparison_detection_jobs WHERE status = ? "
+                    "ORDER BY queued_at, job_id LIMIT 1",
+                    (JOB_QUEUED,),
+                ).fetchone()
+            else:
+                job = conn.execute(
+                    "SELECT * FROM comparison_detection_jobs "
+                    "WHERE job_id = ? AND status = ?",
+                    (job_id, JOB_QUEUED),
+                ).fetchone()
+            if job is None:
+                conn.execute("COMMIT")
+                return None
+
+            comparison_id = job["comparison_id"]
+            comparison = conn.execute(
+                "SELECT * FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if (
+                comparison is None
+                or comparison["status"] != STATUS_QUEUED_FOR_DETECTION
+            ):
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the queued job's comparison is not queued_for_detection",
+                    comparison_id=comparison_id,
+                )
+
+            version_changed = (
+                job["detector_version"] != detector_version
+                or job["workflow_version"] != workflow_version
+                or comparison["workflow_version"] != workflow_version
+            )
+            inputs_changed = (
+                job["previous_source_hash"] != previous_source_hash
+                or job["current_source_hash"] != current_source_hash
+            )
+            if version_changed or inputs_changed:
+                code = (
+                    REASON_JOB_VERSION_CHANGED
+                    if version_changed
+                    else REASON_JOB_INPUTS_CHANGED
+                )
+                summary = (
+                    "the detector or workflow version changed before worker claim"
+                    if version_changed
+                    else "the filing source content changed before worker claim"
+                )
+                failed = _fail_queued_job_in_transaction(
+                    conn,
+                    job,
+                    failure_code=code,
+                    failure_summary=summary,
+                    now=now,
+                )
+                conn.execute("COMMIT")
+                return {"kind": "failed", "job": dict(failed)}
+
+            running = conn.execute(
+                "SELECT attempt_id FROM comparison_detection_attempts "
+                "WHERE comparison_id = ? AND status = ?",
+                (comparison_id, ATTEMPT_RUNNING),
+            ).fetchone()
+            if running is not None:
+                raise DetectionStateError(
+                    REASON_DETECTION_IN_PROGRESS,
+                    "a detection attempt is already running for this comparison",
+                    comparison_id=comparison_id,
+                    attempt_id=running["attempt_id"],
+                )
+
+            next_number = conn.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+                "FROM comparison_detection_attempts WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()[0]
+            attempt_id = detection_attempt_id_for(
+                comparison_id,
+                next_number,
+                detector_version=detector_version,
+                workflow_version=workflow_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+            )
+            conn.execute(
+                """
+                INSERT INTO comparison_detection_attempts (
+                    attempt_id, comparison_id, attempt_number, status,
+                    detector_version, workflow_version,
+                    previous_source_hash, current_source_hash,
+                    started_at, finished_at, result_hash,
+                    failure_code, failure_summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+                """,
+                (
+                    attempt_id,
+                    comparison_id,
+                    next_number,
+                    ATTEMPT_RUNNING,
+                    detector_version,
+                    workflow_version,
+                    previous_source_hash,
+                    current_source_hash,
+                    now,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_STARTED,
+                now=now,
+            )
+            raw_claim_token = secrets.token_urlsafe(32)
+            claim_token_hash = hashlib.sha256(
+                raw_claim_token.encode("utf-8")
+            ).hexdigest()
+            conn.execute(
+                "UPDATE comparison_detection_jobs SET status = ?, "
+                "attempt_id = ?, claimed_at = ?, worker_id = ?, "
+                "claim_token_hash = ? WHERE job_id = ? AND status = ?",
+                (
+                    JOB_RUNNING,
+                    attempt_id,
+                    now,
+                    worker,
+                    claim_token_hash,
+                    job["job_id"],
+                    JOB_QUEUED,
+                ),
+            )
+            _insert_detection_job_event(
+                conn,
+                job_id=job["job_id"],
+                comparison_id=comparison_id,
+                attempt_id=attempt_id,
+                event_type=EVENT_JOB_CLAIMED,
+                event_seq=1,
+                now=now,
+                worker_id=worker,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (
+                    STATUS_DETECTING,
+                    now,
+                    comparison_id,
+                    STATUS_QUEUED_FOR_DETECTION,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'detecting'",
+                    comparison_id=comparison_id,
+                    attempt_id=attempt_id,
+                )
+            claimed_job = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job["job_id"],),
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return {
+        "kind": "claimed",
+        "job": dict(claimed_job),
+        "attempt": dict(attempt),
+        "claim_token": raw_claim_token,
+    }
+
+
+def _require_running_job_claim(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    attempt_id: str,
+    worker_id: str,
+    claim_token: str,
+) -> tuple[sqlite3.Row, sqlite3.Row, sqlite3.Row]:
+    job = conn.execute(
+        "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    if job is None:
+        raise DetectionStateError(
+            REASON_JOB_NOT_FOUND, "no detection job with this id exists"
+        )
+    if job["status"] != JOB_RUNNING:
+        raise DetectionStateError(
+            REASON_JOB_NOT_RUNNING,
+            f"the detection job is already '{job['status']}'",
+            comparison_id=job["comparison_id"],
+            attempt_id=job["attempt_id"],
+        )
+    worker = validate_worker_id(worker_id)
+    if job["worker_id"] != worker:
+        raise DetectionStateError(
+            REASON_JOB_WORKER_MISMATCH,
+            "the worker id does not own this detection job claim",
+            comparison_id=job["comparison_id"],
+            attempt_id=job["attempt_id"],
+        )
+    if job["attempt_id"] != attempt_id:
+        raise DetectionStateError(
+            REASON_JOB_ATTEMPT_MISMATCH,
+            "the attempt does not match the detection job claim",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
+        )
+    if not isinstance(claim_token, str) or not claim_token:
+        supplied_hash = ""
+    else:
+        supplied_hash = hashlib.sha256(claim_token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(job["claim_token_hash"], supplied_hash):
+        raise DetectionStateError(
+            REASON_JOB_CLAIM_INVALID,
+            "the detection job claim is invalid",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
+        )
+    attempt = _require_running_attempt(conn, attempt_id)
+    if attempt["comparison_id"] != job["comparison_id"]:
+        raise DetectionStateError(
+            REASON_JOB_ATTEMPT_MISMATCH,
+            "the attempt belongs to a different comparison",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
+        )
+    comparison = conn.execute(
+        "SELECT * FROM comparisons WHERE comparison_id = ?",
+        (job["comparison_id"],),
+    ).fetchone()
+    if comparison is None or comparison["status"] != STATUS_DETECTING:
+        raise DetectionStateError(
+            REASON_TRANSITION_INVALID,
+            "the claimed job's comparison is not detecting",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
+        )
+    return job, attempt, comparison
+
+
+def _canonical_result_hash(result_json: str) -> str:
+    parsed = json.loads(result_json)
+    if not isinstance(parsed, dict):
+        raise ValueError("result_json must contain an object")
+    stable = {key: value for key, value in parsed.items() if key != "created_at"}
+    return hashlib.sha256(
+        json.dumps(stable, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def complete_detection_job(
+    job_id: str,
+    attempt_id: str,
+    *,
+    worker_id: str,
+    claim_token: str,
+    result_json: str,
+    result_hash: str,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Atomically finalize job, attempt, result, events, and comparison."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    if _canonical_result_hash(result_json) != result_hash:
+        raise DetectionStateError(
+            REASON_JOB_RESULT_HASH_MISMATCH,
+            "the supplied result hash does not match the canonical result",
+            attempt_id=attempt_id,
+        )
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job, attempt, _comparison = _require_running_job_claim(
+                conn,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+                claim_token=claim_token,
+            )
+            expected = (
+                detector_version,
+                workflow_version,
+                previous_source_hash,
+                current_source_hash,
+            )
+            if expected != (
+                job["detector_version"],
+                job["workflow_version"],
+                job["previous_source_hash"],
+                job["current_source_hash"],
+            ) or expected != (
+                attempt["detector_version"],
+                attempt["workflow_version"],
+                attempt["previous_source_hash"],
+                attempt["current_source_hash"],
+            ):
+                raise DetectionStateError(
+                    REASON_INPUTS_CHANGED,
+                    "job, attempt, detector/workflow versions, or source hashes "
+                    "do not match",
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt_id,
+                )
+            if conn.execute(
+                "SELECT 1 FROM comparison_results WHERE comparison_id = ?",
+                (job["comparison_id"],),
+            ).fetchone() is not None:
+                raise ComparisonResultExists(job["comparison_id"])
+            _insert_result(
+                conn,
+                job["comparison_id"],
+                result_json=result_json,
+                result_hash=result_hash,
+                detector_version=detector_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+                now=now,
+            )
+            conn.execute(
+                "UPDATE comparison_detection_attempts SET status = ?, "
+                "finished_at = ?, result_hash = ? "
+                "WHERE attempt_id = ? AND status = ?",
+                (ATTEMPT_SUCCEEDED, now, result_hash, attempt_id, ATTEMPT_RUNNING),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=job["comparison_id"],
+                event_type=EVENT_DETECTION_SUCCEEDED,
+                now=now,
+                result_hash=result_hash,
+            )
+            conn.execute(
+                "UPDATE comparison_detection_jobs SET status = ?, "
+                "finished_at = ?, result_hash = ? "
+                "WHERE job_id = ? AND status = ?",
+                (JOB_SUCCEEDED, now, result_hash, job_id, JOB_RUNNING),
+            )
+            _insert_detection_job_event(
+                conn,
+                job_id=job_id,
+                comparison_id=job["comparison_id"],
+                attempt_id=attempt_id,
+                event_type=EVENT_JOB_SUCCEEDED,
+                event_seq=2,
+                now=now,
+                worker_id=job["worker_id"],
+                result_hash=result_hash,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (
+                    STATUS_DETECTED,
+                    now,
+                    job["comparison_id"],
+                    STATUS_DETECTING,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'detected'",
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt_id,
+                )
+            final_job = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            final_attempt = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return {"job": dict(final_job), "attempt": dict(final_attempt)}
+
+
+def fail_detection_job(
+    job_id: str,
+    attempt_id: str,
+    *,
+    worker_id: str,
+    claim_token: str,
+    failure_code: str,
+    failure_summary: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Atomically fail a claimed job and its linked running attempt."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    code, summary = _safe_job_failure(failure_code, failure_summary)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job, _attempt, _comparison = _require_running_job_claim(
+                conn,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+                claim_token=claim_token,
+            )
+            conn.execute(
+                "UPDATE comparison_detection_attempts SET status = ?, "
+                "finished_at = ?, failure_code = ?, failure_summary = ? "
+                "WHERE attempt_id = ? AND status = ?",
+                (
+                    ATTEMPT_FAILED,
+                    now,
+                    code,
+                    summary,
+                    attempt_id,
+                    ATTEMPT_RUNNING,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=job["comparison_id"],
+                event_type=EVENT_DETECTION_FAILED,
+                now=now,
+                failure_code=code,
+            )
+            conn.execute(
+                "UPDATE comparison_detection_jobs SET status = ?, "
+                "finished_at = ?, failure_code = ?, failure_summary = ? "
+                "WHERE job_id = ? AND status = ?",
+                (JOB_FAILED, now, code, summary, job_id, JOB_RUNNING),
+            )
+            _insert_detection_job_event(
+                conn,
+                job_id=job_id,
+                comparison_id=job["comparison_id"],
+                attempt_id=attempt_id,
+                event_type=EVENT_JOB_FAILED,
+                event_seq=2,
+                now=now,
+                worker_id=job["worker_id"],
+                failure_code=code,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, failure_code = ?, "
+                "failure_summary = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (
+                    STATUS_FAILED,
+                    code,
+                    summary,
+                    now,
+                    job["comparison_id"],
+                    STATUS_DETECTING,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'failed'",
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt_id,
+                )
+            final_job = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            final_attempt = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return {"job": dict(final_job), "attempt": dict(final_attempt)}
+
+
+def get_detection_job(
+    job_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_detection_job_for_attempt(
+    attempt_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_detection_jobs WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_detection_jobs(
+    comparison_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_detection_jobs WHERE comparison_id = ? "
+            "ORDER BY queued_at, job_id",
+            (comparison_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_detection_job_events(
+    job_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_detection_job_events WHERE job_id = ? "
+            "ORDER BY event_seq, created_at, event_id",
+            (job_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 # --- Staleness: pure, side-effect-free ---------------------------------------
 
 
@@ -2397,6 +3682,20 @@ def start_detection_replay(
                     "this attempt has already been replaced by a different "
                     "replay request; a stale attempt yields at most one "
                     "replacement",
+                    comparison_id=source["comparison_id"],
+                    attempt_id=source_attempt_id,
+                )
+
+            linked_job = conn.execute(
+                "SELECT job_id FROM comparison_detection_jobs "
+                "WHERE attempt_id = ? AND status = ?",
+                (source_attempt_id, JOB_RUNNING),
+            ).fetchone()
+            if linked_job is not None:
+                raise DetectionStateError(
+                    REASON_JOB_RECLAIM_NOT_SUPPORTED,
+                    "a worker-owned detection job cannot be replayed in this "
+                    "commit because no lease, fencing, or safe reclaim exists",
                     comparison_id=source["comparison_id"],
                     attempt_id=source_attempt_id,
                 )
@@ -2826,6 +4125,7 @@ class ReliabilitySchemaIncomplete(Exception):
 RELIABILITY_REQUIRED_TABLES = (
     "comparisons",
     "comparison_detection_attempts",
+    "comparison_detection_jobs",
     "comparison_detection_replays",
 )
 
@@ -2868,6 +4168,21 @@ _RELIABILITY_REPLAY_COLUMNS = (
     "policy_version",
     "requested_at",
 )
+_RELIABILITY_JOB_COLUMNS = (
+    "job_id",
+    "comparison_id",
+    "attempt_id",
+    "trigger_type",
+    "status",
+    "detector_version",
+    "workflow_version",
+    "queued_at",
+    "claimed_at",
+    "finished_at",
+    "worker_id",
+    "result_hash",
+    "failure_code",
+)
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
@@ -2894,10 +4209,10 @@ def _missing_reliability_tables(conn: sqlite3.Connection) -> list[str]:
 def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, Any]:
     """One read-only snapshot of every record the reliability report needs.
 
-    Returns ``{comparisons, attempts, replays, attempts_per_comparison}`` with
-    allowlisted columns only and deterministic ordering, for a database that is
-    readable and carries every required table — including when it holds zero
-    rows, which is a valid empty system.
+    Returns ``{comparisons, attempts, jobs, replays,
+    attempts_per_comparison}`` with allowlisted columns only and deterministic
+    ordering, for a database that is readable and carries every required table
+    — including when it holds zero rows, which is a valid empty system.
 
     Creates nothing, initializes nothing, migrates nothing, writes nothing.
 
@@ -2959,6 +4274,15 @@ def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, An
                         "GROUP BY comparison_id ORDER BY comparison_id"
                     ).fetchall()
                 }
+                jobs = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT "
+                        + ", ".join(_RELIABILITY_JOB_COLUMNS)
+                        + " FROM comparison_detection_jobs "
+                        "ORDER BY queued_at, job_id"
+                    ).fetchall()
+                ]
                 replays = [
                     dict(row)
                     for row in conn.execute(
@@ -2991,6 +4315,7 @@ def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, An
     return {
         "comparisons": comparisons,
         "attempts": attempts,
+        "jobs": jobs,
         "replays": replays,
         "attempts_per_comparison": counts,
     }
