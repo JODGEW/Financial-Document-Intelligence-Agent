@@ -63,7 +63,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -98,15 +98,26 @@ COMPARISON_STATUSES = (
 ATTEMPT_RUNNING = "running"
 ATTEMPT_SUCCEEDED = "succeeded"
 ATTEMPT_FAILED = "failed"
-ATTEMPT_STATUSES = (ATTEMPT_RUNNING, ATTEMPT_SUCCEEDED, ATTEMPT_FAILED)
+# Retired by an explicit operator replay after the configured stale threshold
+# (Stage 3.5 step 2). Terminal, and reachable ONLY from inside the replay
+# transaction — never from age alone and never because a GET observed the row.
+ATTEMPT_TIMED_OUT = "timed_out"
+ATTEMPT_STATUSES = (
+    ATTEMPT_RUNNING,
+    ATTEMPT_SUCCEEDED,
+    ATTEMPT_FAILED,
+    ATTEMPT_TIMED_OUT,
+)
 
 EVENT_DETECTION_STARTED = "detection_started"
 EVENT_DETECTION_SUCCEEDED = "detection_succeeded"
 EVENT_DETECTION_FAILED = "detection_failed"
+EVENT_DETECTION_TIMED_OUT = "detection_timed_out"
 DETECTION_EVENT_TYPES = (
     EVENT_DETECTION_STARTED,
     EVENT_DETECTION_SUCCEEDED,
     EVENT_DETECTION_FAILED,
+    EVENT_DETECTION_TIMED_OUT,
 )
 
 # Deterministic event ordering key: started is always 0, the single terminal
@@ -115,6 +126,7 @@ _EVENT_SEQ = {
     EVENT_DETECTION_STARTED: 0,
     EVENT_DETECTION_SUCCEEDED: 1,
     EVENT_DETECTION_FAILED: 1,
+    EVENT_DETECTION_TIMED_OUT: 1,
 }
 
 # Stable reason codes for detection-attempt state errors (API: 409).
@@ -124,8 +136,28 @@ REASON_ATTEMPT_NOT_FOUND = "detection_attempt_not_found"
 REASON_ATTEMPT_NOT_RUNNING = "detection_attempt_not_running"
 REASON_TRANSITION_INVALID = "detection_transition_invalid"
 REASON_INPUTS_CHANGED = "detection_inputs_changed"
+# Replay-specific codes (Stage 3.5 step 2).
+REASON_ATTEMPT_NOT_STALE = "detection_attempt_not_stale"
+REASON_ATTEMPT_LIMIT_REACHED = "detection_attempt_limit_reached"
+REASON_REPLAY_ALREADY_EXISTS = "detection_replay_already_exists"
+REASON_REPLAY_INPUTS_CHANGED = "detection_replay_inputs_changed"
+REASON_REPLAY_VERSION_CHANGED = "detection_replay_version_changed"
 
 MAX_FAILURE_SUMMARY_CHARS = 200
+
+# The one failure code a timed-out attempt carries.
+FAILURE_ATTEMPT_TIMED_OUT = "detection_attempt_timed_out"
+TIMED_OUT_SUMMARY = (
+    "the attempt exceeded the configured stale threshold and was retired by an "
+    "explicit operator replay request"
+)
+
+# Allowlisted replay reason codes. Operator prose lives in operator_note; the
+# reason code stays a fixed machine-readable vocabulary.
+REPLAY_REASON_CODES = (
+    "operator_replay_stale_attempt",
+    "operator_replay_after_process_restart",
+)
 
 # Section keys the v1 comparison workflow can actually target. The schema
 # itself accepts any non-empty key; this is the workflow capability set.
@@ -224,7 +256,8 @@ CREATE TABLE IF NOT EXISTS comparison_detection_attempts (
                          REFERENCES comparisons (comparison_id),
     attempt_number       INTEGER NOT NULL,           -- 1-based, per comparison
     status               TEXT NOT NULL
-                         CHECK (status IN ('running', 'succeeded', 'failed')),
+                         CHECK (status IN ('running', 'succeeded', 'failed',
+                                           'timed_out')),
     detector_version     TEXT NOT NULL,
     workflow_version     TEXT NOT NULL,
     previous_source_hash TEXT NOT NULL,  -- registry hash captured at start
@@ -253,6 +286,13 @@ CREATE TABLE IF NOT EXISTS comparison_detection_attempts (
             AND result_hash IS NULL
             AND failure_code IS NOT NULL
             AND failure_summary IS NOT NULL)
+        -- Retired by an explicit operator replay: carries its finish time and
+        -- failure code exactly like a failed attempt, and never a result.
+        OR (status = 'timed_out'
+            AND finished_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_summary IS NOT NULL)
     ),
     UNIQUE (comparison_id, attempt_number)
 )
@@ -273,13 +313,44 @@ CREATE TABLE IF NOT EXISTS comparison_detection_events (
     event_type    TEXT NOT NULL
                   CHECK (event_type IN ('detection_started',
                                         'detection_succeeded',
-                                        'detection_failed')),
+                                        'detection_failed',
+                                        'detection_timed_out')),
     event_seq     INTEGER NOT NULL,  -- 0 started, 1 terminal: stable ordering
     created_at    TEXT NOT NULL,     -- timezone-aware UTC ISO 8601
     result_hash   TEXT,
     failure_code  TEXT,
     -- Exactly one event of each type per attempt.
     UNIQUE (attempt_id, event_type)
+)
+"""
+
+_DETECTION_REPLAYS_DDL = """
+CREATE TABLE IF NOT EXISTS comparison_detection_replays (
+    -- One operator-requested replay: the durable link from a stale attempt
+    -- that was retired to the replacement attempt that took its place.
+    --
+    -- operator_id is SELF-ASSERTED LOCAL METADATA, never inferred from the
+    -- environment or request, and NOT authenticated identity — there is no
+    -- auth in this prototype. These rows are insert-only application records,
+    -- NOT tamper-proof storage: anyone with file access can alter a local
+    -- SQLite database. No raw error text, evidence, document content, paths,
+    -- SQL, environment values, or secrets are ever stored here.
+    replay_id              TEXT PRIMARY KEY NOT NULL,  -- rpl_<sha256[:16]>
+    comparison_id          TEXT NOT NULL
+                           REFERENCES comparisons (comparison_id),
+    -- One stale attempt can produce at most ONE replacement, and one
+    -- replacement can come from at most one source: both sides UNIQUE.
+    source_attempt_id      TEXT NOT NULL UNIQUE
+                           REFERENCES comparison_detection_attempts (attempt_id),
+    replacement_attempt_id TEXT NOT NULL UNIQUE
+                           REFERENCES comparison_detection_attempts (attempt_id),
+    operator_id            TEXT NOT NULL,  -- self-asserted, NOT authenticated
+    reason_code            TEXT NOT NULL,  -- allowlisted stable code
+    operator_note          TEXT NOT NULL,  -- bounded operator prose
+    request_hash           TEXT NOT NULL,  -- canonical request, idempotent replay
+    policy_id              TEXT NOT NULL,  -- recovery policy that authorized it
+    policy_version         TEXT NOT NULL,
+    requested_at           TEXT NOT NULL   -- timezone-aware UTC ISO 8601
 )
 """
 
@@ -399,6 +470,9 @@ CREATE INDEX IF NOT EXISTS idx_detection_attempts_comparison
 {_DETECTION_EVENTS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_events_attempt
     ON comparison_detection_events (attempt_id, event_seq);
+{_DETECTION_REPLAYS_DDL};
+CREATE INDEX IF NOT EXISTS idx_detection_replays_comparison
+    ON comparison_detection_replays (comparison_id, requested_at);
 """
 
 
@@ -520,6 +594,57 @@ def _migrate_detecting_status(db_path: Path) -> None:
             conn.execute("ALTER TABLE comparisons_rebuilt RENAME TO comparisons")
 
 
+def _migrate_attempt_timed_out(db_path: Path) -> None:
+    """Rebuild the attempt/event tables if their CHECKs predate 'timed_out'.
+
+    Idempotent: inspects the stored DDL of each table and rebuilds only the ones
+    whose CHECK lacks the new vocabulary (SQLite cannot ALTER a CHECK in place).
+    Existing running/succeeded/failed attempts and all existing events are
+    preserved byte for byte.
+
+    Both rebuilds use create-new / copy / drop / rename with
+    ``legacy_alter_table`` enabled, because comparison_detection_events holds a
+    foreign key to comparison_detection_attempts: without the pragma SQLite
+    would rewrite that reference to point at the temporary table name.
+    """
+    if not db_path.exists():
+        return
+    rebuilds = (
+        (
+            "comparison_detection_attempts",
+            "'timed_out'",
+            _DETECTION_ATTEMPTS_DDL,
+            "comparison_detection_attempts_rebuilt",
+        ),
+        (
+            "comparison_detection_events",
+            "'detection_timed_out'",
+            _DETECTION_EVENTS_DDL,
+            "comparison_detection_events_rebuilt",
+        ),
+    )
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        for table, marker, ddl, temp_name in rebuilds:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if row is None or marker in (row[0] or ""):
+                continue
+            with conn:
+                conn.execute(
+                    ddl.replace(
+                        f"CREATE TABLE IF NOT EXISTS {table}",
+                        f"CREATE TABLE {temp_name}",
+                    )
+                )
+                conn.execute(f"INSERT INTO {temp_name} SELECT * FROM {table}")
+                conn.execute(f"DROP TABLE {table}")
+                conn.execute(f"ALTER TABLE {temp_name} RENAME TO {table}")
+
+
 def _connect(db_path: str | Path) -> sqlite3.Connection:
     """Open a per-operation connection with the store's pragmas applied."""
     path = Path(db_path)
@@ -539,6 +664,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     db_path = Path(db_path or config.COMPARISON_DB_PATH)
     _migrate_status_vocabulary(db_path)
     _migrate_detecting_status(db_path)
+    _migrate_attempt_timed_out(db_path)
     _migrate_review_items_vocabulary(db_path)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
@@ -1774,6 +1900,387 @@ def list_detection_events(
             (attempt_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# --- Staleness: pure, side-effect-free ---------------------------------------
+
+
+def parse_utc_timestamp(value: Any, *, field: str = "timestamp") -> datetime:
+    """Parse a stored timezone-aware UTC ISO 8601 timestamp.
+
+    NAIVE TIMESTAMPS ARE REJECTED rather than assumed to be UTC: silently
+    guessing a timezone would make an age calculation quietly wrong by hours,
+    which for a staleness threshold is the difference between refusing a replay
+    and declaring a live run dead. A trailing 'Z' is accepted defensively even
+    though every writer here emits the '+00:00' offset form.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty ISO 8601 string")
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{field} is not a valid ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError(
+            f"{field} must be timezone-aware; a naive timestamp is never "
+            "assumed to be UTC"
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def evaluate_staleness(
+    started_at: Any, now: datetime, stale_after_seconds: int
+) -> dict[str, Any]:
+    """Pure staleness evaluation. No storage access, no side effects.
+
+    Returns ``{age_seconds, stale_at, is_stale}``. The boundary is INCLUSIVE:
+    ``age_seconds >= stale_after_seconds`` is stale. A negative age — the clock
+    moved backwards, or the row was written by a host whose clock is ahead — is
+    never stale: clock skew must not be able to authorize retiring a live
+    attempt.
+    """
+    if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
+        raise ValueError("now must be timezone-aware")
+    started = parse_utc_timestamp(started_at, field="started_at")
+    stale_at = started + timedelta(seconds=stale_after_seconds)
+    age_seconds = (now.astimezone(timezone.utc) - started).total_seconds()
+    return {
+        "age_seconds": age_seconds,
+        "stale_at": stale_at.isoformat(),
+        "is_stale": age_seconds >= 0 and age_seconds >= stale_after_seconds,
+    }
+
+
+# --- Operator-controlled replay ----------------------------------------------
+
+
+def detection_replay_id_for(source_attempt_id: str, request_hash: str) -> str:
+    """Deterministic replay id: a byte-equivalent request lands on the same row."""
+    key = f"{source_attempt_id}|{request_hash}"
+    return f"rpl_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def start_detection_replay(
+    source_attempt_id: str,
+    *,
+    operator_id: str,
+    reason_code: str,
+    operator_note: str,
+    request_hash: str,
+    policy_id: str,
+    policy_version: str,
+    stale_after_seconds: int,
+    max_attempts_per_comparison: int,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    now: datetime | None = None,
+    db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Retire a stale running attempt and start its replacement, atomically.
+
+    ONE BEGIN IMMEDIATE transaction covers every check and every write, so the
+    database can never be observed with two running attempts, with no running
+    attempt after a successful replay start, with a timed-out source and no
+    replacement, or with a replay row whose linked attempts do not both exist.
+
+    Returns ``(replay_record, created)``. ``created=False`` means this exact
+    request was already applied and the stored replay is returned unchanged —
+    the replacement is NOT executed twice. A DIFFERENT request against an
+    already-replayed attempt raises DetectionStateError with
+    ``detection_replay_already_exists``.
+
+    ``now`` is injected so staleness is testable without sleeping. The
+    transaction is closed before returning: the caller runs the detector
+    afterwards, never inside it.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    moment = now or datetime.now(timezone.utc)
+    now_iso = moment.astimezone(timezone.utc).isoformat()
+
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            source = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (source_attempt_id,),
+            ).fetchone()
+            if source is None:
+                raise DetectionStateError(
+                    REASON_ATTEMPT_NOT_FOUND,
+                    "no detection attempt with this id exists",
+                    attempt_id=source_attempt_id,
+                )
+
+            # IDEMPOTENCY IS CHECKED FIRST, before any lifecycle check. After a
+            # replay the source attempt is timed_out and the comparison may
+            # already be detected, so the lifecycle checks below would misreport
+            # a legitimate replay of an existing request as a state error.
+            existing = conn.execute(
+                "SELECT * FROM comparison_detection_replays "
+                "WHERE source_attempt_id = ?",
+                (source_attempt_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_hash"] == request_hash:
+                    record = dict(existing)
+                    conn.execute("COMMIT")
+                    return record, False
+                raise DetectionStateError(
+                    REASON_REPLAY_ALREADY_EXISTS,
+                    "this attempt has already been replaced by a different "
+                    "replay request; a stale attempt yields at most one "
+                    "replacement",
+                    comparison_id=source["comparison_id"],
+                    attempt_id=source_attempt_id,
+                )
+
+            comparison_id = source["comparison_id"]
+            comparison = conn.execute(
+                "SELECT status FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if comparison is None:
+                raise ComparisonLifecycleError(
+                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                )
+            if comparison["status"] != STATUS_DETECTING:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    f"the comparison is '{comparison['status']}', not "
+                    "'detecting'; only an in-progress detection can be replayed",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+            if source["status"] != ATTEMPT_RUNNING:
+                raise DetectionStateError(
+                    REASON_ATTEMPT_NOT_RUNNING,
+                    f"the detection attempt is '{source['status']}'; only a "
+                    "running attempt can be replayed",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+            running = conn.execute(
+                "SELECT attempt_id FROM comparison_detection_attempts "
+                "WHERE comparison_id = ? AND status = ?",
+                (comparison_id, ATTEMPT_RUNNING),
+            ).fetchall()
+            if len(running) != 1 or running[0]["attempt_id"] != source_attempt_id:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the attempt is not the comparison's only running attempt",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+
+            staleness = evaluate_staleness(
+                source["started_at"], moment, stale_after_seconds
+            )
+            if not staleness["is_stale"]:
+                raise DetectionStateError(
+                    REASON_ATTEMPT_NOT_STALE,
+                    "the attempt has not exceeded the configured stale "
+                    "threshold; it may still be running and is not retired on "
+                    "suspicion",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+
+            attempts_used = conn.execute(
+                "SELECT COUNT(*) FROM comparison_detection_attempts "
+                "WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()[0]
+            if attempts_used >= max_attempts_per_comparison:
+                raise DetectionStateError(
+                    REASON_ATTEMPT_LIMIT_REACHED,
+                    f"this comparison has used all {max_attempts_per_comparison} "
+                    "permitted detection attempts; no further replay is allowed",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+
+            if (
+                source["detector_version"] != detector_version
+                or source["workflow_version"] != workflow_version
+            ):
+                raise DetectionStateError(
+                    REASON_REPLAY_VERSION_CHANGED,
+                    "the detector or workflow version changed since this "
+                    "attempt started; create a new comparison under the current "
+                    "workflow version instead of replaying this one",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+            if (
+                source["previous_source_hash"] != previous_source_hash
+                or source["current_source_hash"] != current_source_hash
+            ):
+                raise DetectionStateError(
+                    REASON_REPLAY_INPUTS_CHANGED,
+                    "the filing source content changed since this attempt "
+                    "started; a replay would silently compare different inputs "
+                    "under the same comparison",
+                    comparison_id=comparison_id,
+                    attempt_id=source_attempt_id,
+                )
+
+            next_number = conn.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+                "FROM comparison_detection_attempts WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()[0]
+            replacement_id = detection_attempt_id_for(
+                comparison_id,
+                next_number,
+                detector_version=detector_version,
+                workflow_version=workflow_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+            )
+
+            # Retire the stale attempt.
+            conn.execute(
+                "UPDATE comparison_detection_attempts SET status = ?, "
+                "finished_at = ?, failure_code = ?, failure_summary = ? "
+                "WHERE attempt_id = ? AND status = ?",
+                (
+                    ATTEMPT_TIMED_OUT,
+                    now_iso,
+                    FAILURE_ATTEMPT_TIMED_OUT,
+                    TIMED_OUT_SUMMARY[:MAX_FAILURE_SUMMARY_CHARS],
+                    source_attempt_id,
+                    ATTEMPT_RUNNING,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=source_attempt_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_TIMED_OUT,
+                now=now_iso,
+                failure_code=FAILURE_ATTEMPT_TIMED_OUT,
+            )
+            # Start the replacement.
+            conn.execute(
+                """
+                INSERT INTO comparison_detection_attempts (
+                    attempt_id, comparison_id, attempt_number, status,
+                    detector_version, workflow_version,
+                    previous_source_hash, current_source_hash,
+                    started_at, finished_at, result_hash,
+                    failure_code, failure_summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+                """,
+                (
+                    replacement_id,
+                    comparison_id,
+                    next_number,
+                    ATTEMPT_RUNNING,
+                    detector_version,
+                    workflow_version,
+                    previous_source_hash,
+                    current_source_hash,
+                    now_iso,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=replacement_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_STARTED,
+                now=now_iso,
+            )
+            replay_id = detection_replay_id_for(source_attempt_id, request_hash)
+            conn.execute(
+                """
+                INSERT INTO comparison_detection_replays (
+                    replay_id, comparison_id, source_attempt_id,
+                    replacement_attempt_id, operator_id, reason_code,
+                    operator_note, request_hash, policy_id, policy_version,
+                    requested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    replay_id,
+                    comparison_id,
+                    source_attempt_id,
+                    replacement_id,
+                    operator_id,
+                    reason_code,
+                    operator_note,
+                    request_hash,
+                    policy_id,
+                    policy_version,
+                    now_iso,
+                ),
+            )
+            # The comparison STAYS 'detecting': one running attempt replaced
+            # another, so the workflow is still mid-flight.
+            conn.execute(
+                "UPDATE comparisons SET updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (now_iso, comparison_id, STATUS_DETECTING),
+            )
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_replays WHERE replay_id = ?",
+                (replay_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(row), True
+
+
+def get_detection_replay_for_source(
+    source_attempt_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """The replay that retired this attempt, or None (at most one exists)."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_detection_replays "
+            "WHERE source_attempt_id = ?",
+            (source_attempt_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_detection_replays(
+    comparison_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Every replay for a comparison, oldest first."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_detection_replays WHERE comparison_id = ? "
+            "ORDER BY requested_at, replay_id",
+            (comparison_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_detection_attempts(
+    comparison_id: str, db_path: str | Path | None = None
+) -> int:
+    """How many attempts this comparison has used, in any status."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM comparison_detection_attempts "
+            "WHERE comparison_id = ?",
+            (comparison_id,),
+        ).fetchone()[0]
 
 
 # --- Release-gated export artifacts ------------------------------------------

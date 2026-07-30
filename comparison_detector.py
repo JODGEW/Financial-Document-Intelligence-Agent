@@ -1090,8 +1090,48 @@ def detect_with_attempt(
             return outcome
         raise DetectionNotReady(REASON_COMPARISON_NOT_READY, exc.message) from exc
 
-    attempt_id = attempt["attempt_id"]
+    return execute_attempt(
+        attempt["attempt_id"],
+        record=record,
+        previous_ref=previous_ref,
+        current_ref=current_ref,
+        previous_entry=previous_entry,
+        current_entry=current_entry,
+        previous_hash=previous_hash,
+        current_hash=current_hash,
+        chroma_client=chroma_client,
+        db_path=db_path,
+    )
 
+
+def execute_attempt(
+    attempt_id: str,
+    *,
+    record: dict[str, Any],
+    previous_ref,
+    current_ref,
+    previous_entry: dict[str, Any],
+    current_entry: dict[str, Any],
+    previous_hash: str,
+    current_hash: str,
+    chroma_client=None,
+    db_path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool, str | None]:
+    """Compute and finalize ONE already-started running attempt.
+
+    The shared execution seam: ``detect_with_attempt`` calls it for a first
+    attempt and ``detection_recovery.replay_attempt`` calls it for a
+    replacement, so both paths get byte-identical computation, the same
+    single-transaction success finalization, and the same failure-code
+    semantics. The caller is responsible for having already committed the
+    running attempt — reaching this function always implies a durable attempt
+    exists.
+
+    Returns ``(wire_result, created, attempt_id)``. On failure the attempt is
+    finalized durably and the original condition is re-raised.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    comparison_id = record["comparison_id"]
     try:
         wire = _compute_result(
             record, previous_ref, current_ref, previous_entry, current_entry,
@@ -1143,6 +1183,46 @@ def detect_with_attempt(
             REASON_DETECTOR_INTERNAL_ERROR,
             "detection failed unexpectedly",
         ) from exc
+
+
+def resolve_detection_inputs(
+    comparison_id: str,
+    *,
+    db_path: str | Path | None = None,
+    registry_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Registry truth for one comparison: record, both refs, entries, hashes.
+
+    Shared by detection and replay so both resolve inputs identically. Raises
+    UnknownComparison for an absent comparison and ComparisonPairError when the
+    pair no longer validates against the registry.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    registry_path = registry_path or config.FILING_REGISTRY_PATH
+
+    record = comparison_store.get_comparison(comparison_id, db_path=db_path)
+    if record is None:
+        raise UnknownComparison(
+            "comparison_not_found", f"comparison {comparison_id!r} does not exist"
+        )
+    previous_ref, current_ref = comparison_store.validate_pair(
+        record["previous_filing_id"], record["current_filing_id"], registry_path
+    )
+    previous_entry = filing_registry.get_filing(
+        record["previous_filing_id"], registry_path
+    )
+    current_entry = filing_registry.get_filing(
+        record["current_filing_id"], registry_path
+    )
+    return {
+        "record": record,
+        "previous_ref": previous_ref,
+        "current_ref": current_ref,
+        "previous_entry": previous_entry,
+        "current_entry": current_entry,
+        "previous_hash": previous_entry.get("source_hash") or "",
+        "current_hash": current_entry.get("source_hash") or "",
+    }
 
 
 def _compute_result(

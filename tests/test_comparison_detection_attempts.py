@@ -1287,18 +1287,48 @@ def test_api_preserves_the_409_422_500_distinction(api_env, corpus):
 # --- Boundary: nothing added beyond durable attempts (test 30) ----------------
 
 
-def test_no_retry_replay_scheduler_or_worker_was_introduced():
-    """Test 30: the changed modules contain no automatic recovery machinery."""
+def test_no_automatic_retry_scheduler_or_worker_was_introduced():
+    """Test 30: no AUTOMATIC recovery machinery exists in any module.
+
+    Operator-controlled replay landed in the following commit, so the guard is
+    no longer "no replay code at all" — it is the invariant that actually
+    matters: nothing recovers on its own. There is no timer, scheduler, worker,
+    queue, backoff, or retry counter, and nothing infers termination from file
+    mtime. Replay is reachable only through an explicit operator request, which
+    the accompanying recovery tests pin end to end.
+    """
+    import ast
+
     root = Path(__file__).resolve().parent.parent
-    for name in ("comparison_store.py", "comparison_detector.py", "api.py"):
-        source = (root / name).read_text(encoding="utf-8")
-        lowered = source.lower()
-        for forbidden in (
-            "threading.timer", "sched.", "apscheduler", "celery", "asyncio.create_task",
-            "backoff", "max_retries", "retry_count", "dead_letter", "dlq",
-            "time.sleep", "worker_thread", "background_task",
+    forbidden = {
+        "sleep", "Timer", "timer", "create_task", "run_forever", "getmtime",
+        "st_mtime", "crontab", "apscheduler", "celery", "sched",
+        "max_retries", "retry_count", "retries", "backoff", "dead_letter",
+        "dlq", "worker_thread", "background_task", "BackgroundTasks",
+    }
+    for name in (
+        "comparison_store.py",
+        "comparison_detector.py",
+        "detection_recovery.py",
+        "api.py",
+    ):
+        # AST-based: a raw substring scan cannot distinguish a scheduler from a
+        # docstring promising there is no scheduler.
+        identifiers: set[str] = set()
+        for node in ast.walk(
+            ast.parse((root / name).read_text(encoding="utf-8"))
         ):
-            assert forbidden not in lowered, f"{name}: {forbidden}"
-        # No age/wall-clock based takeover of a running attempt.
-        assert "st_mtime" not in source, name
-        assert "stale_attempt" not in lowered, name
+            if isinstance(node, ast.Name):
+                identifiers.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                identifiers.add(node.attr)
+            elif isinstance(node, ast.keyword) and node.arg:
+                identifiers.add(node.arg)
+            elif isinstance(node, ast.arg):
+                identifiers.add(node.arg)
+            elif isinstance(node, ast.Import):
+                identifiers.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                identifiers.add(node.module.split(".")[0])
+        found = identifiers & forbidden
+        assert found == set(), f"{name}: {sorted(found)}"
