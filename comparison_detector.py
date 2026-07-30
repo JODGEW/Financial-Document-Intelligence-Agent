@@ -71,6 +71,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import comparison_reliability
 import comparison_store
 import comparison_validators
 import config
@@ -1090,6 +1091,12 @@ def detect_with_attempt(
             return outcome
         raise DetectionNotReady(REASON_COMPARISON_NOT_READY, exc.message) from exc
 
+    # Logged AFTER the start transaction committed, so the record can never
+    # describe a transition that rolled back (Stage 3.5 step 3).
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_ATTEMPT_STARTED, attempt=attempt
+    )
+
     return execute_attempt(
         attempt["attempt_id"],
         record=record,
@@ -1141,7 +1148,7 @@ def execute_attempt(
         try:
             # Result insert + attempt succeeded + detection_succeeded event +
             # detecting -> detected, all in one transaction.
-            comparison_store.complete_detection_attempt(
+            finalized = comparison_store.complete_detection_attempt(
                 attempt_id,
                 result_json=json.dumps(wire),
                 result_hash=_result_hash(wire),
@@ -1157,6 +1164,11 @@ def execute_attempt(
             # overwritten, so serve the stored one.
             stored = comparison_store.get_result(comparison_id, db_path=db_path)
             return stored["result"], False, attempt_id
+        comparison_reliability.log_lifecycle_event(
+            comparison_reliability.EVENT_ATTEMPT_SUCCEEDED,
+            attempt=finalized,
+            elapsed_ms=comparison_reliability.elapsed_ms_for(finalized),
+        )
         return wire, True, attempt_id
     except DetectionError as exc:
         # A KNOWN domain condition raised AFTER the attempt started: the
@@ -1346,9 +1358,12 @@ def _finalize_failed_attempt(
     interruption boundary) — and the original detector error still propagates,
     because a storage problem here must not replace the real cause in the
     client's error path.
+
+    The structured failure record is emitted only after the transaction
+    committed, and carries the STABLE failure code — never exception text.
     """
     try:
-        comparison_store.fail_detection_attempt(
+        finalized = comparison_store.fail_detection_attempt(
             attempt_id,
             failure_code=failure_code,
             failure_summary=_safe_failure_summary(failure_code),
@@ -1360,6 +1375,12 @@ def _finalize_failed_attempt(
             "running and its comparison remains 'detecting'",
             attempt_id,
         )
+        return
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_ATTEMPT_FAILED,
+        attempt=finalized,
+        elapsed_ms=comparison_reliability.elapsed_ms_for(finalized),
+    )
 
 
 def _succeeded_attempt_id(

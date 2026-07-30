@@ -2386,3 +2386,246 @@ def list_exports(
             (comparison_id,),
         ).fetchall()
     return [_export_row_to_record(row) for row in rows]
+
+
+# --- Read-only reliability snapshot ------------------------------------------
+#
+# The ONE read path the reliability service uses, so that service never issues
+# SQL of its own across internal tables. Four properties are deliberate:
+#
+#   1. STRICTLY READ-ONLY, AND NEVER INITIALIZING. The connection is opened
+#      with SQLite's `mode=ro` URI flag, so a write is refused by the driver
+#      rather than merely avoided by convention, and `init_db` is NOT called:
+#      reporting on a database must never create it, add a table to it, or run
+#      a migration against it.
+#   2. AN UNOBSERVABLE DATABASE IS NOT AN EMPTY ONE. A correctly initialized
+#      database holding zero rows is a valid empty system and reads as empty.
+#      A MISSING or UNREADABLE database, or one lacking a required reliability
+#      source table, is refused — reporting it as "zero detecting comparisons,
+#      zero failures, zero issues" would be a false clean signal produced at
+#      exactly the moment the service cannot see workflow state at all. The
+#      five cases are distinguished rather than collapsed:
+#        A valid schema, zero rows      -> empty record sets
+#        B database file missing        -> ReliabilityStorageUnavailable
+#        C database unreadable/corrupt  -> ReliabilityStorageUnavailable
+#        D required table missing       -> ReliabilitySchemaIncomplete
+#        E contradictory stored records -> refused by the caller's validation
+#      sqlite3 errors are therefore never caught broadly and turned into [].
+#   3. ONE CONSISTENT SNAPSHOT. Every record set is read inside a single
+#      deferred read transaction, so a concurrent write cannot tear the report
+#      into halves that disagree with each other.
+#   4. COLUMN ALLOWLIST. Each SELECT names its columns. result_json,
+#      governed_result_json, reviewed_result_json, export_payload_json,
+#      evidence, excerpts, reviewer notes, and operator notes are never
+#      selected — the operator_id / operator_note columns of a replay are
+#      omitted here on purpose, so reliability output cannot carry operator
+#      prose even by accident.
+
+# Stable reasons for a database that cannot be observed at all.
+RELIABILITY_STORAGE_ABSENT = "comparison_database_absent"
+RELIABILITY_STORAGE_UNREADABLE = "comparison_database_unreadable"
+
+
+class ReliabilityStorageUnavailable(Exception):
+    """The comparison database cannot be opened for reading (API: safe 500).
+
+    Missing or unreadable storage, NOT an empty system. ``reason`` is a stable
+    code; ``detail`` names the configured path and the underlying fault for the
+    SERVER LOG only — callers surface the stable code and a correlation id.
+    """
+
+    code = "reliability_storage_unavailable"
+
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+class ReliabilitySchemaIncomplete(Exception):
+    """The database opened, but a required reliability source table is absent.
+
+    A structurally incompatible schema, not an empty system. Raised INSTEAD of
+    returning empty record sets, and raised instead of creating the missing
+    table: this read path never initializes or migrates anything.
+    """
+
+    def __init__(self, missing_tables: list[str], detail: str):
+        super().__init__(detail)
+        self.missing_tables = sorted(missing_tables)
+        self.detail = detail
+
+
+# Every table this snapshot actually consumes. Each must be present before any
+# record set is reported; a database missing one cannot be summarized honestly.
+RELIABILITY_REQUIRED_TABLES = (
+    "comparisons",
+    "comparison_detection_attempts",
+    "comparison_detection_replays",
+)
+
+# Filing ids and captured source hashes are part of the allowlist because the
+# PURE replay-eligibility calculation needs them (registry revalidation + the
+# inputs-changed check). They are identifiers and digests already exposed by
+# the public attempt/comparison DTOs — never content, evidence, or notes.
+_RELIABILITY_COMPARISON_COLUMNS = (
+    "comparison_id",
+    "workflow_version",
+    "previous_filing_id",
+    "current_filing_id",
+    "status",
+    "created_at",
+    "updated_at",
+    "failure_code",
+)
+_RELIABILITY_ATTEMPT_COLUMNS = (
+    "attempt_id",
+    "comparison_id",
+    "attempt_number",
+    "status",
+    "detector_version",
+    "workflow_version",
+    "previous_source_hash",
+    "current_source_hash",
+    "started_at",
+    "finished_at",
+    "result_hash",
+    "failure_code",
+    "failure_summary",
+)
+_RELIABILITY_REPLAY_COLUMNS = (
+    "replay_id",
+    "comparison_id",
+    "source_attempt_id",
+    "replacement_attempt_id",
+    "reason_code",
+    "policy_id",
+    "policy_version",
+    "requested_at",
+)
+
+
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open an existing database read-only. Writes are refused by the driver."""
+    conn = sqlite3.connect(
+        f"file:{db_path.as_posix()}?mode=ro", uri=True, isolation_level=None
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+def _missing_reliability_tables(conn: sqlite3.Connection) -> list[str]:
+    """Required tables absent from this database's own schema catalogue."""
+    present = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    return [name for name in RELIABILITY_REQUIRED_TABLES if name not in present]
+
+
+def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, Any]:
+    """One read-only snapshot of every record the reliability report needs.
+
+    Returns ``{comparisons, attempts, replays, attempts_per_comparison}`` with
+    allowlisted columns only and deterministic ordering, for a database that is
+    readable and carries every required table — including when it holds zero
+    rows, which is a valid empty system.
+
+    Creates nothing, initializes nothing, migrates nothing, writes nothing.
+
+    Raises ReliabilityStorageUnavailable when the file is missing or cannot be
+    read, and ReliabilitySchemaIncomplete when a required table is absent.
+    Neither is reported as an empty result: a database the service cannot
+    observe must not be indistinguishable from one with nothing in it.
+    """
+    path = Path(db_path or config.COMPARISON_DB_PATH)
+    if not path.exists():
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_ABSENT,
+            f"comparison database does not exist: {path}. It is NOT created by "
+            "a reliability read.",
+        )
+
+    try:
+        conn = _connect_readonly(path)
+    except (sqlite3.Error, OSError) as exc:
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_UNREADABLE,
+            f"comparison database at {path} could not be opened read-only: {exc!r}",
+        ) from exc
+
+    try:
+        with closing(conn):
+            conn.execute("BEGIN DEFERRED")
+            try:
+                missing = _missing_reliability_tables(conn)
+                if missing:
+                    raise ReliabilitySchemaIncomplete(
+                        missing,
+                        f"comparison database at {path} is missing required "
+                        f"reliability tables {missing}. They are NOT created by "
+                        "a reliability read.",
+                    )
+                comparisons = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT "
+                        + ", ".join(_RELIABILITY_COMPARISON_COLUMNS)
+                        + " FROM comparisons ORDER BY created_at, comparison_id"
+                    ).fetchall()
+                ]
+                attempts = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT "
+                        + ", ".join(_RELIABILITY_ATTEMPT_COLUMNS)
+                        + " FROM comparison_detection_attempts "
+                        "ORDER BY started_at, comparison_id, attempt_number"
+                    ).fetchall()
+                ]
+                counts = {
+                    row["comparison_id"]: row["attempt_count"]
+                    for row in conn.execute(
+                        "SELECT comparison_id, COUNT(*) AS attempt_count "
+                        "FROM comparison_detection_attempts "
+                        "GROUP BY comparison_id ORDER BY comparison_id"
+                    ).fetchall()
+                }
+                replays = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT "
+                        + ", ".join(_RELIABILITY_REPLAY_COLUMNS)
+                        + " FROM comparison_detection_replays "
+                        "ORDER BY requested_at, replay_id"
+                    ).fetchall()
+                ]
+            finally:
+                # A read transaction is ended, never committed as a write. The
+                # rollback is itself guarded: on a corrupt file even this can
+                # fail, and that must surface as unavailable storage, not as a
+                # bare sqlite3 error escaping the store.
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+    except ReliabilitySchemaIncomplete:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        # Corrupt file, truncated page, revoked permission mid-read. Narrow on
+        # purpose: sqlite3 failures become an explicit unavailable-storage
+        # error, never an empty snapshot.
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_UNREADABLE,
+            f"comparison database at {path} could not be read: {exc!r}",
+        ) from exc
+
+    return {
+        "comparisons": comparisons,
+        "attempts": attempts,
+        "replays": replays,
+        "attempts_per_comparison": counts,
+    }

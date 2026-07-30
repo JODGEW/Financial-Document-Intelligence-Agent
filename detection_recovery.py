@@ -44,9 +44,10 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import comparison_detector
+import comparison_reliability
 import comparison_store
 import config
 from governance.policy_validation import (
@@ -263,6 +264,67 @@ def replay_request_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def build_recovery_view_from_records(
+    *,
+    comparison: dict[str, Any] | None,
+    source_attempt: dict[str, Any],
+    attempts_used: int,
+    existing_replay: dict[str, Any] | None,
+    resolve_source_hashes: Callable[[], tuple[str, str]],
+    policy: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """PURE recovery assessment over already-loaded records. No storage access.
+
+    The storage-independent half of ``recovery_view``: every input is a value
+    the caller already holds — the comparison record (or None when it does not
+    exist), the attempt row, the comparison's total attempt count, the replay
+    that retired this attempt if one exists, the recovery policy, and an
+    injected clock. This function performs NO SQLite access, NO initialization,
+    and NO mutation of any kind, which is what lets the read-only reliability
+    report evaluate replay eligibility from its snapshot without ever touching
+    a store getter.
+
+    ``resolve_source_hashes`` supplies registry truth for the pair as
+    ``(previous_hash, current_hash)`` and is invoked ONLY when every earlier
+    check passes — mirroring how the storage-backed view resolved inputs last.
+    Any exception it raises is reported as ``detection_replay_inputs_changed``,
+    exactly as before: the registry no longer supports this pair as-captured.
+
+    Blocking checks run in the same order the replay transaction applies them,
+    so the preview and the decision cannot disagree.
+    """
+    staleness = comparison_store.evaluate_staleness(
+        source_attempt["started_at"], now, policy["stale_after_seconds"]
+    )
+    max_attempts = policy["max_attempts_per_comparison"]
+    blocking = _blocking_reason_from_records(
+        comparison=comparison,
+        source_attempt=source_attempt,
+        staleness=staleness,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        existing_replay=existing_replay,
+        resolve_source_hashes=resolve_source_hashes,
+    )
+    return {
+        "attempt_id": source_attempt["attempt_id"],
+        "comparison_id": source_attempt["comparison_id"],
+        "status": source_attempt["status"],
+        "started_at": source_attempt["started_at"],
+        "stale_at": staleness["stale_at"],
+        "age_seconds": staleness["age_seconds"],
+        "is_stale": staleness["is_stale"],
+        "replay_eligible": blocking is None,
+        "attempts_used": attempts_used,
+        "max_attempts": max_attempts,
+        "remaining_attempts": max(0, max_attempts - attempts_used),
+        "policy_id": policy["policy_id"],
+        "policy_version": policy["policy_version"],
+        "blocking_reason": blocking,
+    }
+
+
 def recovery_view(
     attempt_id: str,
     *,
@@ -277,6 +339,11 @@ def recovery_view(
     whether a replay would currently be accepted, using the SAME stable codes a
     replay request would return. Calling this never retires an attempt, never
     starts one, and never writes anything.
+
+    This is the storage-backed loader for one attempt id: it reads the records
+    through the ordinary store interfaces and delegates the entire assessment
+    to ``build_recovery_view_from_records``, so this endpoint and the
+    aggregate reliability report share one calculation and cannot disagree.
     """
     db_path = db_path or config.COMPARISON_DB_PATH
     policy = policy or POLICY
@@ -285,87 +352,69 @@ def recovery_view(
     attempt = comparison_store.get_detection_attempt(attempt_id, db_path=db_path)
     if attempt is None:
         raise ReplayAttemptNotFound(attempt_id)
-
     comparison_id = attempt["comparison_id"]
-    staleness = comparison_store.evaluate_staleness(
-        attempt["started_at"], moment, policy["stale_after_seconds"]
-    )
-    attempts_used = comparison_store.count_detection_attempts(
-        comparison_id, db_path=db_path
-    )
-    max_attempts = policy["max_attempts_per_comparison"]
 
-    blocking = _blocking_reason(
-        attempt,
-        staleness,
-        attempts_used,
-        max_attempts,
-        comparison_id,
-        db_path=db_path,
-        registry_path=registry_path,
+    def resolve_source_hashes() -> tuple[str, str]:
+        inputs = comparison_detector.resolve_detection_inputs(
+            comparison_id, db_path=db_path, registry_path=registry_path
+        )
+        return inputs["previous_hash"], inputs["current_hash"]
+
+    return build_recovery_view_from_records(
+        comparison=comparison_store.get_comparison(comparison_id, db_path=db_path),
+        source_attempt=attempt,
+        attempts_used=comparison_store.count_detection_attempts(
+            comparison_id, db_path=db_path
+        ),
+        existing_replay=comparison_store.get_detection_replay_for_source(
+            attempt_id, db_path=db_path
+        ),
+        resolve_source_hashes=resolve_source_hashes,
+        policy=policy,
+        now=moment,
     )
-    return {
-        "attempt_id": attempt_id,
-        "comparison_id": comparison_id,
-        "status": attempt["status"],
-        "started_at": attempt["started_at"],
-        "stale_at": staleness["stale_at"],
-        "age_seconds": staleness["age_seconds"],
-        "is_stale": staleness["is_stale"],
-        "replay_eligible": blocking is None,
-        "attempts_used": attempts_used,
-        "max_attempts": max_attempts,
-        "remaining_attempts": max(0, max_attempts - attempts_used),
-        "policy_id": policy["policy_id"],
-        "policy_version": policy["policy_version"],
-        "blocking_reason": blocking,
-    }
 
 
-def _blocking_reason(
-    attempt: dict[str, Any],
+def _blocking_reason_from_records(
+    *,
+    comparison: dict[str, Any] | None,
+    source_attempt: dict[str, Any],
     staleness: dict[str, Any],
     attempts_used: int,
     max_attempts: int,
-    comparison_id: str,
-    *,
-    db_path: str | Path,
-    registry_path: str | Path | None,
+    existing_replay: dict[str, Any] | None,
+    resolve_source_hashes: Callable[[], tuple[str, str]],
 ) -> str | None:
     """The first stable code that would refuse a replay right now, or None.
 
-    Evaluated in the same order the replay transaction applies its checks, so
-    the preview and the decision cannot disagree. Every step is a read.
+    Pure: consumes only the passed records and the resolver callable. Evaluated
+    in the same order the replay transaction applies its checks, so the preview
+    and the decision cannot disagree.
     """
-    if comparison_store.get_detection_replay_for_source(
-        attempt["attempt_id"], db_path=db_path
-    ) is not None:
+    if existing_replay is not None:
         return BLOCK_ALREADY_REPLAYED
-    record = comparison_store.get_comparison(comparison_id, db_path=db_path)
-    if record is None or record["status"] != comparison_store.STATUS_DETECTING:
+    if comparison is None or comparison["status"] != comparison_store.STATUS_DETECTING:
         return BLOCK_LIFECYCLE_INVALID
-    if attempt["status"] != comparison_store.ATTEMPT_RUNNING:
+    if source_attempt["status"] != comparison_store.ATTEMPT_RUNNING:
         return BLOCK_NOT_RUNNING
     if not staleness["is_stale"]:
         return BLOCK_NOT_STALE
     if attempts_used >= max_attempts:
         return BLOCK_LIMIT_REACHED
     if (
-        attempt["detector_version"] != comparison_detector.DETECTOR_VERSION
-        or attempt["workflow_version"] != comparison_store.WORKFLOW_VERSION
+        source_attempt["detector_version"] != comparison_detector.DETECTOR_VERSION
+        or source_attempt["workflow_version"] != comparison_store.WORKFLOW_VERSION
     ):
         return BLOCK_VERSION_CHANGED
     try:
-        inputs = comparison_detector.resolve_detection_inputs(
-            comparison_id, db_path=db_path, registry_path=registry_path
-        )
+        previous_hash, current_hash = resolve_source_hashes()
     except Exception:
         # The registry no longer supports this pair. Surface it as an input
         # change rather than failing the read-only view.
         return BLOCK_INPUTS_CHANGED
     if (
-        attempt["previous_source_hash"] != inputs["previous_hash"]
-        or attempt["current_source_hash"] != inputs["current_hash"]
+        source_attempt["previous_source_hash"] != previous_hash
+        or source_attempt["current_source_hash"] != current_hash
     ):
         return BLOCK_INPUTS_CHANGED
     return None
@@ -458,11 +507,15 @@ def replay_attempt(
         # The identical request already ran. Report the replacement's CURRENT
         # terminal outcome without executing anything again — including the case
         # where it is still running because that execution was itself
-        # interrupted.
+        # interrupted. NOTHING is logged as a transition here: no state changed.
         return _replay_outcome(replay, replacement_id, db_path), False
 
-    # Transaction closed. Now run the replacement through the SAME execution
-    # seam a first attempt uses.
+    # Transaction closed and committed. Emit the three transitions it applied,
+    # correlated by replay_id (Stage 3.5 step 3). Reads only.
+    _log_replay_transitions(replay, attempt_id, replacement_id, db_path)
+
+    # Now run the replacement through the SAME execution seam a first attempt
+    # uses (which emits the replacement's own succeeded/failed record).
     result, _result_created, _attempt = comparison_detector.execute_attempt(
         replacement_id,
         record=inputs["record"],
@@ -477,7 +530,61 @@ def replay_attempt(
     )
     outcome = _replay_outcome(replay, replacement_id, db_path)
     outcome["result"] = result
+    replacement = comparison_store.get_detection_attempt(
+        replacement_id, db_path=db_path
+    )
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_REPLAY_COMPLETED,
+        attempt=replacement,
+        comparison_id=replay["comparison_id"],
+        replay_id=replay["replay_id"],
+        source_attempt_id=attempt_id,
+        elapsed_ms=comparison_reliability.elapsed_ms_for(replacement),
+    )
     return outcome, True
+
+
+def _log_replay_transitions(
+    replay: dict[str, Any],
+    source_attempt_id: str,
+    replacement_id: str,
+    db_path: str | Path,
+) -> None:
+    """Structured records for the three transitions one replay transaction made.
+
+    Emitted after the commit and never inside it: a logging fault must not be
+    able to abort the replay, and a rolled-back transaction must not leave a
+    record claiming it happened. Operator id and operator note are deliberately
+    NOT part of any structured field — the allowlist in comparison_reliability
+    cannot carry them.
+    """
+    source = comparison_store.get_detection_attempt(
+        source_attempt_id, db_path=db_path
+    )
+    replacement = comparison_store.get_detection_attempt(
+        replacement_id, db_path=db_path
+    )
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_ATTEMPT_TIMED_OUT,
+        attempt=source,
+        comparison_id=replay["comparison_id"],
+        replay_id=replay["replay_id"],
+        elapsed_ms=comparison_reliability.elapsed_ms_for(source),
+    )
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_ATTEMPT_STARTED,
+        attempt=replacement,
+        comparison_id=replay["comparison_id"],
+        replay_id=replay["replay_id"],
+        source_attempt_id=source_attempt_id,
+    )
+    comparison_reliability.log_lifecycle_event(
+        comparison_reliability.EVENT_REPLAY_CREATED,
+        attempt=replacement,
+        comparison_id=replay["comparison_id"],
+        replay_id=replay["replay_id"],
+        source_attempt_id=source_attempt_id,
+    )
 
 
 def _replay_outcome(
