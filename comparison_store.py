@@ -84,9 +84,48 @@ from governance.comparison_schema import (
 WORKFLOW_VERSION = "comparison_workflow.v2"
 
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
+STATUS_DETECTING = "detecting"
 STATUS_DETECTED = "detected"
 STATUS_FAILED = "failed"
-COMPARISON_STATUSES = (STATUS_READY_FOR_DETECTION, STATUS_DETECTED, STATUS_FAILED)
+COMPARISON_STATUSES = (
+    STATUS_READY_FOR_DETECTION,
+    STATUS_DETECTING,
+    STATUS_DETECTED,
+    STATUS_FAILED,
+)
+
+# Detection-attempt states (Stage 3.5 reliability step 1).
+ATTEMPT_RUNNING = "running"
+ATTEMPT_SUCCEEDED = "succeeded"
+ATTEMPT_FAILED = "failed"
+ATTEMPT_STATUSES = (ATTEMPT_RUNNING, ATTEMPT_SUCCEEDED, ATTEMPT_FAILED)
+
+EVENT_DETECTION_STARTED = "detection_started"
+EVENT_DETECTION_SUCCEEDED = "detection_succeeded"
+EVENT_DETECTION_FAILED = "detection_failed"
+DETECTION_EVENT_TYPES = (
+    EVENT_DETECTION_STARTED,
+    EVENT_DETECTION_SUCCEEDED,
+    EVENT_DETECTION_FAILED,
+)
+
+# Deterministic event ordering key: started is always 0, the single terminal
+# event is always 1, so ordering never depends on timestamp resolution.
+_EVENT_SEQ = {
+    EVENT_DETECTION_STARTED: 0,
+    EVENT_DETECTION_SUCCEEDED: 1,
+    EVENT_DETECTION_FAILED: 1,
+}
+
+# Stable reason codes for detection-attempt state errors (API: 409).
+REASON_COMPARISON_NOT_READY = "comparison_not_ready"
+REASON_DETECTION_IN_PROGRESS = "detection_in_progress"
+REASON_ATTEMPT_NOT_FOUND = "detection_attempt_not_found"
+REASON_ATTEMPT_NOT_RUNNING = "detection_attempt_not_running"
+REASON_TRANSITION_INVALID = "detection_transition_invalid"
+REASON_INPUTS_CHANGED = "detection_inputs_changed"
+
+MAX_FAILURE_SUMMARY_CHARS = 200
 
 # Section keys the v1 comparison workflow can actually target. The schema
 # itself accepts any non-empty key; this is the workflow capability set.
@@ -119,6 +158,28 @@ class ComparisonLifecycleError(Exception):
         self.status = status
 
 
+class DetectionStateError(Exception):
+    """A detection-attempt transition is not permitted (API: 409).
+
+    ``code`` is one of the stable REASON_* codes above; ``message`` is safe to
+    display — never SQL, a filesystem path, or document content.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        comparison_id: str | None = None,
+        attempt_id: str | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.comparison_id = comparison_id
+        self.attempt_id = attempt_id
+
+
 class ComparisonPairError(ValueError):
     """The requested filing pair is not eligible for a v1 comparison.
 
@@ -142,11 +203,83 @@ CREATE TABLE IF NOT EXISTS comparisons (
     current_filing_id   TEXT NOT NULL,
     section_scope       TEXT NOT NULL,  -- JSON array, normalized (sorted, deduped)
     status              TEXT NOT NULL
-                        CHECK (status IN ('ready_for_detection', 'detected', 'failed')),
+                        CHECK (status IN ('ready_for_detection', 'detecting',
+                                          'detected', 'failed')),
     created_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
     updated_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
     failure_code        TEXT,           -- stable code when status='failed'
     failure_summary     TEXT            -- safe one-line summary only
+)
+"""
+
+_DETECTION_ATTEMPTS_DDL = """
+CREATE TABLE IF NOT EXISTS comparison_detection_attempts (
+    -- One durable record per STARTED detection execution. A row exists before
+    -- the detector reads anything, so an interrupted run is distinguishable
+    -- from one that never started. Application records, NOT tamper-proof
+    -- storage. No filing content, evidence, SQL, paths, or raw exception text
+    -- is ever stored here.
+    attempt_id           TEXT PRIMARY KEY NOT NULL,  -- att_<sha256[:16]>
+    comparison_id        TEXT NOT NULL
+                         REFERENCES comparisons (comparison_id),
+    attempt_number       INTEGER NOT NULL,           -- 1-based, per comparison
+    status               TEXT NOT NULL
+                         CHECK (status IN ('running', 'succeeded', 'failed')),
+    detector_version     TEXT NOT NULL,
+    workflow_version     TEXT NOT NULL,
+    previous_source_hash TEXT NOT NULL,  -- registry hash captured at start
+    current_source_hash  TEXT NOT NULL,  -- registry hash captured at start
+    started_at           TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
+    finished_at          TEXT,
+    result_hash          TEXT,
+    failure_code         TEXT,
+    failure_summary      TEXT,
+    -- Per-status field coherence is a STORAGE invariant, not just an
+    -- application rule: a committed result can never sit beside a running
+    -- attempt, and a terminal attempt can never lack its outcome.
+    CHECK (
+        (status = 'running'
+            AND finished_at IS NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'succeeded'
+            AND finished_at IS NOT NULL
+            AND result_hash IS NOT NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'failed'
+            AND finished_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_summary IS NOT NULL)
+    ),
+    UNIQUE (comparison_id, attempt_number)
+)
+"""
+
+_DETECTION_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS comparison_detection_events (
+    -- Append-only transition history: this module inserts, and there is no
+    -- update or delete path anywhere in the codebase. These are application
+    -- records, NOT tamper-proof audit storage — anyone with file access can
+    -- alter a local SQLite database. No result JSON, evidence, reviewer
+    -- notes, paths, SQL, or raw error text is ever stored here.
+    event_id      TEXT PRIMARY KEY NOT NULL,  -- det_evt_<sha256[:16]>
+    attempt_id    TEXT NOT NULL
+                  REFERENCES comparison_detection_attempts (attempt_id),
+    comparison_id TEXT NOT NULL
+                  REFERENCES comparisons (comparison_id),
+    event_type    TEXT NOT NULL
+                  CHECK (event_type IN ('detection_started',
+                                        'detection_succeeded',
+                                        'detection_failed')),
+    event_seq     INTEGER NOT NULL,  -- 0 started, 1 terminal: stable ordering
+    created_at    TEXT NOT NULL,     -- timezone-aware UTC ISO 8601
+    result_hash   TEXT,
+    failure_code  TEXT,
+    -- Exactly one event of each type per attempt.
+    UNIQUE (attempt_id, event_type)
 )
 """
 
@@ -255,6 +388,17 @@ CREATE TABLE IF NOT EXISTS comparison_exports (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_comparison_exports_logical_key
     ON comparison_exports (evaluation_id, final_result_hash, export_schema_version);
+{_DETECTION_ATTEMPTS_DDL};
+-- At most ONE running attempt per comparison, enforced by storage rather than
+-- by a read-then-write check: concurrent starts race on this index and exactly
+-- one wins.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_attempt_running
+    ON comparison_detection_attempts (comparison_id) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_detection_attempts_comparison
+    ON comparison_detection_attempts (comparison_id, attempt_number);
+{_DETECTION_EVENTS_DDL};
+CREATE INDEX IF NOT EXISTS idx_detection_events_attempt
+    ON comparison_detection_events (attempt_id, event_seq);
 """
 
 
@@ -339,6 +483,43 @@ def _migrate_status_vocabulary(db_path: Path) -> None:
             conn.execute("DROP TABLE comparisons_migrating")
 
 
+def _migrate_detecting_status(db_path: Path) -> None:
+    """Rebuild the comparisons table if its CHECK predates 'detecting'.
+
+    Idempotent: inspects the stored DDL and returns immediately once
+    'detecting' is present. Unlike the pre-detector migration, this one can run
+    on a database that already HAS child tables (results, evaluations, reviews,
+    exports, attempts), so the rebuild is create-new / copy / drop / rename
+    rather than rename-then-recreate, and ``legacy_alter_table`` is enabled so
+    SQLite does not rewrite those children's ``REFERENCES comparisons`` clauses
+    to point at a temporary name. Existing rows and their statuses are
+    preserved byte for byte; results, evaluations, reviews, and exports are
+    never touched.
+    """
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='comparisons'"
+        ).fetchone()
+        if row is None or "'detecting'" in (row[0] or ""):
+            return
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        with conn:
+            conn.execute(
+                _COMPARISONS_DDL.replace(
+                    "CREATE TABLE IF NOT EXISTS comparisons",
+                    "CREATE TABLE comparisons_rebuilt",
+                )
+            )
+            conn.execute(
+                "INSERT INTO comparisons_rebuilt SELECT * FROM comparisons"
+            )
+            conn.execute("DROP TABLE comparisons")
+            conn.execute("ALTER TABLE comparisons_rebuilt RENAME TO comparisons")
+
+
 def _connect(db_path: str | Path) -> sqlite3.Connection:
     """Open a per-operation connection with the store's pragmas applied."""
     path = Path(db_path)
@@ -357,6 +538,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     """Create tables/indexes and run the idempotent migrations."""
     db_path = Path(db_path or config.COMPARISON_DB_PATH)
     _migrate_status_vocabulary(db_path)
+    _migrate_detecting_status(db_path)
     _migrate_review_items_vocabulary(db_path)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
@@ -607,6 +789,45 @@ def list_comparisons(
 # --- Detection results and lifecycle transitions -----------------------------
 
 
+def _insert_result(
+    conn: sqlite3.Connection,
+    comparison_id: str,
+    *,
+    result_json: str,
+    result_hash: str,
+    detector_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    now: str,
+) -> None:
+    """The ONE canonical comparison_results insert.
+
+    Both result-persistence paths go through here — ``record_result`` (the
+    plain library/test path) and ``complete_detection_attempt`` (the
+    attempt-tracked detector path) — so the stored column set can never
+    diverge between them. Caller owns the transaction.
+    """
+    conn.execute(
+        """
+        INSERT INTO comparison_results (
+            comparison_id, schema_version, detector_version,
+            previous_source_hash, current_source_hash,
+            result_json, result_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            comparison_id,
+            COMPARISON_SCHEMA_VERSION,
+            detector_version,
+            previous_source_hash,
+            current_source_hash,
+            result_json,
+            result_hash,
+            now,
+        ),
+    )
+
+
 def record_result(
     comparison_id: str,
     *,
@@ -617,13 +838,27 @@ def record_result(
     current_source_hash: str,
     db_path: str | Path | None = None,
 ) -> None:
-    """Persist a detection result and transition the comparison to detected.
+    """LOW-LEVEL: persist a result and transition the comparison to detected.
+
+    NOT the detection orchestration path, and no production code calls it.
+    Every runtime detection entry point (``comparison_detector.detect`` and
+    ``detect_with_attempt``, and therefore the API route, the CLI, and the
+    regression runner) goes through ``start_detection_attempt`` +
+    ``complete_detection_attempt`` instead, so a result is never persisted
+    without the durable attempt that produced it. This function records NO
+    attempt and NO transition event, so calling it from a new detection path
+    would silently reintroduce untracked execution — don't.
+
+    It remains only as a narrow fixture primitive for tests that need a stored
+    result without running the detector (the governance, review, and export
+    suites seed synthetic comparison.v1 results this way), mirroring how
+    ``load_documents`` without ``registry_path=`` keeps the plain pre-registry
+    behavior for library callers.
 
     One BEGIN IMMEDIATE transaction covers the lifecycle check, the result
-    insert, and the status update, so concurrent detections serialize: the
-    loser observes the winner's committed result and gets
-    ComparisonResultExists (results are never overwritten). A comparison that
-    is not ready_for_detection raises ComparisonLifecycleError.
+    insert, and the status update. A comparison that is not
+    ready_for_detection raises ComparisonLifecycleError; an existing result
+    raises ComparisonResultExists (results are never overwritten).
     """
     db_path = db_path or config.COMPARISON_DB_PATH
     init_db(db_path)
@@ -652,24 +887,15 @@ def record_result(
                     row["status"],
                     f"comparison is {row['status']}, not ready_for_detection",
                 )
-            conn.execute(
-                """
-                INSERT INTO comparison_results (
-                    comparison_id, schema_version, detector_version,
-                    previous_source_hash, current_source_hash,
-                    result_json, result_hash, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    comparison_id,
-                    COMPARISON_SCHEMA_VERSION,
-                    detector_version,
-                    previous_source_hash,
-                    current_source_hash,
-                    result_json,
-                    result_hash,
-                    now,
-                ),
+            _insert_result(
+                conn,
+                comparison_id,
+                result_json=result_json,
+                result_hash=result_hash,
+                detector_version=detector_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+                now=now,
             )
             conn.execute(
                 "UPDATE comparisons SET status = ?, updated_at = ? "
@@ -1051,6 +1277,503 @@ def mark_failed(
             ),
         )
         return cursor.rowcount == 1
+
+
+# --- Durable detection attempts and transition events ------------------------
+#
+# Every STARTED detection execution gets a durable attempt row plus append-only
+# transition events, and the comparison carries an explicit `detecting` state
+# while one is running. The store owns the state machine: these functions
+# re-read and re-verify state inside their own transaction rather than trusting
+# the caller to pass a valid state.
+#
+#   comparison: ready_for_detection -> detecting -> detected | failed
+#   attempt:                  (none) -> running  -> succeeded | failed
+#
+# Terminal states do not transition in this commit: there is no retry, replay,
+# timeout takeover, or background worker. A process killed mid-execution leaves
+# comparison='detecting' with a running attempt indefinitely, which is
+# deliberately VISIBLE (queryable through the attempt and event readers) rather
+# than silently recovered — see the module note in comparison_detector.
+
+
+def detection_attempt_id_for(
+    comparison_id: str,
+    attempt_number: int,
+    *,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+) -> str:
+    """Deterministic attempt id that is nonetheless unique per attempt.
+
+    ``attempt_number`` participates in the key, so two attempts of the same
+    comparison — even with identical versions and identical input hashes —
+    can never collide.
+    """
+    key = "|".join(
+        [
+            comparison_id,
+            str(attempt_number),
+            detector_version,
+            workflow_version,
+            previous_source_hash,
+            current_source_hash,
+        ]
+    )
+    return f"att_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _detection_event_id(attempt_id: str, event_type: str) -> str:
+    """Deterministic event id. Exactly one event of each type per attempt
+    exists, so this is unique and a duplicate insert fails on the primary key
+    as well as on the (attempt_id, event_type) uniqueness constraint."""
+    key = f"{attempt_id}|{event_type}"
+    return f"det_evt_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _insert_detection_event(
+    conn: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    comparison_id: str,
+    event_type: str,
+    now: str,
+    result_hash: str | None = None,
+    failure_code: str | None = None,
+) -> None:
+    """Append one transition event. Insert-only: no update or delete path."""
+    conn.execute(
+        """
+        INSERT INTO comparison_detection_events (
+            event_id, attempt_id, comparison_id, event_type, event_seq,
+            created_at, result_hash, failure_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _detection_event_id(attempt_id, event_type),
+            attempt_id,
+            comparison_id,
+            event_type,
+            _EVENT_SEQ[event_type],
+            now,
+            result_hash,
+            failure_code,
+        ),
+    )
+
+
+def start_detection_attempt(
+    comparison_id: str,
+    *,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Durably start one detection execution; returns the running attempt.
+
+    One BEGIN IMMEDIATE transaction covers: re-reading the comparison,
+    verifying it is ready_for_detection, verifying no attempt is already
+    running, allocating the next attempt number, inserting the running attempt,
+    appending detection_started, and transitioning the comparison to
+    ``detecting``. Nothing is left in memory — after this returns, an
+    interrupted execution is observable.
+
+    Concurrent callers serialize here and exactly one wins; the losers see the
+    winner's committed state and raise DetectionStateError with
+    ``detection_in_progress``. The caller MUST NOT hold this transaction while
+    reading the index or running the detector — it is closed before returning.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            record = conn.execute(
+                "SELECT status FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if record is None:
+                raise ComparisonLifecycleError(
+                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                )
+
+            # Checked BEFORE the status check so a comparison left in
+            # 'detecting' reports the specific in-progress code.
+            running = conn.execute(
+                "SELECT attempt_id FROM comparison_detection_attempts "
+                "WHERE comparison_id = ? AND status = ?",
+                (comparison_id, ATTEMPT_RUNNING),
+            ).fetchone()
+            if running is not None:
+                raise DetectionStateError(
+                    REASON_DETECTION_IN_PROGRESS,
+                    "a detection attempt is already running for this "
+                    "comparison; concurrent detection is not started twice",
+                    comparison_id=comparison_id,
+                    attempt_id=running["attempt_id"],
+                )
+            if record["status"] != STATUS_READY_FOR_DETECTION:
+                raise DetectionStateError(
+                    REASON_COMPARISON_NOT_READY,
+                    f"comparison is '{record['status']}', not "
+                    "'ready_for_detection'",
+                    comparison_id=comparison_id,
+                )
+
+            next_number = (
+                conn.execute(
+                    "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+                    "FROM comparison_detection_attempts WHERE comparison_id = ?",
+                    (comparison_id,),
+                ).fetchone()[0]
+            )
+            attempt_id = detection_attempt_id_for(
+                comparison_id,
+                next_number,
+                detector_version=detector_version,
+                workflow_version=workflow_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+            )
+            conn.execute(
+                """
+                INSERT INTO comparison_detection_attempts (
+                    attempt_id, comparison_id, attempt_number, status,
+                    detector_version, workflow_version,
+                    previous_source_hash, current_source_hash,
+                    started_at, finished_at, result_hash,
+                    failure_code, failure_summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+                """,
+                (
+                    attempt_id,
+                    comparison_id,
+                    next_number,
+                    ATTEMPT_RUNNING,
+                    detector_version,
+                    workflow_version,
+                    previous_source_hash,
+                    current_source_hash,
+                    now,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_STARTED,
+                now=now,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (STATUS_DETECTING, now, comparison_id, STATUS_READY_FOR_DETECTION),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'detecting'",
+                    comparison_id=comparison_id,
+                )
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(row)
+
+
+def complete_detection_attempt(
+    attempt_id: str,
+    *,
+    result_json: str,
+    result_hash: str,
+    detector_version: str,
+    workflow_version: str,
+    previous_source_hash: str,
+    current_source_hash: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Persist the result and finalize the attempt as succeeded, atomically.
+
+    One BEGIN IMMEDIATE transaction covers: verifying the attempt is still
+    running, verifying the comparison is still detecting, verifying the
+    detector/workflow versions and source hashes still match what the attempt
+    captured at start, inserting the result through the canonical result path,
+    marking the attempt succeeded with its finished_at and result_hash,
+    appending detection_succeeded, and transitioning detecting -> detected.
+
+    Because it is one transaction, a committed result can never coexist with a
+    still-running attempt, and a succeeded attempt can never exist without its
+    stored result. Raises DetectionStateError (stable code) for every state or
+    input mismatch, and ComparisonResultExists if a result somehow already
+    exists — results are never overwritten.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            attempt = _require_running_attempt(conn, attempt_id)
+            comparison_id = attempt["comparison_id"]
+
+            status = conn.execute(
+                "SELECT status FROM comparisons WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone()
+            if status is None or status["status"] != STATUS_DETECTING:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison is no longer in 'detecting' state; a "
+                    "result is not committed outside its own attempt",
+                    comparison_id=comparison_id,
+                    attempt_id=attempt_id,
+                )
+            if (
+                attempt["detector_version"] != detector_version
+                or attempt["workflow_version"] != workflow_version
+                or attempt["previous_source_hash"] != previous_source_hash
+                or attempt["current_source_hash"] != current_source_hash
+            ):
+                raise DetectionStateError(
+                    REASON_INPUTS_CHANGED,
+                    "the detector/workflow versions or filing source hashes "
+                    "no longer match the ones captured when this attempt "
+                    "started",
+                    comparison_id=comparison_id,
+                    attempt_id=attempt_id,
+                )
+            if conn.execute(
+                "SELECT 1 FROM comparison_results WHERE comparison_id = ?",
+                (comparison_id,),
+            ).fetchone() is not None:
+                raise ComparisonResultExists(comparison_id)
+
+            _insert_result(
+                conn,
+                comparison_id,
+                result_json=result_json,
+                result_hash=result_hash,
+                detector_version=detector_version,
+                previous_source_hash=previous_source_hash,
+                current_source_hash=current_source_hash,
+                now=now,
+            )
+            conn.execute(
+                "UPDATE comparison_detection_attempts SET status = ?, "
+                "finished_at = ?, result_hash = ? "
+                "WHERE attempt_id = ? AND status = ?",
+                (ATTEMPT_SUCCEEDED, now, result_hash, attempt_id, ATTEMPT_RUNNING),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_SUCCEEDED,
+                now=now,
+                result_hash=result_hash,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (STATUS_DETECTED, now, comparison_id, STATUS_DETECTING),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'detected'",
+                    comparison_id=comparison_id,
+                    attempt_id=attempt_id,
+                )
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(row)
+
+
+def fail_detection_attempt(
+    attempt_id: str,
+    *,
+    failure_code: str,
+    failure_summary: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Finalize a running attempt as failed, atomically.
+
+    One BEGIN IMMEDIATE transaction covers: verifying the attempt is running,
+    marking it failed with finished_at / stable code / bounded safe summary,
+    appending detection_failed, and transitioning the comparison
+    detecting -> failed. The caller is responsible for the summary being safe;
+    it is truncated here but never sanitized, so pass a code-derived string —
+    never an exception message, path, or SQL.
+
+    If this transaction itself fails, nothing is applied: the attempt stays
+    running and the comparison stays detecting (the interruption boundary).
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    now = _utc_now_iso()
+    summary = (failure_summary or "detection failed")[:MAX_FAILURE_SUMMARY_CHARS]
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            attempt = _require_running_attempt(conn, attempt_id)
+            comparison_id = attempt["comparison_id"]
+            conn.execute(
+                "UPDATE comparison_detection_attempts SET status = ?, "
+                "finished_at = ?, failure_code = ?, failure_summary = ? "
+                "WHERE attempt_id = ? AND status = ?",
+                (
+                    ATTEMPT_FAILED,
+                    now,
+                    failure_code,
+                    summary,
+                    attempt_id,
+                    ATTEMPT_RUNNING,
+                ),
+            )
+            _insert_detection_event(
+                conn,
+                attempt_id=attempt_id,
+                comparison_id=comparison_id,
+                event_type=EVENT_DETECTION_FAILED,
+                now=now,
+                failure_code=failure_code,
+            )
+            cursor = conn.execute(
+                "UPDATE comparisons SET status = ?, failure_code = ?, "
+                "failure_summary = ?, updated_at = ? "
+                "WHERE comparison_id = ? AND status = ?",
+                (
+                    STATUS_FAILED,
+                    failure_code,
+                    summary,
+                    now,
+                    comparison_id,
+                    STATUS_DETECTING,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_TRANSITION_INVALID,
+                    "the comparison could not be transitioned to 'failed'",
+                    comparison_id=comparison_id,
+                    attempt_id=attempt_id,
+                )
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(row)
+
+
+def _require_running_attempt(
+    conn: sqlite3.Connection, attempt_id: str
+) -> sqlite3.Row:
+    """Read an attempt that must exist and must still be running."""
+    attempt = conn.execute(
+        "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    if attempt is None:
+        raise DetectionStateError(
+            REASON_ATTEMPT_NOT_FOUND,
+            "no detection attempt with this id exists",
+            attempt_id=attempt_id,
+        )
+    if attempt["status"] != ATTEMPT_RUNNING:
+        raise DetectionStateError(
+            REASON_ATTEMPT_NOT_RUNNING,
+            f"the detection attempt is already '{attempt['status']}'; "
+            "terminal attempts are never re-finalized",
+            comparison_id=attempt["comparison_id"],
+            attempt_id=attempt_id,
+        )
+    return attempt
+
+
+def get_detection_attempt(
+    attempt_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Fetch one detection attempt by id, or None."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_running_detection_attempt(
+    comparison_id: str, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    """The comparison's running attempt, or None. At most one can exist."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM comparison_detection_attempts "
+            "WHERE comparison_id = ? AND status = ?",
+            (comparison_id, ATTEMPT_RUNNING),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_detection_attempts(
+    comparison_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Every attempt for a comparison in execution order (attempt_number)."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_detection_attempts "
+            "WHERE comparison_id = ? ORDER BY attempt_number",
+            (comparison_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_detection_events(
+    attempt_id: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Append-only transition events for one attempt, oldest first.
+
+    Ordered by (event_seq, created_at, event_id): the sequence key makes the
+    order deterministic even when two events share a timestamp.
+    """
+    db_path = db_path or config.COMPARISON_DB_PATH
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT * FROM comparison_detection_events WHERE attempt_id = ? "
+            "ORDER BY event_seq, created_at, event_id",
+            (attempt_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 # --- Release-gated export artifacts ------------------------------------------

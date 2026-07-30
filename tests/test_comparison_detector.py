@@ -559,31 +559,53 @@ def test_determinism_across_fresh_runs(corpus, tmp_path):
 
 
 def test_concurrent_detection_produces_one_result(corpus, tmp_path):
-    """Test 22: racing detections -> one stored row, one created=True."""
+    """Test 22: racing detections -> one stored row, one created=True.
+
+    Since durable attempts landed, a racing request no longer re-runs the
+    detector: it either loses the start race and gets DetectionInProgress, or
+    arrives after the winner committed and gets the idempotent stored result.
+    Either way exactly one execution happens and exactly one result exists.
+    """
     db = tmp_path / "concurrent.db"
     record, _ = comparison_store.create_comparison(
         PREV_ID, CURR_ID, db_path=db, registry_path=corpus.registry
     )
 
     def attempt(_):
-        return detect(
-            record["comparison_id"],
-            db_path=db,
-            registry_path=corpus.registry,
-            chroma_client=corpus.chroma,
-        )
+        try:
+            return detect(
+                record["comparison_id"],
+                db_path=db,
+                registry_path=corpus.registry,
+                chroma_client=corpus.chroma,
+            )
+        except comparison_detector.DetectionInProgress as exc:
+            return exc
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         outcomes = list(pool.map(attempt, range(6)))
 
-    assert sum(1 for _r, created in outcomes if created) == 1
-    first = outcomes[0][0]
-    assert all(result == first for result, _ in outcomes)
+    succeeded = [outcome for outcome in outcomes if not isinstance(outcome, Exception)]
+    in_progress = [
+        outcome
+        for outcome in outcomes
+        if isinstance(outcome, comparison_detector.DetectionInProgress)
+    ]
+    assert len(succeeded) + len(in_progress) == 6
+    assert sum(1 for _r, created in succeeded if created) == 1
+    assert all(exc.code == "detection_in_progress" for exc in in_progress)
+    created_result = next(result for result, created in succeeded if created)
+    assert all(result == created_result for result, _ in succeeded)
     with closing(sqlite3.connect(db)) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM comparison_results").fetchone()[0]
             == 1
         )
+        # Exactly one execution ran: one attempt, and it succeeded.
+        attempts = conn.execute(
+            "SELECT status, attempt_number FROM comparison_detection_attempts"
+        ).fetchall()
+        assert attempts == [("succeeded", 1)]
 
 
 def test_stale_source_hash_is_rejected(corpus, db):
