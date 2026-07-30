@@ -192,7 +192,7 @@ class ComparisonRecordDTO(BaseModel):
     previousFilingId: str
     currentFilingId: str
     sectionScope: list[str]
-    status: Literal["ready_for_detection", "detected", "failed"]
+    status: Literal["ready_for_detection", "detecting", "detected", "failed"]
     createdAt: str
     updatedAt: str
     failureCode: str | None = None
@@ -365,6 +365,49 @@ class ComparisonExportCreateResponse(BaseModel):
     export: dict
 
 
+class DetectionAttemptDTO(BaseModel):
+    """One durable detection execution. The field set is an allowlist.
+
+    Deliberately payload-free: no comparison result, no evidence excerpts, no
+    filing content. ``failureSummary`` is the store's bounded, code-derived
+    summary — never an exception message, path, or SQL fragment.
+    """
+
+    attemptId: str
+    comparisonId: str
+    attemptNumber: int
+    status: Literal["running", "succeeded", "failed"]
+    detectorVersion: str
+    workflowVersion: str
+    previousSourceHash: str
+    currentSourceHash: str
+    startedAt: str
+    finishedAt: str | None = None
+    resultHash: str | None = None
+    failureCode: str | None = None
+    failureSummary: str | None = None
+
+
+class DetectionEventDTO(BaseModel):
+    """One append-only detection transition event. Allowlisted fields.
+
+    Application records, NOT tamper-proof storage. Carries a stable event type
+    and at most a result hash or failure code — never result JSON, evidence,
+    reviewer notes, paths, SQL, or raw error text.
+    """
+
+    eventId: str
+    attemptId: str
+    comparisonId: str
+    eventType: Literal[
+        "detection_started", "detection_succeeded", "detection_failed"
+    ]
+    eventSeq: int
+    createdAt: str
+    resultHash: str | None = None
+    failureCode: str | None = None
+
+
 class ComparisonDetectResponse(BaseModel):
     """POST /api/comparisons/{id}/detect response.
 
@@ -372,10 +415,17 @@ class ComparisonDetectResponse(BaseModel):
     persisted (the schema contract IS the API shape for detection results —
     it contains filing ids, section keys, chunk ids, and excerpts, never
     absolute paths or storage detail).
+
+    ``attemptId`` is additive and optional, so the existing wire contract is
+    unchanged for current clients: it names the durable execution that produced
+    the result. It is deliberately NOT inserted into the comparison.v1 document
+    — attempt metadata is workflow bookkeeping, not part of the result schema.
+    It is null only for a result stored before attempt tracking existed.
     """
 
     created: bool
     result: dict
+    attemptId: str | None = None
 
 
 app = FastAPI(title="Financial Document Intelligence API")
@@ -749,7 +799,7 @@ def create_comparison(
 @app.get("/api/comparisons", response_model=list[ComparisonRecordDTO])
 def list_comparisons(
     filing_id: str | None = None,
-    status: Literal["ready_for_detection", "detected", "failed"] | None = None,
+    status: Literal["ready_for_detection", "detecting", "detected", "failed"] | None = None,
 ) -> list[ComparisonRecordDTO]:
     """List comparisons, newest first. Minimal stable filters only:
     filing_id matches either side of the pair; status matches exactly."""
@@ -785,16 +835,23 @@ def detect_comparison(
 
     201 + created=true for a newly persisted result; 200 + created=false when
     the same detector version already produced a result for the same source
-    hashes; 404 unknown comparison; 409 for lifecycle violations or stale
-    inputs; 422 when the filing pair no longer validates against the
-    registry; safe 500 with a correlation id for unexpected faults.
+    hashes; 404 unknown comparison; 409 for lifecycle violations, an already
+    running attempt (`detection_in_progress`), or stale inputs; 422 when the
+    filing pair no longer validates against the registry; safe 500 with a
+    correlation id for unexpected faults.
+
+    The response additionally carries `attemptId`, naming the durable execution
+    behind the result.
     """
     try:
-        result, created = comparison_detector.detect(comparison_id)
+        result, created, attempt_id = comparison_detector.detect_with_attempt(
+            comparison_id
+        )
     except comparison_detector.UnknownComparison:
         raise HTTPException(status_code=404, detail="Comparison not found.")
     except (
         comparison_detector.DetectionNotReady,
+        comparison_detector.DetectionInProgress,
         comparison_detector.DetectionInputsStale,
         comparison_detector.DetectionVersionSuperseded,
     ) as exc:
@@ -826,7 +883,99 @@ def detect_comparison(
         raise _comparison_storage_error(exc) from exc
 
     response.status_code = 201 if created else 200
-    return ComparisonDetectResponse(created=created, result=result)
+    return ComparisonDetectResponse(
+        created=created, result=result, attemptId=attempt_id
+    )
+
+
+def _to_detection_attempt_dto(record: dict) -> DetectionAttemptDTO:
+    """Map a stored attempt onto the allowlist, field by field."""
+    return DetectionAttemptDTO(
+        attemptId=record.get("attempt_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        attemptNumber=record.get("attempt_number", 0),
+        status=record.get("status", "running"),
+        detectorVersion=record.get("detector_version", ""),
+        workflowVersion=record.get("workflow_version", ""),
+        previousSourceHash=record.get("previous_source_hash", ""),
+        currentSourceHash=record.get("current_source_hash", ""),
+        startedAt=record.get("started_at", ""),
+        finishedAt=record.get("finished_at"),
+        resultHash=record.get("result_hash"),
+        failureCode=record.get("failure_code"),
+        failureSummary=record.get("failure_summary"),
+    )
+
+
+def _to_detection_event_dto(record: dict) -> DetectionEventDTO:
+    """Map a stored transition event onto the allowlist, field by field."""
+    return DetectionEventDTO(
+        eventId=record.get("event_id", ""),
+        attemptId=record.get("attempt_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        eventType=record.get("event_type", "detection_started"),
+        eventSeq=record.get("event_seq", 0),
+        createdAt=record.get("created_at", ""),
+        resultHash=record.get("result_hash"),
+        failureCode=record.get("failure_code"),
+    )
+
+
+@app.get(
+    "/api/comparisons/{comparison_id}/detection-attempts",
+    response_model=list[DetectionAttemptDTO],
+)
+def list_detection_attempts(comparison_id: str) -> list[DetectionAttemptDTO]:
+    """Every detection attempt for one comparison, in execution order
+    (attempt_number ascending); 404 when the comparison does not exist.
+
+    Summaries only — no comparison result payload and no evidence.
+    """
+    try:
+        if comparison_store.get_comparison(comparison_id) is None:
+            raise HTTPException(status_code=404, detail="Comparison not found.")
+        records = comparison_store.list_detection_attempts(comparison_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_detection_attempt_dto(record) for record in records]
+
+
+@app.get("/api/detection-attempts/{attempt_id}", response_model=DetectionAttemptDTO)
+def get_detection_attempt(attempt_id: str) -> DetectionAttemptDTO:
+    """One detection attempt by id; 404 when it does not exist."""
+    try:
+        record = comparison_store.get_detection_attempt(attempt_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Detection attempt not found.")
+    return _to_detection_attempt_dto(record)
+
+
+@app.get(
+    "/api/detection-attempts/{attempt_id}/events",
+    response_model=list[DetectionEventDTO],
+)
+def list_detection_events(attempt_id: str) -> list[DetectionEventDTO]:
+    """Append-only transition events for one attempt, oldest first.
+
+    Deterministically ordered by the stored sequence key, so a started event
+    always precedes its terminal event regardless of timestamp resolution.
+    404 when the attempt does not exist.
+    """
+    try:
+        if comparison_store.get_detection_attempt(attempt_id) is None:
+            raise HTTPException(
+                status_code=404, detail="Detection attempt not found."
+            )
+        records = comparison_store.list_detection_events(attempt_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_detection_event_dto(record) for record in records]
 
 
 def _to_governance_dto(record: dict) -> GovernanceEvaluationDTO:

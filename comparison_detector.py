@@ -37,12 +37,35 @@ Failure boundary: data-shaped insufficiency produces an UNDETERMINED RESULT
 'detected'). Only unexpected internal faults transition the comparison to
 status 'failed' (failure_code='detector_internal_error') — never with paths,
 SQL, or document content in the persisted summary.
+
+Durable execution attempts (Stage 3.5 reliability step 1)
+---------------------------------------------------------
+Every execution that actually starts is durable before any data is read:
+``comparison_store.start_detection_attempt`` commits a running attempt row, a
+``detection_started`` event, and the comparison's explicit ``detecting`` state
+in one transaction; exactly one of ``complete_detection_attempt`` /
+``fail_detection_attempt`` finalizes it in one more. No SQLite transaction is
+held while Chroma is read or the detector runs, and the running-attempt
+constraint means concurrent requests do not duplicate detector work — the loser
+gets DetectionInProgress rather than re-running everything.
+
+INTERRUPTION BOUNDARY, stated plainly: killing the process between those two
+transactions leaves ``comparison.status='detecting'`` with a ``running``
+attempt and only a ``detection_started`` event, indefinitely. Every later
+detect request keeps reporting ``detection_in_progress``. That is deliberate —
+nothing here infers termination from age, wall-clock, or file mtime, nothing
+marks the attempt failed on a guess, and nothing starts a replacement attempt.
+The state is instead made VISIBLE and queryable so an operator can see it.
+Bounded stale-attempt detection and operator-controlled replay are the next
+reliability commit; there is no retry, timeout takeover, queue, scheduler, or
+background worker anywhere in this module.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +82,8 @@ from governance.comparison_schema import (
     FilingChange,
 )
 from ingest import SECTION_KEY_ITEM_1A
+
+logger = logging.getLogger("comparison_detector")
 
 # v2: the three previously not_run checks (citation_support,
 # numeric_consistency, direction_consistency) are now computed by
@@ -80,6 +105,55 @@ REASON_EVIDENCE_RESOLUTION_FAILED = "evidence_resolution_failed"
 REASON_INPUTS_STALE = "comparison_inputs_stale"
 REASON_VERSION_SUPERSEDED = "detector_version_superseded"
 REASON_DETECTOR_INTERNAL_ERROR = "detector_internal_error"
+REASON_DETECTION_IN_PROGRESS = "detection_in_progress"
+
+# Stable domain failure codes that may be persisted VERBATIM on a failed
+# attempt. A known condition keeps its own code — collapsing everything into
+# detector_internal_error would destroy the diagnostic the attempt record
+# exists to preserve. Anything not listed here collapses to
+# detector_internal_error, so an unrecognized or dynamically constructed code
+# can never reach storage.
+DOMAIN_FAILURE_CODES = frozenset(
+    {
+        REASON_COMPARISON_NOT_READY,
+        REASON_PREVIOUS_SECTION_MISSING,
+        REASON_CURRENT_SECTION_MISSING,
+        REASON_SECTION_METADATA_INCOMPLETE,
+        REASON_SECTION_UNIT_PARSE_FAILED,
+        REASON_AMBIGUOUS_UNIT_ALIGNMENT,
+        REASON_EVIDENCE_RESOLUTION_FAILED,
+        REASON_INPUTS_STALE,
+        REASON_VERSION_SUPERSEDED,
+        REASON_DETECTION_IN_PROGRESS,
+        REASON_DETECTOR_INTERNAL_ERROR,
+    }
+)
+
+# Allowlisted summaries, keyed by stable code. Persisted summaries are ALWAYS
+# derived from the code — never from an exception message, which can carry
+# absolute paths, SQL, document content, or a stack trace. Full diagnostics stay
+# server-side in the logs.
+_FAILURE_SUMMARIES = {
+    REASON_DETECTOR_INTERNAL_ERROR: "detection failed unexpectedly; see server logs",
+    REASON_COMPARISON_NOT_READY: "the comparison was not ready for detection",
+    REASON_PREVIOUS_SECTION_MISSING: "the previous filing's section was unavailable",
+    REASON_CURRENT_SECTION_MISSING: "the current filing's section was unavailable",
+    REASON_SECTION_METADATA_INCOMPLETE: "section completeness could not be established",
+    REASON_SECTION_UNIT_PARSE_FAILED: "risk-factor units could not be parsed",
+    REASON_AMBIGUOUS_UNIT_ALIGNMENT: "risk-factor alignment was ambiguous",
+    REASON_EVIDENCE_RESOLUTION_FAILED: "evidence could not be resolved to indexed chunks",
+    REASON_INPUTS_STALE: "the filing source content changed during detection",
+    REASON_VERSION_SUPERSEDED: "a result from an older detector version exists",
+    REASON_DETECTION_IN_PROGRESS: "another detection attempt was already running",
+}
+
+
+def _safe_failure_summary(failure_code: str) -> str:
+    """A bounded, code-derived summary safe to persist and display."""
+    summary = _FAILURE_SUMMARIES.get(
+        failure_code, f"detection failed with code '{failure_code}'"
+    )
+    return summary[: comparison_store.MAX_FAILURE_SUMMARY_CHARS]
 
 # Conservative risk-factor heading rule for v1: a standalone title-case line
 # ending in "Risk"/"Risks" (as the controlled fixtures use). The SEC section
@@ -114,6 +188,18 @@ class UnknownComparison(DetectionError):
 
 class DetectionNotReady(DetectionError):
     """Lifecycle does not allow detection (API: 409)."""
+
+
+class DetectionInProgress(DetectionError):
+    """A durable detection attempt is already running (API: 409).
+
+    Deliberately distinct from DetectionNotReady: the comparison is mid-flight,
+    not terminal. Because the running attempt is persisted rather than held in
+    memory, a process killed during detection leaves this state visible and a
+    later request keeps reporting it. Nothing here recovers it automatically —
+    bounded stale-attempt detection and operator-controlled replay are the next
+    reliability commit.
+    """
 
 
 class DetectionInputsStale(DetectionError):
@@ -903,13 +989,46 @@ def detect(
 ) -> tuple[dict[str, Any], bool]:
     """Run detection for a persisted comparison; returns (wire_result, created).
 
+    Thin wrapper over ``detect_with_attempt`` that drops the attempt id, so
+    every existing caller keeps its two-tuple contract.
+    """
+    result, created, _attempt_id = detect_with_attempt(
+        comparison_id,
+        db_path=db_path,
+        registry_path=registry_path,
+        chroma_client=chroma_client,
+    )
+    return result, created
+
+
+def detect_with_attempt(
+    comparison_id: str,
+    *,
+    db_path: str | Path | None = None,
+    registry_path: str | Path | None = None,
+    chroma_client=None,
+) -> tuple[dict[str, Any], bool, str | None]:
+    """Detection with the durable attempt id exposed: (result, created, attempt).
+
     Idempotent: an existing result under the same detector version and the
-    same registry source hashes is returned as-is (created=False). Changed
-    source hashes or a different detector version raise DetectionInputsStale —
-    the stored result is never silently presented as current and never
-    overwritten. Lifecycle violations raise DetectionNotReady; unexpected
-    faults transition the comparison to failed and raise
-    DetectionInternalError with a safe message.
+    same registry source hashes is returned as-is (created=False), together
+    with the id of the attempt that produced it when one was recorded (results
+    predating attempt tracking simply have none). Changed source hashes or a
+    different detector version raise DetectionInputsStale /
+    DetectionVersionSuperseded — the stored result is never silently presented
+    as current and never overwritten.
+
+    Every execution that actually starts is durable: ``start_detection_attempt``
+    commits a running attempt, a detection_started event, and the comparison's
+    ``detecting`` state BEFORE the index is read, and exactly one of
+    ``complete_detection_attempt`` / ``fail_detection_attempt`` finalizes it in
+    a single transaction. No SQLite transaction is held while Chroma is read or
+    the detector runs.
+
+    Requests rejected before an attempt starts (unknown comparison, invalid
+    pair, stale inputs, superseded version, terminal lifecycle, another attempt
+    already running) create NO attempt — a rejected request is not a failed
+    execution.
     """
     db_path = db_path or config.COMPARISON_DB_PATH
     registry_path = registry_path or config.FILING_REGISTRY_PATH
@@ -933,103 +1052,252 @@ def detect(
     previous_hash = previous_entry.get("source_hash") or ""
     current_hash = current_entry.get("source_hash") or ""
 
-    stored = comparison_store.get_result(comparison_id, db_path=db_path)
-    if stored is not None:
-        if stored["detector_version"] != DETECTOR_VERSION:
-            # Not an input change: the sources are whatever they were — the
-            # DETECTOR moved. The old result stays readable via GET; a re-run
-            # under the current version is a new comparison (new workflow
-            # version -> new comparison id), never an overwrite.
-            raise DetectionVersionSuperseded(
-                REASON_VERSION_SUPERSEDED,
-                f"a result from {stored['detector_version']} exists; the "
-                f"current detector is {DETECTOR_VERSION}. The stored result "
-                "remains readable as old-version output; re-detect by "
-                "creating the comparison under the current workflow version",
-            )
-        if (
-            stored["previous_source_hash"] == previous_hash
-            and stored["current_source_hash"] == current_hash
-        ):
-            return stored["result"], False
-        raise DetectionInputsStale(
-            REASON_INPUTS_STALE,
-            "a detection result exists but its source content changed; the "
-            "stored result is not silently presented as current and is never "
-            "overwritten",
-        )
+    outcome = _stored_outcome(comparison_id, previous_hash, current_hash, db_path)
+    if outcome is not None:
+        return outcome
 
-    if record["status"] != comparison_store.STATUS_READY_FOR_DETECTION:
-        raise DetectionNotReady(
-            REASON_COMPARISON_NOT_READY,
-            f"comparison is in state '{record['status']}', not "
-            "'ready_for_detection'",
+    # Durably start the execution. This commits the running attempt, the
+    # detection_started event, and the 'detecting' transition in ONE
+    # transaction, then closes it — nothing below runs inside a SQLite
+    # transaction. Concurrent callers race here and exactly one wins.
+    try:
+        attempt = comparison_store.start_detection_attempt(
+            comparison_id,
+            detector_version=DETECTOR_VERSION,
+            workflow_version=comparison_store.WORKFLOW_VERSION,
+            previous_source_hash=previous_hash,
+            current_source_hash=current_hash,
+            db_path=db_path,
         )
+    except comparison_store.DetectionStateError as exc:
+        if exc.code == comparison_store.REASON_DETECTION_IN_PROGRESS:
+            raise DetectionInProgress(
+                REASON_DETECTION_IN_PROGRESS,
+                "a detection attempt is already running for this comparison; "
+                "it is not started twice and is not recovered automatically",
+            ) from exc
+        # comparison_not_ready. A concurrent request may have COMPLETED
+        # between our stored-result read above and this start transaction, so
+        # re-evaluate the canonical stored result before reporting a lifecycle
+        # error: the loser of that race gets the winner's result under the
+        # existing idempotency contract, not a spurious 409. The message comes
+        # from the exception (read inside the transaction), never from our own
+        # stale read.
+        outcome = _stored_outcome(
+            comparison_id, previous_hash, current_hash, db_path
+        )
+        if outcome is not None:
+            return outcome
+        raise DetectionNotReady(REASON_COMPARISON_NOT_READY, exc.message) from exc
 
-    section_key = record["section_scope"][0]
+    attempt_id = attempt["attempt_id"]
 
     try:
-        client = chroma_client if chroma_client is not None else open_index()
-        previous_load = load_section(
-            record["previous_filing_id"], section_key, client, previous_entry
+        wire = _compute_result(
+            record, previous_ref, current_ref, previous_entry, current_entry,
+            chroma_client,
         )
-        current_load = load_section(
-            record["current_filing_id"], section_key, client, current_entry
-        )
-        changes = detect_changes(
-            previous_load,
-            current_load,
-            record["previous_filing_id"],
-            record["current_filing_id"],
-        )
-
-        result_model = load_comparison(
-            {
-                "schema_version": record["schema_version"],
-                "comparison_id": comparison_id,
-                "previous_filing": previous_ref.model_dump(mode="json"),
-                "current_filing": current_ref.model_dump(mode="json"),
-                "section_scope": record["section_scope"],
-                "changes": changes,
-                "validation_summary": summarize_validation(
-                    [FilingChange.model_validate(change) for change in changes]
-                ).model_dump(),
-                "risk": {"decision": "not_evaluated"},
-                "review": {"status": "not_required"},
-                "created_at": _utc_now_iso(),
-                "producer": DETECTOR_VERSION,
-            }
-        )
-        wire = dump_comparison(result_model)
 
         try:
-            comparison_store.record_result(
-                comparison_id,
+            # Result insert + attempt succeeded + detection_succeeded event +
+            # detecting -> detected, all in one transaction.
+            comparison_store.complete_detection_attempt(
+                attempt_id,
                 result_json=json.dumps(wire),
                 result_hash=_result_hash(wire),
                 detector_version=DETECTOR_VERSION,
+                workflow_version=comparison_store.WORKFLOW_VERSION,
                 previous_source_hash=previous_hash,
                 current_source_hash=current_hash,
                 db_path=db_path,
             )
         except comparison_store.ComparisonResultExists:
-            # Lost a race with a concurrent identical detection: return the
-            # winner's stored result.
+            # Defensive: the running-attempt constraint makes a concurrent
+            # identical detection unreachable, but a result is never
+            # overwritten, so serve the stored one.
             stored = comparison_store.get_result(comparison_id, db_path=db_path)
-            return stored["result"], False
-        return wire, True
-    except DetectionError:
+            return stored["result"], False, attempt_id
+        return wire, True, attempt_id
+    except DetectionError as exc:
+        # A KNOWN domain condition raised AFTER the attempt started: the
+        # execution really ran and really failed, so finalize it durably under
+        # its OWN stable code. Collapsing it into detector_internal_error would
+        # destroy exactly the diagnostic the attempt record exists to keep.
+        _finalize_failed_attempt(attempt_id, _persisted_failure_code(exc), db_path)
         raise
     except Exception as exc:
-        comparison_store.mark_failed(
-            comparison_id,
+        # Unexpected, non-domain fault. Full diagnostics are logged here so they
+        # survive regardless of caller (the API layer logs too, but the CLI and
+        # the regression runner do not).
+        logger.exception(
+            "Unexpected detector fault on attempt %s; recording it as %s",
+            attempt_id,
             REASON_DETECTOR_INTERNAL_ERROR,
-            "detection failed unexpectedly; see server logs",
-            db_path=db_path,
         )
-        # Chained so the API layer's logger.exception captures the real fault
-        # server-side; the DetectionInternalError message itself stays safe.
+        _finalize_failed_attempt(
+            attempt_id, REASON_DETECTOR_INTERNAL_ERROR, db_path
+        )
+        # Chained so the API layer's logger.exception also captures the real
+        # fault; the DetectionInternalError message itself stays safe.
         raise DetectionInternalError(
             REASON_DETECTOR_INTERNAL_ERROR,
             "detection failed unexpectedly",
         ) from exc
+
+
+def _compute_result(
+    record: dict[str, Any],
+    previous_ref,
+    current_ref,
+    previous_entry: dict[str, Any],
+    current_entry: dict[str, Any],
+    chroma_client,
+) -> dict[str, Any]:
+    """PURE computation: load both sections, detect changes, build the wire doc.
+
+    Deliberately performs NO lifecycle persistence — no attempt, no event, no
+    result row, no status transition. Keeping the boundary explicit is what lets
+    the orchestrator guarantee that every execution which reaches this function
+    is already covered by a durable running attempt, and that a result can only
+    be committed by the attempt that produced it.
+    """
+    comparison_id = record["comparison_id"]
+    section_key = record["section_scope"][0]
+    client = chroma_client if chroma_client is not None else open_index()
+    previous_load = load_section(
+        record["previous_filing_id"], section_key, client, previous_entry
+    )
+    current_load = load_section(
+        record["current_filing_id"], section_key, client, current_entry
+    )
+    changes = detect_changes(
+        previous_load,
+        current_load,
+        record["previous_filing_id"],
+        record["current_filing_id"],
+    )
+    result_model = load_comparison(
+        {
+            "schema_version": record["schema_version"],
+            "comparison_id": comparison_id,
+            "previous_filing": previous_ref.model_dump(mode="json"),
+            "current_filing": current_ref.model_dump(mode="json"),
+            "section_scope": record["section_scope"],
+            "changes": changes,
+            "validation_summary": summarize_validation(
+                [FilingChange.model_validate(change) for change in changes]
+            ).model_dump(),
+            "risk": {"decision": "not_evaluated"},
+            "review": {"status": "not_required"},
+            "created_at": _utc_now_iso(),
+            "producer": DETECTOR_VERSION,
+        }
+    )
+    return dump_comparison(result_model)
+
+
+def _persisted_failure_code(exc: DetectionError) -> str:
+    """The stable code to persist for a known post-start domain failure.
+
+    Only codes on the module's own allowlist are stored; anything else — an
+    unrecognized or dynamically built code — collapses to
+    detector_internal_error, so storage can never receive a code this module
+    does not define.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code in DOMAIN_FAILURE_CODES:
+        return code
+    return REASON_DETECTOR_INTERNAL_ERROR
+
+
+def _stored_outcome(
+    comparison_id: str,
+    previous_hash: str,
+    current_hash: str,
+    db_path: str | Path,
+) -> tuple[dict[str, Any], bool, str | None] | None:
+    """Evaluate an already-stored result against the current inputs.
+
+    Returns the idempotent (result, False, attempt_id) response when a stored
+    result is current, None when no result exists, and raises the existing
+    409-shaped conditions otherwise. Called both before starting an attempt and
+    again if the start loses a race to a concurrent execution, so the two paths
+    can never disagree about what a stored result means.
+    """
+    stored = comparison_store.get_result(comparison_id, db_path=db_path)
+    if stored is None:
+        return None
+    if stored["detector_version"] != DETECTOR_VERSION:
+        # Not an input change: the sources are whatever they were — the
+        # DETECTOR moved. The old result stays readable via GET; a re-run under
+        # the current version is a new comparison (new workflow version -> new
+        # comparison id), never an overwrite.
+        raise DetectionVersionSuperseded(
+            REASON_VERSION_SUPERSEDED,
+            f"a result from {stored['detector_version']} exists; the current "
+            f"detector is {DETECTOR_VERSION}. The stored result remains "
+            "readable as old-version output; re-detect by creating the "
+            "comparison under the current workflow version",
+        )
+    if (
+        stored["previous_source_hash"] == previous_hash
+        and stored["current_source_hash"] == current_hash
+    ):
+        return (
+            stored["result"],
+            False,
+            _succeeded_attempt_id(comparison_id, stored["result_hash"], db_path),
+        )
+    raise DetectionInputsStale(
+        REASON_INPUTS_STALE,
+        "a detection result exists but its source content changed; the stored "
+        "result is not silently presented as current and is never overwritten",
+    )
+
+
+def _finalize_failed_attempt(
+    attempt_id: str, failure_code: str, db_path: str | Path
+) -> None:
+    """Mark the running attempt failed, never masking the original fault.
+
+    The summary is derived from the stable code via the allowlist, never from an
+    exception message. If this transaction itself fails, nothing is applied —
+    the attempt stays running and the comparison stays detecting (the documented
+    interruption boundary) — and the original detector error still propagates,
+    because a storage problem here must not replace the real cause in the
+    client's error path.
+    """
+    try:
+        comparison_store.fail_detection_attempt(
+            attempt_id,
+            failure_code=failure_code,
+            failure_summary=_safe_failure_summary(failure_code),
+            db_path=db_path,
+        )
+    except Exception:
+        logger.exception(
+            "Could not finalize detection attempt %s as failed; it remains "
+            "running and its comparison remains 'detecting'",
+            attempt_id,
+        )
+
+
+def _succeeded_attempt_id(
+    comparison_id: str, result_hash: str, db_path: str | Path
+) -> str | None:
+    """The attempt that produced a stored result, when one was recorded.
+
+    Results are never overwritten and at most one attempt can succeed per
+    result, so matching on result_hash is unambiguous. Returns None for
+    results stored before attempt tracking existed (or through the plain
+    ``record_result`` library path).
+    """
+    for attempt in comparison_store.list_detection_attempts(
+        comparison_id, db_path=db_path
+    ):
+        if (
+            attempt["status"] == comparison_store.ATTEMPT_SUCCEEDED
+            and attempt["result_hash"] == result_hash
+        ):
+            return attempt["attempt_id"]
+    return None
