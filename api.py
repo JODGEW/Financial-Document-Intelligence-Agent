@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -19,6 +19,7 @@ from agent import detect_guardrail_intervention, query, stream_query
 import comparison_detector
 import comparison_export
 import comparison_governance
+import comparison_reliability
 import comparison_review
 import comparison_store
 import config
@@ -489,6 +490,221 @@ class DetectionReplayResponse(BaseModel):
     replacementAttemptId: str
     replacementStatus: Literal["running", "succeeded", "failed", "timed_out"]
     result: dict | None = None
+
+
+class ReliabilityRateDTO(BaseModel):
+    """One rate with its denominator visible.
+
+    A zero denominator asserts nothing, so ``value`` is null with
+    ``zeroDenominator`` true — never NaN, never 0.0, never omitted.
+    """
+
+    metric: str
+    value: float | None = None
+    numerator: int
+    denominator: int
+    zeroDenominator: bool
+    zeroDenominatorPolicy: str | None = None
+
+
+class ReliabilityGaugesDTO(BaseModel):
+    """Current state at query time. NOT restricted by the historical window."""
+
+    comparisonsReadyForDetection: int
+    comparisonsDetecting: int
+    comparisonsDetected: int
+    comparisonsFailed: int
+    runningAttempts: int
+    staleRunningAttempts: int
+    replayEligibleAttempts: int
+    attemptLimitExhaustedComparisons: int
+    unresolvedOperationalIssues: int
+
+
+class ReliabilityAttemptCountersDTO(BaseModel):
+    """Historical attempt counters, windowed on ``started_at``.
+
+    ``terminalAttempts`` excludes running attempts, which is the denominator
+    every attempt rate uses; ``attemptsRunningInWindow`` is reported separately
+    so ``attemptsStarted`` reconciles.
+    """
+
+    attemptsStarted: int
+    attemptsSucceeded: int
+    attemptsFailed: int
+    attemptsTimedOut: int
+    attemptsRunningInWindow: int
+    terminalAttempts: int
+
+
+class ReliabilityAttemptRatesDTO(BaseModel):
+    successRate: ReliabilityRateDTO
+    failureRate: ReliabilityRateDTO
+    timeoutRate: ReliabilityRateDTO
+
+
+class ReliabilityReplayCountersDTO(BaseModel):
+    """Historical replay counters, windowed on ``requested_at``. A running
+    replacement is not a failure and never enters the terminal denominator."""
+
+    replaysStarted: int
+    replayReplacementsSucceeded: int
+    replayReplacementsFailed: int
+    replayReplacementsRunning: int
+    replayReplacementsTimedOut: int
+    terminalReplayReplacements: int
+
+
+class ReliabilityReplayRatesDTO(BaseModel):
+    replaySuccessRate: ReliabilityRateDTO
+
+
+class ReliabilityDurationsDTO(BaseModel):
+    """Duration statistics over terminal in-window attempts.
+
+    Duration is ``finished_at - started_at``. Negative durations are excluded
+    and counted, never folded into the statistics.
+    """
+
+    durationCount: int
+    durationSecondsMin: float | None = None
+    durationSecondsMax: float | None = None
+    durationSecondsMean: float | None = None
+    durationSecondsP50: float | None = None
+    durationSecondsP95: float | None = None
+    negativeDurationAttempts: int
+    percentileMethod: str
+
+
+class ReliabilityFailureBreakdownDTO(BaseModel):
+    """Counts keyed by stable failure code and by producing version. The
+    version breakdowns count failed AND timed-out attempts."""
+
+    failedAttemptsByCode: dict[str, int]
+    timedOutAttemptsByCode: dict[str, int]
+    failuresByDetectorVersion: dict[str, int]
+    failuresByWorkflowVersion: dict[str, int]
+
+
+class ReliabilitySummaryDTO(BaseModel):
+    """Read-only reliability aggregate over persisted workflow records.
+
+    Derived entirely from the local comparison database and the checked-in
+    recovery policy. Deliberately payload-free: no comparison result, no
+    evidence, no filing content, no reviewer or operator notes, no paths.
+    """
+
+    contractVersion: str
+    generatedAt: str
+    since: str | None = None
+    until: str | None = None
+    detectorVersions: list[str]
+    workflowVersions: list[str]
+    recoveryPolicyId: str
+    recoveryPolicyVersion: str
+    staleAfterSeconds: int
+    maxAttemptsPerComparison: int
+    gauges: ReliabilityGaugesDTO
+    attempts: ReliabilityAttemptCountersDTO
+    attemptRates: ReliabilityAttemptRatesDTO
+    replays: ReliabilityReplayCountersDTO
+    replayRates: ReliabilityReplayRatesDTO
+    durations: ReliabilityDurationsDTO
+    failureBreakdown: ReliabilityFailureBreakdownDTO
+
+
+class ReliabilityIssueDTO(BaseModel):
+    """One unresolved operational issue. The field set is a closed allowlist.
+
+    Carries stable codes and identifiers only — no evidence, result JSON,
+    filing content, reviewer or operator notes, filesystem paths, SQL, or raw
+    exception text. ``recommendedActionCode`` is a machine-readable code, never
+    prose instructions.
+    """
+
+    issueType: Literal[
+        "stale_running_attempt",
+        "attempt_limit_exhausted",
+        "comparison_failed",
+        "replacement_attempt_failed",
+        "invalid_negative_duration",
+    ]
+    comparisonId: str
+    attemptId: str | None = None
+    replayId: str | None = None
+    status: str
+    failureCode: str | None = None
+    startedAt: str | None = None
+    createdAt: str | None = None
+    detectedAt: str
+    ageSeconds: float | None = None
+    staleAt: str | None = None
+    attemptsUsed: int
+    maxAttempts: int
+    detectorVersion: str | None = None
+    workflowVersion: str | None = None
+    recommendedActionCode: Literal[
+        "inspect_and_replay_if_valid",
+        "create_new_workflow_version",
+        "inspect_failure",
+        "no_replay_available",
+        "inspect_clock_integrity",
+    ]
+
+
+class ReliabilityIssuesResponse(BaseModel):
+    """Current-state issue listing. There is no time window here on purpose:
+    the issue set is what needs attention now, which is also what keeps
+    ``unresolvedOperationalIssues`` in the summary equal to ``total``.
+
+    ``total`` counts matches before ``limit`` truncates and ``truncated`` says
+    so explicitly — a cap is never silent.
+    """
+
+    contractVersion: str
+    generatedAt: str
+    recoveryPolicyId: str
+    recoveryPolicyVersion: str
+    total: int
+    returned: int
+    truncated: bool
+    issues: list[ReliabilityIssueDTO]
+
+
+class ReliabilityFailureDTO(BaseModel):
+    """One failed or timed-out attempt summary. Allowlisted fields only.
+
+    ``failureSummary`` is the store's bounded, code-derived string — never an
+    exception message, path, or SQL fragment. No comparison result and no
+    evidence are ever included.
+    """
+
+    attemptId: str
+    comparisonId: str
+    attemptNumber: int
+    status: Literal["failed", "timed_out"]
+    failureCode: str | None = None
+    failureSummary: str | None = None
+    detectorVersion: str
+    workflowVersion: str
+    startedAt: str
+    finishedAt: str | None = None
+    durationSeconds: float | None = None
+    replayId: str | None = None
+    sourceAttemptId: str | None = None
+
+
+class ReliabilityFailuresResponse(BaseModel):
+    """Failure listing, newest first, windowed on ``started_at``."""
+
+    contractVersion: str
+    generatedAt: str
+    since: str | None = None
+    until: str | None = None
+    total: int
+    returned: int
+    truncated: bool
+    failures: list[ReliabilityFailureDTO]
 
 
 class ComparisonDetectResponse(BaseModel):
@@ -1209,6 +1425,388 @@ def list_detection_replays(attempt_id: str) -> list[DetectionReplayDTO]:
     except (sqlite3.Error, OSError) as exc:
         raise _comparison_storage_error(exc) from exc
     return [] if replay is None else [_to_detection_replay_dto(replay)]
+
+
+# --- Read-only reliability visibility ----------------------------------------
+#
+# Three GET routes over the persisted comparison lifecycle. NONE of them
+# mutates anything: they open the database read-only, they never start, retire,
+# retry, or replay an attempt, and observing a stale attempt here does not
+# change it — that still requires the explicit replay route above. There is no
+# scheduler, worker, queue, notification, or external monitoring integration
+# behind them.
+
+
+def _reliability_query_error(exc: comparison_reliability.ReliabilityQueryError):
+    """Stable 422 for an invalid window, filter, or limit."""
+    return HTTPException(
+        status_code=422, detail={"code": exc.code, "message": exc.message}
+    )
+
+
+def _reliability_data_error(exc: comparison_reliability.ReliabilityDataError):
+    """Fail-closed 500: stored records contradict themselves.
+
+    The report is refused rather than computed over inconsistent rows. The
+    client gets the stable code and a correlation id; WHICH rows broke WHICH
+    invariant stays in the server log.
+    """
+    error_id = _new_error_id()
+    logger.error(
+        "Reliability data invalid (error_id=%s) reasons=%s detail=%s",
+        error_id,
+        exc.reasons,
+        exc.detail,
+    )
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": exc.code,
+            "message": (
+                "Stored workflow records are internally inconsistent, so a "
+                "reliability report was refused rather than computed."
+            ),
+            "error_id": error_id,
+        },
+    )
+
+
+def _reliability_storage_unavailable(
+    exc: comparison_reliability.ReliabilityStorageUnavailable,
+):
+    """Fail-closed 500: the comparison database cannot be observed at all.
+
+    Missing or unreadable storage is NOT an empty system, so no zero-valued
+    report is returned — that would tell an operator nothing needs attention at
+    exactly the moment nothing can be seen. The client gets the stable code and
+    a correlation id; the configured path and the SQLite fault stay in the
+    server log.
+    """
+    error_id = _new_error_id()
+    logger.error(
+        "Reliability storage unavailable (error_id=%s) reason=%s detail=%s",
+        error_id,
+        exc.reason,
+        exc.detail,
+    )
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": exc.code,
+            "message": (
+                "Comparison workflow storage could not be read, so a "
+                "reliability report was refused rather than reported as empty."
+            ),
+            "error_id": error_id,
+        },
+    )
+
+
+def _reliability_dependency_error(
+    exc: comparison_reliability.ReliabilityDependencyUnavailable,
+):
+    """Fail-closed 500: a dependency a requested metric needs cannot answer.
+
+    Replay eligibility is a statement about filing-registry truth. When the
+    registry is absent, unreadable, malformed, or empty, the report is refused
+    rather than reporting zero eligible attempts — a clean-looking number would
+    tell an operator nothing needs action at exactly the moment the system
+    cannot tell. The client gets the stable code, the dependency name, and a
+    correlation id; the configured path and the underlying fault stay in the
+    server log.
+    """
+    error_id = _new_error_id()
+    logger.error(
+        "Reliability dependency unavailable (error_id=%s) dependency=%s "
+        "reason=%s detail=%s",
+        error_id,
+        exc.dependency,
+        exc.reason,
+        exc.detail,
+    )
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": exc.code,
+            "dependency": exc.dependency,
+            "message": (
+                "A dependency required to evaluate replay eligibility is "
+                "unavailable, so a reliability report was refused rather than "
+                "reported as zero."
+            ),
+            "error_id": error_id,
+        },
+    )
+
+
+@app.get(
+    "/api/comparison-reliability/summary", response_model=ReliabilitySummaryDTO
+)
+def get_reliability_summary(
+    since: str | None = None, until: str | None = None
+) -> ReliabilitySummaryDTO:
+    """Structured reliability aggregate. READ-ONLY.
+
+    ``since`` / ``until`` are optional, inclusive, timezone-aware UTC ISO
+    timestamps; a naive timestamp or an inverted range is a 422. They window the
+    historical counters, rates, durations, and failure breakdowns only —
+    current-state gauges are evaluated at query time. 500 with a stable code and
+    correlation id when stored records are inconsistent or storage is
+    unreadable.
+    """
+    try:
+        report = comparison_reliability.summary(since=since, until=until)
+    except comparison_reliability.ReliabilityQueryError as exc:
+        raise _reliability_query_error(exc) from exc
+    except comparison_reliability.ReliabilityDataError as exc:
+        raise _reliability_data_error(exc) from exc
+    except comparison_reliability.ReliabilityStorageUnavailable as exc:
+        raise _reliability_storage_unavailable(exc) from exc
+    except comparison_reliability.ReliabilityDependencyUnavailable as exc:
+        raise _reliability_dependency_error(exc) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return _to_reliability_summary_dto(report)
+
+
+def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
+    """Map the service report onto the camelCase allowlist, field by field."""
+    gauges, attempts = report["gauges"], report["attempts"]
+    replays, durations = report["replays"], report["durations"]
+    breakdown = report["failure_breakdown"]
+    return ReliabilitySummaryDTO(
+        contractVersion=report["contract_version"],
+        generatedAt=report["generated_at"],
+        since=report["since"],
+        until=report["until"],
+        detectorVersions=list(report["detector_versions"]),
+        workflowVersions=list(report["workflow_versions"]),
+        recoveryPolicyId=report["recovery_policy_id"],
+        recoveryPolicyVersion=report["recovery_policy_version"],
+        staleAfterSeconds=report["stale_after_seconds"],
+        maxAttemptsPerComparison=report["max_attempts_per_comparison"],
+        gauges=ReliabilityGaugesDTO(
+            comparisonsReadyForDetection=gauges["comparisons_ready_for_detection"],
+            comparisonsDetecting=gauges["comparisons_detecting"],
+            comparisonsDetected=gauges["comparisons_detected"],
+            comparisonsFailed=gauges["comparisons_failed"],
+            runningAttempts=gauges["running_attempts"],
+            staleRunningAttempts=gauges["stale_running_attempts"],
+            replayEligibleAttempts=gauges["replay_eligible_attempts"],
+            attemptLimitExhaustedComparisons=gauges[
+                "attempt_limit_exhausted_comparisons"
+            ],
+            unresolvedOperationalIssues=gauges["unresolved_operational_issues"],
+        ),
+        attempts=ReliabilityAttemptCountersDTO(
+            attemptsStarted=attempts["attempts_started"],
+            attemptsSucceeded=attempts["attempts_succeeded"],
+            attemptsFailed=attempts["attempts_failed"],
+            attemptsTimedOut=attempts["attempts_timed_out"],
+            attemptsRunningInWindow=attempts["attempts_running_in_window"],
+            terminalAttempts=attempts["terminal_attempts"],
+        ),
+        attemptRates=ReliabilityAttemptRatesDTO(
+            successRate=_to_reliability_rate_dto(
+                report["attempt_rates"]["success_rate"]
+            ),
+            failureRate=_to_reliability_rate_dto(
+                report["attempt_rates"]["failure_rate"]
+            ),
+            timeoutRate=_to_reliability_rate_dto(
+                report["attempt_rates"]["timeout_rate"]
+            ),
+        ),
+        replays=ReliabilityReplayCountersDTO(
+            replaysStarted=replays["replays_started"],
+            replayReplacementsSucceeded=replays["replay_replacements_succeeded"],
+            replayReplacementsFailed=replays["replay_replacements_failed"],
+            replayReplacementsRunning=replays["replay_replacements_running"],
+            replayReplacementsTimedOut=replays["replay_replacements_timed_out"],
+            terminalReplayReplacements=replays["terminal_replay_replacements"],
+        ),
+        replayRates=ReliabilityReplayRatesDTO(
+            replaySuccessRate=_to_reliability_rate_dto(
+                report["replay_rates"]["replay_success_rate"]
+            )
+        ),
+        durations=ReliabilityDurationsDTO(
+            durationCount=durations["duration_count"],
+            durationSecondsMin=durations["duration_seconds_min"],
+            durationSecondsMax=durations["duration_seconds_max"],
+            durationSecondsMean=durations["duration_seconds_mean"],
+            durationSecondsP50=durations["duration_seconds_p50"],
+            durationSecondsP95=durations["duration_seconds_p95"],
+            negativeDurationAttempts=durations["negative_duration_attempts"],
+            percentileMethod=durations["percentile_method"],
+        ),
+        failureBreakdown=ReliabilityFailureBreakdownDTO(
+            failedAttemptsByCode=dict(breakdown["failed_attempts_by_code"]),
+            timedOutAttemptsByCode=dict(breakdown["timed_out_attempts_by_code"]),
+            failuresByDetectorVersion=dict(breakdown["failures_by_detector_version"]),
+            failuresByWorkflowVersion=dict(breakdown["failures_by_workflow_version"]),
+        ),
+    )
+
+
+def _to_reliability_rate_dto(metric: dict) -> ReliabilityRateDTO:
+    return ReliabilityRateDTO(
+        metric=metric["metric"],
+        value=metric["value"],
+        numerator=metric["numerator"],
+        denominator=metric["denominator"],
+        zeroDenominator=metric["zero_denominator"],
+        zeroDenominatorPolicy=metric.get("zero_denominator_policy"),
+    )
+
+
+@app.get(
+    "/api/comparison-reliability/issues", response_model=ReliabilityIssuesResponse
+)
+def get_reliability_issues(
+    issue_type: Literal[
+        "stale_running_attempt",
+        "attempt_limit_exhausted",
+        "comparison_failed",
+        "replacement_attempt_failed",
+        "invalid_negative_duration",
+    ]
+    | None = None,
+    comparison_id: str | None = Query(default=None, max_length=120),
+    limit: int = Query(
+        default=comparison_reliability.DEFAULT_LIMIT,
+        ge=1,
+        le=comparison_reliability.MAX_LIMIT,
+    ),
+) -> ReliabilityIssuesResponse:
+    """Currently unresolved operational issues. READ-ONLY, deterministic order.
+
+    Current state only — no time window, by design (see the response model).
+    Listing an issue does nothing to it: a stale attempt stays running until an
+    operator explicitly replays it. Unknown ``issue_type`` values and
+    out-of-range limits are 422.
+    """
+    try:
+        report = comparison_reliability.issues(
+            issue_type=issue_type, comparison_id=comparison_id, limit=limit
+        )
+    except comparison_reliability.ReliabilityQueryError as exc:
+        raise _reliability_query_error(exc) from exc
+    except comparison_reliability.ReliabilityDataError as exc:
+        raise _reliability_data_error(exc) from exc
+    except comparison_reliability.ReliabilityStorageUnavailable as exc:
+        raise _reliability_storage_unavailable(exc) from exc
+    except comparison_reliability.ReliabilityDependencyUnavailable as exc:
+        raise _reliability_dependency_error(exc) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return ReliabilityIssuesResponse(
+        contractVersion=report["contract_version"],
+        generatedAt=report["generated_at"],
+        recoveryPolicyId=report["recovery_policy_id"],
+        recoveryPolicyVersion=report["recovery_policy_version"],
+        total=report["total"],
+        returned=report["returned"],
+        truncated=report["truncated"],
+        issues=[_to_reliability_issue_dto(item) for item in report["issues"]],
+    )
+
+
+def _to_reliability_issue_dto(issue: dict) -> ReliabilityIssueDTO:
+    """Map one issue onto the closed allowlist, field by field."""
+    return ReliabilityIssueDTO(
+        issueType=issue["issue_type"],
+        comparisonId=issue["comparison_id"],
+        attemptId=issue["attempt_id"],
+        replayId=issue["replay_id"],
+        status=issue["status"],
+        failureCode=issue["failure_code"],
+        startedAt=issue["started_at"],
+        createdAt=issue["created_at"],
+        detectedAt=issue["detected_at"],
+        ageSeconds=issue["age_seconds"],
+        staleAt=issue["stale_at"],
+        attemptsUsed=issue["attempts_used"],
+        maxAttempts=issue["max_attempts"],
+        detectorVersion=issue["detector_version"],
+        workflowVersion=issue["workflow_version"],
+        recommendedActionCode=issue["recommended_action_code"],
+    )
+
+
+@app.get(
+    "/api/comparison-reliability/failures",
+    response_model=ReliabilityFailuresResponse,
+)
+def get_reliability_failures(
+    since: str | None = None,
+    until: str | None = None,
+    failure_code: str | None = Query(default=None, max_length=120),
+    detector_version: str | None = Query(default=None, max_length=120),
+    workflow_version: str | None = Query(default=None, max_length=120),
+    comparison_id: str | None = Query(default=None, max_length=120),
+    limit: int = Query(
+        default=comparison_reliability.DEFAULT_LIMIT,
+        ge=1,
+        le=comparison_reliability.MAX_LIMIT,
+    ),
+) -> ReliabilityFailuresResponse:
+    """Failed and timed-out attempt summaries, newest first. READ-ONLY.
+
+    Windowed on ``started_at``; filters are exact matches. Summaries only — no
+    comparison result, no evidence, no exception text.
+
+    This listing requires no recovery evaluation today, so the
+    dependency-unavailable branch below is defensive: it guarantees the contract
+    holds identically here if this calculation ever grows to need eligibility.
+    """
+    try:
+        report = comparison_reliability.failures(
+            since=since,
+            until=until,
+            failure_code=failure_code,
+            detector_version=detector_version,
+            workflow_version=workflow_version,
+            comparison_id=comparison_id,
+            limit=limit,
+        )
+    except comparison_reliability.ReliabilityQueryError as exc:
+        raise _reliability_query_error(exc) from exc
+    except comparison_reliability.ReliabilityDataError as exc:
+        raise _reliability_data_error(exc) from exc
+    except comparison_reliability.ReliabilityStorageUnavailable as exc:
+        raise _reliability_storage_unavailable(exc) from exc
+    except comparison_reliability.ReliabilityDependencyUnavailable as exc:
+        raise _reliability_dependency_error(exc) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return ReliabilityFailuresResponse(
+        contractVersion=report["contract_version"],
+        generatedAt=report["generated_at"],
+        since=report["since"],
+        until=report["until"],
+        total=report["total"],
+        returned=report["returned"],
+        truncated=report["truncated"],
+        failures=[
+            ReliabilityFailureDTO(
+                attemptId=item["attempt_id"],
+                comparisonId=item["comparison_id"],
+                attemptNumber=item["attempt_number"],
+                status=item["status"],
+                failureCode=item["failure_code"],
+                failureSummary=item["failure_summary"],
+                detectorVersion=item["detector_version"],
+                workflowVersion=item["workflow_version"],
+                startedAt=item["started_at"],
+                finishedAt=item["finished_at"],
+                durationSeconds=item["duration_seconds"],
+                replayId=item["replay_id"],
+                sourceAttemptId=item["source_attempt_id"],
+            )
+            for item in report["failures"]
+        ],
+    )
 
 
 def _to_governance_dto(record: dict) -> GovernanceEvaluationDTO:

@@ -44,6 +44,11 @@ jobs:
       - name: Comparison regression suite (gates enforced)
         run: python scripts/eval_comparison_regression.py --report comparison-regression-report.json
 
+      # Every suite here is credential-free and offline. The Stage 3.5
+      # reliability suites are included deliberately: this job is the only
+      # merge-blocking required check, so a suite it does not run is a suite
+      # that cannot block a regression. tests/test_comparison_reliability.py is
+      # pinned to this list by a test in that file, which parses this workflow.
       - name: Offline comparison test suites
         run: |
           python -m pytest -q \
@@ -54,7 +59,12 @@ jobs:
             tests/test_comparison_store.py \
             tests/test_comparison_governance.py \
             tests/test_comparison_review.py \
-            tests/test_comparison_export.py
+            tests/test_comparison_export.py \
+            tests/test_comparison_detection_attempts.py \
+            tests/test_detection_recovery.py \
+            tests/test_comparison_reliability.py \
+            tests/test_api.py \
+            tests/test_api_errors.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no
