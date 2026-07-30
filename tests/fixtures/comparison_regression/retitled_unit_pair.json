@@ -1,0 +1,44 @@
+{
+  "fixture_id": "retitled-unit-pair",
+  "synthetic": true,
+  "notice": "CONTROLLED SYNTHETIC FIXTURE. Ferrow Materials is a fictional company invented for this repository's regression suite. These are pre-parsed chunk fixtures (the shape ingestion would produce), not real SEC filings, and metrics computed over them say nothing about real-filing accuracy.",
+  "scenario": "One risk factor is retitled AND substantially reworded between periods. comparison.v1 aligns by exact normalized heading and then exact normalized content, with no similarity stage, so the documented deterministic outcome is a removed+added pair rather than one modified change. This fixture pins that LIMITATION so a future similarity stage is a visible, deliberate change rather than silent drift.",
+  "company_key": "ferrow materials",
+  "company_name": "Ferrow Materials",
+  "form_type": "10-K",
+  "document_family_id": "ferrow-materials-10k-fixture",
+  "filings": [
+    {
+      "side": "previous",
+      "filing_id": "ferrow-materials:10-k:2024-12-31",
+      "period_end": "2024-12-31",
+      "source_name": "ferrow-materials-10k-fixture-2024.md",
+      "source_hash": "fixture-ferrow-2024",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "ITEM 1A. RISK FACTORS\nThe risk factors below are illustrative fixture content written for a regression suite.\n\nLegacy Interest Rate Risks\nOur revolving credit facility references a legacy interbank benchmark that is being retired. A disorderly transition could raise our financing cost."
+        }
+      ]
+    },
+    {
+      "side": "current",
+      "filing_id": "ferrow-materials:10-k:2025-12-31",
+      "period_end": "2025-12-31",
+      "source_name": "ferrow-materials-10k-fixture-2025.md",
+      "source_hash": "fixture-ferrow-2025",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "ITEM 1A. RISK FACTORS\nThe risk factors below are illustrative fixture content written for a regression suite.\n\nBenchmark Interest Rate Risks\nOur financing arrangements now reference an overnight risk-free rate. Basis differences between that rate and our commercial pricing could compress margin during volatile periods."
+        }
+      ]
+    }
+  ]
+}

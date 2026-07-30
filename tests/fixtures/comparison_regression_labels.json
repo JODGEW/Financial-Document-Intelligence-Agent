@@ -1,0 +1,254 @@
+{
+  "label_schema_version": "comparison-regression.v1",
+  "description": "Expected behavior of the controlled Item 1A comparison workflow across five CONTROLLED SYNTHETIC fixture pairs. Every company here is fictional and every document is written or hand-assembled for this repository. This is a controlled regression suite that protects deterministic behavior from silent drift — it is NOT a real-filing benchmark, and no metric computed against it is evidence of accuracy on real SEC filings.",
+  "section_key": "item_1a_risk_factors",
+  "matching_semantics": "A detected change matches an expected change iff (unit_key, change_type) are both equal, where unit_key is the detector's normalized heading slug (comparison_detector._slug) and the match is verified by recomputing the deterministic change_id. Undetermined and unlabeled detected changes count in the detected set and lower precision; they are never silently excluded. Aligned units whose content is identical emit no change (comparison.v1 has no 'unchanged' change type), so expected_unchanged_units assert ABSENCE.",
+  "fixtures": [
+    {
+      "fixture_id": "standard-pair",
+      "kind": "corpus",
+      "synthetic": true,
+      "source": "docs/ (the two controlled Acme 10-K excerpt fixtures, loaded through the real ingestion pipeline)",
+      "scenario": "Happy path: modified units, one added unit, one removed unit, and one byte-identical unchanged unit. Expectations are identical to tests/fixtures/comparison_item1a_labels.json, which the detector suite pins independently.",
+      "previous_filing": {
+        "filing_id": "acme-corporation:10-k:2024-12-31",
+        "company_key": "acme corporation",
+        "form_type": "10-K",
+        "period_end": "2024-12-31"
+      },
+      "current_filing": {
+        "filing_id": "acme-corporation:10-k:2025-12-31",
+        "company_key": "acme corporation",
+        "form_type": "10-K",
+        "period_end": "2025-12-31"
+      },
+      "expected_lifecycle": "detected",
+      "expected_changes": [
+        {
+          "unit_key": "cybersecurity-and-data-security-risks",
+          "change_type": "modified",
+          "evidence_sides": ["previous", "current"],
+          "undetermined_reason_code": null,
+          "why": "FY2025 adds two attempted intrusion events, raises cyber insurance from $35M to $50M, and reports zero-trust rollout complete."
+        },
+        {
+          "unit_key": "regulatory-and-compliance-risks",
+          "change_type": "modified",
+          "evidence_sides": ["previous", "current"],
+          "undetermined_reason_code": null,
+          "why": "FY2025 adds the December 2025 SEC AI-rule proposal and the March 2025 deficiency letter."
+        },
+        {
+          "unit_key": "concentration-and-customer-risks",
+          "change_type": "modified",
+          "evidence_sides": ["previous", "current"],
+          "undetermined_reason_code": null,
+          "why": "Top-ten concentration moves 41% -> 38%; largest client 8.1% -> 7.2%."
+        },
+        {
+          "unit_key": "artificial-intelligence-and-model-risk",
+          "change_type": "added",
+          "evidence_sides": ["current"],
+          "undetermined_reason_code": null,
+          "why": "The AI and model risk factor exists only in the FY2025 filing, and both sections are proven complete."
+        },
+        {
+          "unit_key": "reference-rate-transition-risks",
+          "change_type": "removed",
+          "evidence_sides": ["previous"],
+          "undetermined_reason_code": null,
+          "why": "The reference-rate transition risk factor exists only in the FY2024 filing, and both sections are proven complete."
+        }
+      ],
+      "expected_unchanged_units": [
+        {
+          "unit_key": "item-1a-preamble",
+          "why": "The Item 1A introductory paragraph is byte-identical in both filings; it must align and must NOT be emitted as a change."
+        }
+      ],
+      "expected_governance_decision": "returned",
+      "expected_release": {
+        "eligible_before_review": true,
+        "release_basis": "returned_by_policy",
+        "review_decision": null,
+        "eligible_after_review": null,
+        "why": "Every validation check passes and no change is undetermined, so policy determined review was not required. Release does not require a human approval and must not be routed through a fake one."
+      }
+    },
+    {
+      "fixture_id": "no-change-pair",
+      "kind": "chunks",
+      "synthetic": true,
+      "source": "tests/fixtures/comparison_regression/no_change_pair.json",
+      "scenario": "Item 1A is byte-identical across periods. Zero changes must be emitted and no unit may become a false positive.",
+      "previous_filing": {
+        "filing_id": "beacon-analytics:10-k:2024-12-31",
+        "company_key": "beacon analytics",
+        "form_type": "10-K",
+        "period_end": "2024-12-31"
+      },
+      "current_filing": {
+        "filing_id": "beacon-analytics:10-k:2025-12-31",
+        "company_key": "beacon analytics",
+        "form_type": "10-K",
+        "period_end": "2025-12-31"
+      },
+      "expected_lifecycle": "detected",
+      "expected_changes": [],
+      "expected_unchanged_units": [
+        {
+          "unit_key": "item-1a-preamble",
+          "why": "Identical introductory text on both sides."
+        },
+        {
+          "unit_key": "operational-continuity-risks",
+          "why": "Identical unit text on both sides."
+        },
+        {
+          "unit_key": "talent-retention-risks",
+          "why": "Identical unit text on both sides; also proves reconstruction across two chunks does not manufacture a difference."
+        }
+      ],
+      "expected_governance_decision": "returned",
+      "expected_release": {
+        "eligible_before_review": true,
+        "release_basis": "returned_by_policy",
+        "review_decision": null,
+        "eligible_after_review": null,
+        "why": "A comparison that found no changes is valid and carries no failed or undetermined validation, so policy returns it."
+      }
+    },
+    {
+      "fixture_id": "missing-section-pair",
+      "kind": "chunks",
+      "synthetic": true,
+      "source": "tests/fixtures/comparison_regression/missing_section_pair.json",
+      "scenario": "The current filing is indexed but has no resolvable Item 1A section. The outcome must be ONE undetermined section-level change — never two 'removed' changes for the previous filing's two units.",
+      "previous_filing": {
+        "filing_id": "corville-freight:10-k:2024-12-31",
+        "company_key": "corville freight",
+        "form_type": "10-K",
+        "period_end": "2024-12-31"
+      },
+      "current_filing": {
+        "filing_id": "corville-freight:10-k:2025-12-31",
+        "company_key": "corville freight",
+        "form_type": "10-K",
+        "period_end": "2025-12-31"
+      },
+      "expected_lifecycle": "detected",
+      "expected_changes": [
+        {
+          "unit_key": "item-1a-section",
+          "change_type": "undetermined",
+          "evidence_sides": [],
+          "undetermined_reason_code": "current_section_missing",
+          "why": "Data insufficiency yields an undetermined RESULT (status 'detected'), not a failed comparison, and absence of a section can never be reported as removed risk factors."
+        }
+      ],
+      "expected_unchanged_units": [],
+      "expected_governance_decision": "held_for_review",
+      "expected_release": {
+        "eligible_before_review": false,
+        "release_basis": "approved_after_review",
+        "review_decision": "approved",
+        "eligible_after_review": true,
+        "why": "An undetermined change is a mandatory-hold condition, so the pending held result is not release-eligible. Only an approved terminal review makes it eligible, and the export must then carry the final reviewed snapshot."
+      }
+    },
+    {
+      "fixture_id": "ambiguous-heading-pair",
+      "kind": "chunks",
+      "synthetic": true,
+      "source": "tests/fixtures/comparison_regression/ambiguous_heading_pair.json",
+      "scenario": "The current filing repeats a normalized risk-factor heading. Alignment for that key is ambiguous and must stay undetermined rather than guessing a pairing.",
+      "previous_filing": {
+        "filing_id": "dunmore-energy:10-k:2024-12-31",
+        "company_key": "dunmore energy",
+        "form_type": "10-K",
+        "period_end": "2024-12-31"
+      },
+      "current_filing": {
+        "filing_id": "dunmore-energy:10-k:2025-12-31",
+        "company_key": "dunmore energy",
+        "form_type": "10-K",
+        "period_end": "2025-12-31"
+      },
+      "expected_lifecycle": "detected",
+      "expected_changes": [
+        {
+          "unit_key": "supply-chain-risks",
+          "change_type": "undetermined",
+          "evidence_sides": [],
+          "undetermined_reason_code": "ambiguous_unit_alignment",
+          "why": "The heading key is not unique within the current filing, so both of its units are excluded from pairing and reported once as ambiguous."
+        }
+      ],
+      "expected_unchanged_units": [
+        {
+          "unit_key": "item-1a-preamble",
+          "why": "Identical introductory text on both sides; ambiguity elsewhere must not disturb it."
+        }
+      ],
+      "expected_governance_decision": "held_for_review",
+      "expected_release": {
+        "eligible_before_review": false,
+        "release_basis": null,
+        "review_decision": "rejected",
+        "eligible_after_review": false,
+        "why": "A rejected terminal review is a human decision that the output must not be released; the governed snapshot is preserved verbatim and no export may be produced."
+      }
+    },
+    {
+      "fixture_id": "retitled-unit-pair",
+      "kind": "chunks",
+      "synthetic": true,
+      "source": "tests/fixtures/comparison_regression/retitled_unit_pair.json",
+      "scenario": "One risk factor is retitled AND substantially reworded.",
+      "previous_filing": {
+        "filing_id": "ferrow-materials:10-k:2024-12-31",
+        "company_key": "ferrow materials",
+        "form_type": "10-K",
+        "period_end": "2024-12-31"
+      },
+      "current_filing": {
+        "filing_id": "ferrow-materials:10-k:2025-12-31",
+        "company_key": "ferrow materials",
+        "form_type": "10-K",
+        "period_end": "2025-12-31"
+      },
+      "expected_lifecycle": "detected",
+      "expected_changes": [
+        {
+          "unit_key": "legacy-interest-rate-risks",
+          "change_type": "removed",
+          "evidence_sides": ["previous"],
+          "undetermined_reason_code": null,
+          "why": "Documented v1 limitation: heading alignment is exact and the content-hash fallback requires an EXACT normalized content match, so a retitled-and-reworded unit does not pair."
+        },
+        {
+          "unit_key": "benchmark-interest-rate-risks",
+          "change_type": "added",
+          "evidence_sides": ["current"],
+          "undetermined_reason_code": null,
+          "why": "The other half of the same documented limitation: the retitled unit surfaces as added rather than modified."
+        }
+      ],
+      "expected_unchanged_units": [
+        {
+          "unit_key": "item-1a-preamble",
+          "why": "Identical introductory text on both sides."
+        }
+      ],
+      "expected_governance_decision": "returned",
+      "expected_release": {
+        "eligible_before_review": true,
+        "release_basis": "returned_by_policy",
+        "review_decision": null,
+        "eligible_after_review": null,
+        "why": "The added/removed pair is evidence-backed and every check passes, so policy returns it. The suite labels the SEMANTIC limitation honestly instead of relaxing the detector: a human reader would call this one modified risk factor."
+      },
+      "limitation": "comparison.v1 has deliberately no similarity stage. A reworded-and-retitled risk factor is reported as an added+removed pair, not as one modified unit. This label pins the current contract; changing it requires changing the detector deliberately, in its own commit, with this label updated in the same reviewed diff."
+    }
+  ]
+}

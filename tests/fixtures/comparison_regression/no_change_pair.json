@@ -1,0 +1,58 @@
+{
+  "fixture_id": "no-change-pair",
+  "synthetic": true,
+  "notice": "CONTROLLED SYNTHETIC FIXTURE. Beacon Analytics is a fictional company invented for this repository's regression suite. These are pre-parsed chunk fixtures (the shape ingestion would produce), not real SEC filings, and metrics computed over them say nothing about real-filing accuracy.",
+  "scenario": "Item 1A is byte-identical across the two periods: every unit must align and zero changes must be emitted.",
+  "company_key": "beacon analytics",
+  "company_name": "Beacon Analytics",
+  "form_type": "10-K",
+  "document_family_id": "beacon-analytics-10k-fixture",
+  "filings": [
+    {
+      "side": "previous",
+      "filing_id": "beacon-analytics:10-k:2024-12-31",
+      "period_end": "2024-12-31",
+      "source_name": "beacon-analytics-10k-fixture-2024.md",
+      "source_hash": "fixture-beacon-2024",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "ITEM 1A. RISK FACTORS\nThe following discussion of risk factors is illustrative fixture content written for a regression suite.\n\nOperational Continuity Risks\nWe depend on a single fulfilment centre in the Midlands region. A prolonged outage at that site would interrupt customer deliveries."
+        },
+        {
+          "chunk_seq": 1,
+          "page": 2,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "Talent Retention Risks\nCompetition for specialist analytics engineers remains intense in our operating regions. Losing key personnel could delay product delivery commitments."
+        }
+      ]
+    },
+    {
+      "side": "current",
+      "filing_id": "beacon-analytics:10-k:2025-12-31",
+      "period_end": "2025-12-31",
+      "source_name": "beacon-analytics-10k-fixture-2025.md",
+      "source_hash": "fixture-beacon-2025",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "ITEM 1A. RISK FACTORS\nThe following discussion of risk factors is illustrative fixture content written for a regression suite.\n\nOperational Continuity Risks\nWe depend on a single fulfilment centre in the Midlands region. A prolonged outage at that site would interrupt customer deliveries."
+        },
+        {
+          "chunk_seq": 1,
+          "page": 2,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "Talent Retention Risks\nCompetition for specialist analytics engineers remains intense in our operating regions. Losing key personnel could delay product delivery commitments."
+        }
+      ]
+    }
+  ]
+}

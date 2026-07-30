@@ -1,0 +1,51 @@
+{
+  "fixture_id": "missing-section-pair",
+  "synthetic": true,
+  "notice": "CONTROLLED SYNTHETIC FIXTURE. Corville Freight is a fictional company invented for this repository's regression suite. These are pre-parsed chunk fixtures (the shape ingestion would produce), not real SEC filings, and metrics computed over them say nothing about real-filing accuracy.",
+  "scenario": "The current filing is indexed but carries no resolvable Item 1A section (its chunks belong to Item 7). The previous filing has two risk-factor units. The detector must emit ONE undetermined change for the section — never two 'removed' changes.",
+  "company_key": "corville freight",
+  "company_name": "Corville Freight",
+  "form_type": "10-K",
+  "document_family_id": "corville-freight-10k-fixture",
+  "filings": [
+    {
+      "side": "previous",
+      "filing_id": "corville-freight:10-k:2024-12-31",
+      "period_end": "2024-12-31",
+      "source_name": "corville-freight-10k-fixture-2024.md",
+      "source_hash": "fixture-corville-2024",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "ITEM 1A. RISK FACTORS\nThe risk factors below are illustrative fixture content written for a regression suite.\n\nFuel Price Volatility Risks\nDiesel price movements affect our line-haul cost base and are only partially hedged."
+        },
+        {
+          "chunk_seq": 1,
+          "page": 2,
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "section_key": "item_1a_risk_factors",
+          "text": "Driver Availability Risks\nRegional shortages of qualified drivers can force us to decline freight or subcontract at lower margin."
+        }
+      ]
+    },
+    {
+      "side": "current",
+      "filing_id": "corville-freight:10-k:2025-12-31",
+      "period_end": "2025-12-31",
+      "source_name": "corville-freight-10k-fixture-2025.md",
+      "source_hash": "fixture-corville-2025",
+      "chunks": [
+        {
+          "chunk_seq": 0,
+          "page": 1,
+          "section_title": "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS",
+          "section_key": null,
+          "text": "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS\nRevenue grew modestly across both reporting segments. This filing fixture deliberately contains no Item 1A section, so the section cannot be loaded for comparison."
+        }
+      ]
+    }
+  ]
+}

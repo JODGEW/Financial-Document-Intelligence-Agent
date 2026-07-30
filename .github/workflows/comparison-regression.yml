@@ -1,0 +1,68 @@
+name: comparison-regression
+
+# Controlled, credential-free regression gate for the Item 1A comparison
+# workflow. No repository secrets, no AWS credentials, no Bedrock, no network
+# access to model providers: the suite runs entirely over synthetic fixtures in
+# temporary directories.
+#
+# No path filters on purpose. Comparison behavior can change from the detector,
+# validators, schemas, filing registry, ingestion section metadata, comparison
+# store, governance policy, review logic, export logic, labels, fixtures, the
+# evaluator, or a dependency bump — a filter narrow enough to be useful would
+# be wrong the first time one of those moves, so this job always runs.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: comparison-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  comparison-regression:
+    name: comparison-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Comparison regression suite (gates enforced)
+        run: python scripts/eval_comparison_regression.py --report comparison-regression-report.json
+
+      - name: Offline comparison test suites
+        run: |
+          python -m pytest -q \
+            tests/test_comparison_regression.py \
+            tests/test_comparison_detector.py \
+            tests/test_comparison_validators.py \
+            tests/test_comparison_schema.py \
+            tests/test_comparison_store.py \
+            tests/test_comparison_governance.py \
+            tests/test_comparison_review.py \
+            tests/test_comparison_export.py
+
+      # Metrics, denominators, gate results, and version/fixture hashes only.
+      # The report carries no source filing text, no evidence excerpts, no
+      # reviewer notes, no database files, and no filesystem paths.
+      - name: Upload metric report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparison-regression-report
+          path: comparison-regression-report.json
+          if-no-files-found: warn
