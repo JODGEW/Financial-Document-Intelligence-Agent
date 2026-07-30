@@ -6,10 +6,10 @@ required reviewer identifier, a required allowlisted reason code, a required
 bounded note, both result hashes, any permitted edits, and the complete final
 reviewed comparison.v1 snapshot.
 
-Reviewer identity, stated plainly: ``reviewer_id`` is SELF-ASSERTED LOCAL
-METADATA (an email-like string, a local username, a test id). It is never
-inferred from the environment, IP, or request metadata, and it is NOT
-authenticated identity — there is no auth in this prototype.
+Reviewer identity has two explicit trust levels. Direct library callers retain
+``legacy_self_asserted`` metadata for backward compatibility. The protected
+API supplies a verified Principal subject plus narrow ``local_hs256``
+token/policy provenance.
 
 Editing is deliberately narrow: only ``FilingChange.summary`` may change,
 addressed by change_id. Evidence, change types, categories, section keys,
@@ -38,9 +38,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
+import comparison_reliability
 import comparison_store
 import comparison_validators
 import config
@@ -321,6 +323,9 @@ def decide(
     edits: list[dict[str, Any]] | None = None,
     db_path: str | Path | None = None,
     resolve: Callable[[str], dict | None] | None = None,
+    actor_context: Mapping[str, Any] | None = None,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Apply one terminal decision to a pending comparison review.
 
@@ -338,6 +343,12 @@ def decide(
     reviewer_note = _clean_bounded(
         reviewer_note, field="reviewerNote", code="invalid_reviewer_note",
         max_chars=MAX_NOTE_CHARS,
+    )
+    attribution = comparison_store.actor_attribution_from_context(
+        reviewer_id,
+        actor_context,
+        actor_policy_id=actor_policy_id,
+        actor_policy_version=actor_policy_version,
     )
 
     item = comparison_store.get_review_item(review_id, db_path=db_path)
@@ -373,7 +384,7 @@ def decide(
         f"{review_id}|{request_hash}".encode("utf-8")
     ).hexdigest()[:16]
 
-    return comparison_store.decide_review(
+    event, created = comparison_store.decide_review(
         review_id,
         event_id=event_id,
         action=action,
@@ -387,5 +398,18 @@ def decide(
         edit_summary_json=(
             json.dumps(normalized_edits) if normalized_edits else None
         ),
+        **attribution,
         db_path=db_path,
     )
+    if created:
+        comparison_reliability.log_lifecycle_event(
+            comparison_reliability.EVENT_REVIEW_DECIDED,
+            comparison_id=event["comparison_id"],
+            review_id=review_id,
+            review_event_id=event["event_id"],
+            review_action=event["action"],
+            status=event["action"],
+            result_hash=event["final_reviewed_result_hash"],
+            actor_context=actor_context,
+        )
+    return event, created

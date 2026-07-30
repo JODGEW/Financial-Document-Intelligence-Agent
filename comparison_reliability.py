@@ -103,17 +103,19 @@ this contract needs them, so this module does not read the event table at all.
 Structured logging
 ------------------
 This module also owns the allowlisted lifecycle log payload used by
-``comparison_detector`` and ``detection_recovery``. Fields travel through
-stdlib ``logging`` via ``extra`` — THEY ARE NOT JSON. No JSON formatter is
-configured anywhere in this repository, so these are structured *fields*
-carried on the LogRecord, and what a handler renders is whatever that handler's
-formatter does.
+``comparison_detector``, ``detection_recovery``, ``comparison_review``, and the
+API's comparison-create, governance, and export mutation boundaries. Fields
+travel through stdlib ``logging`` via ``extra`` — THEY ARE NOT JSON. No JSON
+formatter is configured anywhere in this repository, so these are structured
+*fields* carried on the LogRecord, and what a handler renders is whatever that
+handler's formatter does.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -339,7 +341,14 @@ EVENT_ATTEMPT_FAILED = "detection_attempt_failed"
 EVENT_ATTEMPT_TIMED_OUT = "detection_attempt_timed_out"
 EVENT_REPLAY_CREATED = "detection_replay_created"
 EVENT_REPLAY_COMPLETED = "detection_replay_completed"
+EVENT_REVIEW_DECIDED = "comparison_review_decided"
+EVENT_COMPARISON_CREATED = "comparison_created"
+EVENT_GOVERNANCE_EVALUATED = "comparison_governance_evaluated"
+EVENT_EXPORT_CREATED = "comparison_export_created"
 
+# Backward-compatible detection/replay registry consumed by the existing
+# reliability contract tests. Review decisions use their own closed registry;
+# ALL_LOG_EVENTS is the complete lifecycle logger vocabulary.
 LOG_EVENTS = (
     EVENT_ATTEMPT_STARTED,
     EVENT_ATTEMPT_SUCCEEDED,
@@ -348,10 +357,21 @@ LOG_EVENTS = (
     EVENT_REPLAY_CREATED,
     EVENT_REPLAY_COMPLETED,
 )
+REVIEW_LOG_EVENTS = (EVENT_REVIEW_DECIDED,)
+AUTHENTICATED_MUTATION_LOG_EVENTS = (
+    EVENT_COMPARISON_CREATED,
+    EVENT_GOVERNANCE_EVALUATED,
+    EVENT_EXPORT_CREATED,
+)
+ALL_LOG_EVENTS = (
+    LOG_EVENTS + REVIEW_LOG_EVENTS + AUTHENTICATED_MUTATION_LOG_EVENTS
+)
 
-# The complete structured-log field allowlist. operator_id, operator_note,
-# reviewer notes, reason codes, evidence, excerpts, document text, source
-# paths, SQL, environment values, credentials, and exception text are absent by
+# The complete structured-log field allowlist. Actor fields contain only
+# Principal-derived subject/auth method/token jti and the exact permission
+# checked by the route. operator_id, reviewer_id, notes, reason codes, bearer
+# tokens, claims, evidence, excerpts, document text, source paths, SQL,
+# environment values, credentials, and exception text are absent by
 # construction: this builder cannot emit a key that is not listed here.
 LOG_FIELDS = (
     "event",
@@ -360,12 +380,21 @@ LOG_FIELDS = (
     "attempt_number",
     "replay_id",
     "source_attempt_id",
+    "review_id",
+    "review_event_id",
+    "review_action",
+    "evaluation_id",
+    "export_id",
     "detector_version",
     "workflow_version",
     "status",
     "failure_code",
     "result_hash",
     "elapsed_ms",
+    "actor_subject",
+    "actor_auth_method",
+    "actor_token_id",
+    "required_permission",
 )
 
 
@@ -394,9 +423,16 @@ def log_lifecycle_event(
     comparison_id: str | None = None,
     replay_id: str | None = None,
     source_attempt_id: str | None = None,
+    review_id: str | None = None,
+    review_event_id: str | None = None,
+    review_action: str | None = None,
+    evaluation_id: str | None = None,
+    export_id: str | None = None,
     status: str | None = None,
     failure_code: str | None = None,
+    result_hash: str | None = None,
     elapsed_ms: int | None = None,
+    actor_context: Mapping[str, Any] | None = None,
 ) -> None:
     """Emit one allowlisted lifecycle record through stdlib logging.
 
@@ -409,9 +445,10 @@ def log_lifecycle_event(
     formatter is configured in this repository.
     """
     try:
-        if event not in LOG_EVENTS:  # pragma: no cover - guarded by callers
+        if event not in ALL_LOG_EVENTS:  # pragma: no cover - guarded by callers
             return
         attempt = attempt or {}
+        actor = _safe_actor_log_context(actor_context)
         payload = {
             "event": event,
             "comparison_id": comparison_id or attempt.get("comparison_id"),
@@ -419,6 +456,11 @@ def log_lifecycle_event(
             "attempt_number": attempt.get("attempt_number"),
             "replay_id": replay_id,
             "source_attempt_id": source_attempt_id,
+            "review_id": review_id,
+            "review_event_id": review_event_id,
+            "review_action": review_action,
+            "evaluation_id": evaluation_id,
+            "export_id": export_id,
             "detector_version": attempt.get("detector_version"),
             "workflow_version": attempt.get("workflow_version"),
             "status": status if status is not None else attempt.get("status"),
@@ -427,8 +469,11 @@ def log_lifecycle_event(
                 if failure_code is not None
                 else attempt.get("failure_code")
             ),
-            "result_hash": attempt.get("result_hash"),
+            "result_hash": (
+                result_hash if result_hash is not None else attempt.get("result_hash")
+            ),
             "elapsed_ms": elapsed_ms,
+            **actor,
         }
         logger.info(
             "%s comparison=%s attempt=%s status=%s",
@@ -442,6 +487,55 @@ def log_lifecycle_event(
         # Deliberately silent: a logging failure must not affect the committed
         # workflow state or the caller's control flow.
         pass
+
+
+def _safe_actor_log_context(
+    actor_context: Mapping[str, Any] | None,
+) -> dict[str, str | None]:
+    """Return only complete, bounded Principal-derived actor log fields.
+
+    A malformed mapping is treated as absent rather than stringified. Logging
+    is observability, not an authorization decision, and must neither leak
+    arbitrary values nor interrupt committed workflow state.
+    """
+    empty = {
+        "actor_subject": None,
+        "actor_auth_method": None,
+        "actor_token_id": None,
+        "required_permission": None,
+    }
+    if not isinstance(actor_context, Mapping):
+        return empty
+    if (
+        set(actor_context)
+        != {
+            "actor_subject",
+            "actor_auth_method",
+            "actor_token_id",
+            "required_permission",
+        }
+        or actor_context.get("actor_auth_method")
+        != "local_hs256"
+    ):
+        return empty
+    bounds = {
+        "actor_subject": 120,
+        "actor_auth_method": 32,
+        "actor_token_id": 128,
+        "required_permission": 120,
+    }
+    safe: dict[str, str | None] = {}
+    for field, maximum in bounds.items():
+        value = actor_context.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > maximum
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+        ):
+            return empty
+        safe[field] = value
+    return safe
 
 
 # --- Window parsing -----------------------------------------------------------

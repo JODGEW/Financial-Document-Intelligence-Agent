@@ -1,0 +1,89 @@
+# Local comparison-workflow access-control policy (Stage 3.5).
+#
+# access_control.py validates this complete document at import.  A missing file
+# uses an identical compiled policy, following the repository's policy fallback
+# convention.  A present invalid file fails startup.  Duplicate or unknown
+# keys, roles, and permissions are rejected.
+#
+# This is a local single-service trust boundary, not an account system or an
+# external identity integration.  Tokens are HS256 JWT access tokens.  The
+# signing secret is supplied only at runtime through FDIA_AUTH_SECRET; it is
+# never stored in this file.  Possession of that shared secret permits token
+# issuance, and rotating it invalidates all outstanding tokens.
+
+policy_id: comparison_access_control_v1
+policy_version: "1"
+auth_method: local_hs256
+issuer: react-rag-local
+audience: react-rag-comparison-api
+algorithm: HS256
+
+# Tokens issued by the local CLI may live for at most one hour.  Verification
+# applies no expiry grace.  The 30-second skew applies only to future iat/nbf.
+max_token_ttl_seconds: 3600
+clock_skew_seconds: 30
+
+# Grants are fully expanded: there is no inheritance, wildcard, prefix, or
+# substring match.  Authorization checks exact stable permission strings.
+roles:
+  viewer:
+    permissions:
+      - comparison.read
+      - detection_attempt.read
+      - recovery.read
+      - reliability.read
+      - governance.read
+      - review.read
+      - export.read
+
+  operator:
+    permissions:
+      - comparison.read
+      - comparison.create
+      - comparison.detect
+      - detection_attempt.read
+      - recovery.read
+      - recovery.replay
+      - reliability.read
+      - governance.read
+      - governance.evaluate
+      - review.read
+      - export.read
+
+  reviewer:
+    permissions:
+      - comparison.read
+      - detection_attempt.read
+      - recovery.read
+      - reliability.read
+      - governance.read
+      - review.read
+      - review.decide
+      - export.read
+
+  exporter:
+    permissions:
+      - comparison.read
+      - detection_attempt.read
+      - recovery.read
+      - reliability.read
+      - governance.read
+      - review.read
+      - export.read
+      - export.create
+
+  admin:
+    permissions:
+      - comparison.read
+      - comparison.create
+      - comparison.detect
+      - detection_attempt.read
+      - recovery.read
+      - recovery.replay
+      - reliability.read
+      - governance.read
+      - governance.evaluate
+      - review.read
+      - review.decide
+      - export.read
+      - export.create

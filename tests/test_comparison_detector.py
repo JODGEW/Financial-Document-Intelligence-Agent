@@ -39,13 +39,14 @@ from comparison_detector import (
     load_section,
 )
 from governance.comparison_schema import load_comparison
+from tests.auth_helpers import authorization_headers
 
 PREV_ID = "acme-corporation:10-k:2024-12-31"
 CURR_ID = "acme-corporation:10-k:2025-12-31"
 SECTION_KEY = "item_1a_risk_factors"
 LABELS_PATH = Path(__file__).parent / "fixtures" / "comparison_item1a_labels.json"
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 
 class _FakeEmbeddings(Embeddings):

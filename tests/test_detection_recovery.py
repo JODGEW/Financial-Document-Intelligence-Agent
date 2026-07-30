@@ -44,8 +44,9 @@ from comparison_store import (
 )
 from comparison_detector import DETECTOR_VERSION
 from governance.policy_validation import GovernancePolicyConfigError
+from tests.auth_helpers import DEFAULT_TEST_SUBJECT, authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 PREV_ID = "acme-corporation:10-k:2024-12-31"
 CURR_ID = "acme-corporation:10-k:2025-12-31"
@@ -425,27 +426,26 @@ def test_explicit_replay_retires_stale_attempt_and_completes_replacement(corpus,
     ]
 
 
-def test_operator_identity_is_labeled_self_asserted(corpus, db):
-    """Test 11: the API surface states plainly that operator_id is not
-    authenticated identity."""
+def test_direct_library_operator_identity_is_labeled_legacy(corpus, db):
+    """Direct callers stay visibly legacy; no authentication is invented."""
     _comparison_id, source_id = _interrupted(corpus, db)
     _replay(corpus, db, source_id)
     replay = comparison_store.get_detection_replay_for_source(source_id, db_path=db)
     dto = api._to_detection_replay_dto(replay)
     assert dto.operatorId == OPERATOR  # case preserved, verbatim
-    assert dto.operatorIdBasis == "self_asserted_local_metadata"
+    assert dto.operatorIdBasis == "legacy_self_asserted"
     # And the module says so where an operator would read it (whitespace
     # normalized, because the statement wraps across lines).
     source = " ".join(
         Path(detection_recovery.__file__).read_text(encoding="utf-8").split()
     )
-    assert "NOT authenticated identity" in source
-    assert "SELF-ASSERTED LOCAL METADATA" in source.upper()
+    assert "legacy_self_asserted" in source
     # The store's replay table and the API DTO say it too.
     store_source = " ".join(
         Path(comparison_store.__file__).read_text(encoding="utf-8").split()
     )
-    assert "NOT authenticated identity" in store_source
+    assert "legacy_self_asserted" in store_source
+    assert "local_hs256" in store_source
 
 
 @pytest.mark.parametrize(
@@ -1066,7 +1066,7 @@ def test_recovery_and_replay_routes(api_env, corpus):
     )
     early = client.post(
         f"/api/detection-attempts/{source_id}/replay",
-        json={"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE},
+        json={"reasonCode": REASON, "operatorNote": NOTE},
     )
     assert early.status_code == 409
     assert early.json()["detail"]["code"] == "detection_attempt_not_stale"
@@ -1080,7 +1080,7 @@ def test_recovery_and_replay_routes(api_env, corpus):
     )
     replayed = client.post(
         f"/api/detection-attempts/{source_id}/replay",
-        json={"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE},
+        json={"reasonCode": REASON, "operatorNote": NOTE},
     )
     assert replayed.status_code == 201
     payload = replayed.json()
@@ -1096,12 +1096,13 @@ def test_recovery_and_replay_routes(api_env, corpus):
         "operatorId", "operatorIdBasis", "reasonCode", "operatorNote",
         "policyId", "policyVersion", "requestedAt",
     }
-    assert payload["replay"]["operatorIdBasis"] == "self_asserted_local_metadata"
+    assert payload["replay"]["operatorId"] == DEFAULT_TEST_SUBJECT
+    assert payload["replay"]["operatorIdBasis"] == "local_hs256"
 
     # Idempotent repeat.
     again = client.post(
         f"/api/detection-attempts/{source_id}/replay",
-        json={"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE},
+        json={"reasonCode": REASON, "operatorNote": NOTE},
     )
     assert again.status_code == 200
     assert again.json()["created"] is False
@@ -1127,18 +1128,16 @@ def test_recovery_and_replay_routes(api_env, corpus):
     assert client.get("/api/detection-attempts/att_nope/replays").status_code == 404
     assert client.post(
         "/api/detection-attempts/att_nope/replay",
-        json={"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE},
+        json={"reasonCode": REASON, "operatorNote": NOTE},
     ).status_code == 404
     for body in (
         {"operatorId": "", "reasonCode": REASON, "operatorNote": NOTE},
-        {"operatorId": OPERATOR, "reasonCode": "nope", "operatorNote": NOTE},
-        {"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": ""},
+        {"reasonCode": "nope", "operatorNote": NOTE},
+        {"reasonCode": REASON, "operatorNote": ""},
         # The client cannot submit workflow state.
-        {"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE,
-         "isStale": True},
-        {"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE,
-         "policyId": "other"},
-        {"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE,
+        {"reasonCode": REASON, "operatorNote": NOTE, "isStale": True},
+        {"reasonCode": REASON, "operatorNote": NOTE, "policyId": "other"},
+        {"reasonCode": REASON, "operatorNote": NOTE,
          "replacementAttemptId": "att_x"},
     ):
         response = client.post(
@@ -1157,7 +1156,7 @@ def test_api_responses_carry_no_paths_sql_or_evidence(api_env, corpus):
     )
     replayed = client.post(
         f"/api/detection-attempts/{source_id}/replay",
-        json={"operatorId": OPERATOR, "reasonCode": REASON, "operatorNote": NOTE},
+        json={"reasonCode": REASON, "operatorNote": NOTE},
     )
     recovery = client.get(f"/api/detection-attempts/{source_id}/recovery")
     replays = client.get(f"/api/detection-attempts/{source_id}/replays")
@@ -1193,7 +1192,6 @@ def test_operator_note_never_reaches_server_logs(api_env, corpus, caplog):
             response = client.post(
                 f"/api/detection-attempts/{source_id}/replay",
                 json={
-                    "operatorId": OPERATOR,
                     "reasonCode": REASON,
                     "operatorNote": secret_note,
                 },

@@ -62,6 +62,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -158,6 +159,20 @@ REPLAY_REASON_CODES = (
     "operator_replay_stale_attempt",
     "operator_replay_after_process_restart",
 )
+
+# Actor-attribution vocabulary. Existing operator/reviewer identifiers predate
+# authentication and remain readable as explicitly legacy, self-asserted
+# application metadata. Only the API boundary may supply local_hs256 context;
+# direct library callers intentionally keep the legacy default.
+ACTOR_AUTH_LEGACY_SELF_ASSERTED = "legacy_self_asserted"
+ACTOR_AUTH_LOCAL_HS256 = "local_hs256"
+ACTOR_AUTH_METHODS = (
+    ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+    ACTOR_AUTH_LOCAL_HS256,
+)
+MAX_ACTOR_TOKEN_ID_CHARS = 128
+MAX_ACTOR_POLICY_ID_CHARS = 128
+MAX_ACTOR_POLICY_VERSION_CHARS = 64
 
 # Section keys the v1 comparison workflow can actually target. The schema
 # itself accepts any non-empty key; this is the workflow capability set.
@@ -329,12 +344,12 @@ CREATE TABLE IF NOT EXISTS comparison_detection_replays (
     -- One operator-requested replay: the durable link from a stale attempt
     -- that was retired to the replacement attempt that took its place.
     --
-    -- operator_id is SELF-ASSERTED LOCAL METADATA, never inferred from the
-    -- environment or request, and NOT authenticated identity — there is no
-    -- auth in this prototype. These rows are insert-only application records,
+    -- operator_id is the actor subject. actor_auth_method distinguishes new
+    -- locally authenticated actions from historical/direct-library
+    -- self-asserted metadata. These rows are insert-only application records,
     -- NOT tamper-proof storage: anyone with file access can alter a local
-    -- SQLite database. No raw error text, evidence, document content, paths,
-    -- SQL, environment values, or secrets are ever stored here.
+    -- SQLite database. No token, secret, raw claims, raw error text, evidence,
+    -- document content, paths, SQL, or environment values are stored here.
     replay_id              TEXT PRIMARY KEY NOT NULL,  -- rpl_<sha256[:16]>
     comparison_id          TEXT NOT NULL
                            REFERENCES comparisons (comparison_id),
@@ -344,15 +359,90 @@ CREATE TABLE IF NOT EXISTS comparison_detection_replays (
                            REFERENCES comparison_detection_attempts (attempt_id),
     replacement_attempt_id TEXT NOT NULL UNIQUE
                            REFERENCES comparison_detection_attempts (attempt_id),
-    operator_id            TEXT NOT NULL,  -- self-asserted, NOT authenticated
+    operator_id            TEXT NOT NULL,  -- actor subject
+    actor_auth_method      TEXT NOT NULL DEFAULT 'legacy_self_asserted'
+                           CHECK (actor_auth_method IN (
+                               'legacy_self_asserted', 'local_hs256'
+                           )),
+    actor_token_id         TEXT,           -- verified jti; never the token
+    actor_policy_id        TEXT,           -- access-control policy identity
+    actor_policy_version   TEXT,
     reason_code            TEXT NOT NULL,  -- allowlisted stable code
     operator_note          TEXT NOT NULL,  -- bounded operator prose
     request_hash           TEXT NOT NULL,  -- canonical request, idempotent replay
     policy_id              TEXT NOT NULL,  -- recovery policy that authorized it
     policy_version         TEXT NOT NULL,
-    requested_at           TEXT NOT NULL   -- timezone-aware UTC ISO 8601
+    requested_at           TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
+    CHECK (
+        (actor_auth_method = 'legacy_self_asserted'
+            AND actor_token_id IS NULL
+            AND actor_policy_id IS NULL
+            AND actor_policy_version IS NULL)
+        OR (actor_auth_method = 'local_hs256'
+            AND actor_token_id IS NOT NULL
+            AND actor_policy_id IS NOT NULL
+            AND actor_policy_version IS NOT NULL
+            AND length(trim(actor_token_id)) BETWEEN 1 AND 128
+            AND length(trim(actor_policy_id)) BETWEEN 1 AND 128
+            AND length(trim(actor_policy_version)) BETWEEN 1 AND 64)
+    )
 )
 """
+
+
+def _actor_attribution_trigger_statements(table: str) -> tuple[str, str]:
+    """Storage-level provenance coherence for both fresh and upgraded tables.
+
+    SQLite cannot add a composite CHECK with ALTER TABLE, so upgraded schemas
+    receive equivalent INSERT/UPDATE triggers. Fresh tables retain their CHECK
+    and get the same triggers, keeping both schema paths behaviorally equal.
+    """
+    if table not in {
+        "comparison_detection_replays",
+        "comparison_review_events",
+    }:  # pragma: no cover - closed internal call sites
+        raise ValueError("unsupported actor attribution table")
+    valid = """
+        (
+            NEW.actor_auth_method = 'legacy_self_asserted'
+            AND NEW.actor_token_id IS NULL
+            AND NEW.actor_policy_id IS NULL
+            AND NEW.actor_policy_version IS NULL
+        )
+        OR (
+            NEW.actor_auth_method = 'local_hs256'
+            AND NEW.actor_token_id IS NOT NULL
+            AND length(trim(NEW.actor_token_id)) BETWEEN 1 AND 128
+            AND NEW.actor_policy_id IS NOT NULL
+            AND length(trim(NEW.actor_policy_id)) BETWEEN 1 AND 128
+            AND NEW.actor_policy_version IS NOT NULL
+            AND length(trim(NEW.actor_policy_version)) BETWEEN 1 AND 64
+        )
+    """
+    return tuple(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS trg_{table}_actor_{action.lower()}
+        BEFORE {action} ON {table}
+        WHEN NOT ({valid})
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid actor attribution');
+        END
+        """
+        for action in ("INSERT", "UPDATE")
+    )
+
+
+def _actor_attribution_triggers_sql(table: str) -> str:
+    return ";\n".join(_actor_attribution_trigger_statements(table)) + ";"
+
+
+_ACTOR_ATTRIBUTION_TRIGGERS_DDL = "\n".join(
+    _actor_attribution_triggers_sql(table)
+    for table in (
+        "comparison_detection_replays",
+        "comparison_review_events",
+    )
+)
 
 _SCHEMA_SQL = f"""
 {_COMPARISONS_DDL};
@@ -421,7 +511,14 @@ CREATE TABLE IF NOT EXISTS comparison_review_events (
                                   REFERENCES comparison_governance_evaluations (evaluation_id),
     action                        TEXT NOT NULL
                                   CHECK (action IN ('approved', 'rejected')),
-    reviewer_id                   TEXT NOT NULL,  -- self-asserted local id, NOT authenticated
+    reviewer_id                   TEXT NOT NULL,  -- actor subject
+    actor_auth_method             TEXT NOT NULL DEFAULT 'legacy_self_asserted'
+                                  CHECK (actor_auth_method IN (
+                                      'legacy_self_asserted', 'local_hs256'
+                                  )),
+    actor_token_id                TEXT,           -- verified jti; never token
+    actor_policy_id               TEXT,           -- access-control policy id
+    actor_policy_version          TEXT,
     reason_code                   TEXT NOT NULL,  -- allowlisted stable code
     reviewer_note                 TEXT NOT NULL,  -- bounded reviewer prose
     request_hash                  TEXT NOT NULL,  -- canonical request, for idempotent replay
@@ -429,7 +526,20 @@ CREATE TABLE IF NOT EXISTS comparison_review_events (
     final_reviewed_result_hash    TEXT NOT NULL,
     reviewed_result_json          TEXT NOT NULL,  -- complete final comparison.v1 snapshot
     edit_summary_json             TEXT,           -- JSON array of change_id/original/new summaries
-    created_at                    TEXT NOT NULL
+    created_at                    TEXT NOT NULL,
+    CHECK (
+        (actor_auth_method = 'legacy_self_asserted'
+            AND actor_token_id IS NULL
+            AND actor_policy_id IS NULL
+            AND actor_policy_version IS NULL)
+        OR (actor_auth_method = 'local_hs256'
+            AND actor_token_id IS NOT NULL
+            AND actor_policy_id IS NOT NULL
+            AND actor_policy_version IS NOT NULL
+            AND length(trim(actor_token_id)) BETWEEN 1 AND 128
+            AND length(trim(actor_policy_id)) BETWEEN 1 AND 128
+            AND length(trim(actor_policy_version)) BETWEEN 1 AND 64)
+    )
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_events_terminal
     ON comparison_review_events (review_id);
@@ -473,6 +583,7 @@ CREATE INDEX IF NOT EXISTS idx_detection_events_attempt
 {_DETECTION_REPLAYS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_replays_comparison
     ON comparison_detection_replays (comparison_id, requested_at);
+{_ACTOR_ATTRIBUTION_TRIGGERS_DDL}
 """
 
 
@@ -528,6 +639,116 @@ def _migrate_review_items_vocabulary(db_path: Path) -> None:
                 "FROM comparison_review_items_migrating"
             )
             conn.execute("DROP TABLE comparison_review_items_migrating")
+
+
+def _migrate_actor_attribution(db_path: Path) -> None:
+    """Add authenticated actor provenance without rewriting historical rows.
+
+    The migration is additive and idempotent. SQLite applies the
+    ``legacy_self_asserted`` default to every pre-existing replay/review event;
+    the remaining nullable columns stay NULL, so no authentication is invented
+    for history. A partially applied migration is safe to reopen: each column
+    is discovered independently through ``PRAGMA table_info``.
+
+    After adding columns, narrow integrity queries verify that legacy rows do
+    not carry token/policy metadata and authenticated rows carry all three
+    bounded identifiers. They intentionally inspect metadata only, never
+    operator/reviewer prose or result payloads.
+    """
+    if not db_path.exists():
+        return
+    migrations = {
+        "comparison_detection_replays": (
+            (
+                "actor_auth_method",
+                "TEXT NOT NULL DEFAULT 'legacy_self_asserted' "
+                "CHECK (actor_auth_method IN "
+                "('legacy_self_asserted', 'local_hs256'))",
+            ),
+            ("actor_token_id", "TEXT"),
+            ("actor_policy_id", "TEXT"),
+            ("actor_policy_version", "TEXT"),
+        ),
+        "comparison_review_events": (
+            (
+                "actor_auth_method",
+                "TEXT NOT NULL DEFAULT 'legacy_self_asserted' "
+                "CHECK (actor_auth_method IN "
+                "('legacy_self_asserted', 'local_hs256'))",
+            ),
+            ("actor_token_id", "TEXT"),
+            ("actor_policy_id", "TEXT"),
+            ("actor_policy_version", "TEXT"),
+        ),
+    }
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        # Hold a write lock across BOTH schema discovery and ALTER. Otherwise,
+        # two first requests can observe the same pre-auth schema and the loser
+        # attempts to add a column the winner just committed.
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, columns in migrations.items():
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+                if exists is None:
+                    continue
+                present = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                for name, declaration in columns:
+                    if name not in present:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {name} {declaration}"
+                        )
+                        present.add(name)
+                for statement in _actor_attribution_trigger_statements(table):
+                    conn.execute(statement)
+
+                invalid = conn.execute(
+                    f"""
+                    SELECT 1 FROM {table}
+                    WHERE actor_auth_method IS NULL
+                       OR actor_auth_method NOT IN (?, ?)
+                       OR (
+                           actor_auth_method = ?
+                           AND (
+                               actor_token_id IS NOT NULL
+                               OR actor_policy_id IS NOT NULL
+                               OR actor_policy_version IS NOT NULL
+                           )
+                       )
+                       OR (
+                           actor_auth_method = ?
+                           AND (
+                               actor_token_id IS NULL
+                               OR length(trim(actor_token_id)) NOT BETWEEN 1 AND 128
+                               OR actor_policy_id IS NULL
+                               OR length(trim(actor_policy_id)) NOT BETWEEN 1 AND 128
+                               OR actor_policy_version IS NULL
+                               OR length(trim(actor_policy_version)) NOT BETWEEN 1 AND 64
+                           )
+                       )
+                    LIMIT 1
+                    """,
+                    (
+                        ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+                        ACTOR_AUTH_LOCAL_HS256,
+                        ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+                        ACTOR_AUTH_LOCAL_HS256,
+                    ),
+                ).fetchone()
+                if invalid is not None:
+                    raise sqlite3.IntegrityError(
+                        f"invalid actor attribution in {table}"
+                    )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _migrate_status_vocabulary(db_path: Path) -> None:
@@ -666,12 +887,125 @@ def init_db(db_path: str | Path | None = None) -> None:
     _migrate_detecting_status(db_path)
     _migrate_attempt_timed_out(db_path)
     _migrate_review_items_vocabulary(db_path)
+    _migrate_actor_attribution(db_path)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA_SQL)
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _bounded_actor_value(value: Any, *, field: str, max_chars: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    cleaned = value.strip()
+    if len(cleaned) > max_chars:
+        raise ValueError(f"{field} must be at most {max_chars} characters")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cleaned):
+        raise ValueError(f"{field} must not contain control characters")
+    return cleaned
+
+
+def validated_actor_attribution(
+    *,
+    actor_auth_method: str = ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+    actor_token_id: str | None = None,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
+) -> dict[str, str | None]:
+    """Validate the narrow attribution fields persisted with an actor action.
+
+    Legacy attribution is deliberately metadata-free. Authenticated
+    attribution is all-or-nothing: a verified token id and the access-control
+    policy identity are required. No bearer token or arbitrary claims have a
+    parameter through which they could reach storage.
+    """
+    if actor_auth_method not in ACTOR_AUTH_METHODS:
+        raise ValueError("actor_auth_method is not supported")
+    if actor_auth_method == ACTOR_AUTH_LEGACY_SELF_ASSERTED:
+        if any(
+            value is not None
+            for value in (
+                actor_token_id,
+                actor_policy_id,
+                actor_policy_version,
+            )
+        ):
+            raise ValueError(
+                "legacy actor attribution cannot carry token or policy metadata"
+            )
+        return {
+            "actor_auth_method": ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+            "actor_token_id": None,
+            "actor_policy_id": None,
+            "actor_policy_version": None,
+        }
+    return {
+        "actor_auth_method": ACTOR_AUTH_LOCAL_HS256,
+        "actor_token_id": _bounded_actor_value(
+            actor_token_id,
+            field="actor_token_id",
+            max_chars=MAX_ACTOR_TOKEN_ID_CHARS,
+        ),
+        "actor_policy_id": _bounded_actor_value(
+            actor_policy_id,
+            field="actor_policy_id",
+            max_chars=MAX_ACTOR_POLICY_ID_CHARS,
+        ),
+        "actor_policy_version": _bounded_actor_value(
+            actor_policy_version,
+            field="actor_policy_version",
+            max_chars=MAX_ACTOR_POLICY_VERSION_CHARS,
+        ),
+    }
+
+
+def actor_attribution_from_context(
+    actor_subject: str,
+    actor_context: Mapping[str, Any] | None,
+    *,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
+) -> dict[str, str | None]:
+    """Convert a Principal-derived logging context to storage attribution.
+
+    ``actor_context`` is intentionally a closed mapping. It contains only the
+    fields the structured logger accepts and must name the same subject the
+    caller is persisting as ``operator_id`` or ``reviewer_id``. Authentication
+    policy identity is passed separately because it is persisted for audit
+    linkage but deliberately absent from lifecycle logs.
+    """
+    if actor_context is None:
+        return validated_actor_attribution(
+            actor_policy_id=actor_policy_id,
+            actor_policy_version=actor_policy_version,
+        )
+    if not isinstance(actor_context, Mapping):
+        raise ValueError("actor_context must be a mapping")
+    allowed = {
+        "actor_subject",
+        "actor_auth_method",
+        "actor_token_id",
+        "required_permission",
+    }
+    unknown = set(actor_context) - allowed
+    missing = allowed - set(actor_context)
+    if unknown or missing:
+        raise ValueError("actor_context must contain only allowlisted fields")
+    if actor_context["actor_subject"] != actor_subject:
+        raise ValueError("actor_context subject does not match persisted actor")
+    _bounded_actor_value(
+        actor_context["required_permission"],
+        field="actor_context required_permission",
+        max_chars=120,
+    )
+    return validated_actor_attribution(
+        actor_auth_method=actor_context["actor_auth_method"],
+        actor_token_id=actor_context["actor_token_id"],
+        actor_policy_id=actor_policy_id,
+        actor_policy_version=actor_policy_version,
+    )
 
 
 def normalize_section_scope(section_scope: list[str] | None) -> list[str]:
@@ -689,8 +1023,8 @@ def normalize_section_scope(section_scope: list[str] | None) -> list[str]:
     if unsupported:
         raise ComparisonPairError(
             [REASON_UNSUPPORTED_SCOPE],
-            f"unsupported section keys {unsupported}; v1 supports "
-            f"{list(SUPPORTED_SECTION_KEYS)}",
+            "section_scope contains an unsupported section key; v1 supports "
+            "only item_1a_risk_factors",
         )
     return cleaned
 
@@ -999,7 +1333,7 @@ def record_result(
             ).fetchone()
             if row is None:
                 raise ComparisonLifecycleError(
-                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                    comparison_id, "absent", "unknown comparison"
                 )
             existing = conn.execute(
                 "SELECT 1 FROM comparison_results WHERE comparison_id = ?",
@@ -1293,6 +1627,10 @@ def decide_review(
     final_reviewed_result_hash: str,
     reviewed_result_json: str,
     edit_summary_json: str | None,
+    actor_auth_method: str = ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+    actor_token_id: str | None = None,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
     db_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Record one terminal decision: append the event and transition the item.
@@ -1305,6 +1643,12 @@ def decide_review(
     events — decisions are never overwritten.
     """
     db_path = db_path or config.COMPARISON_DB_PATH
+    attribution = validated_actor_attribution(
+        actor_auth_method=actor_auth_method,
+        actor_token_id=actor_token_id,
+        actor_policy_id=actor_policy_id,
+        actor_policy_version=actor_policy_version,
+    )
     init_db(db_path)
     now = _utc_now_iso()
     with closing(_connect(db_path)) as conn:
@@ -1317,7 +1661,7 @@ def decide_review(
             ).fetchone()
             if item is None:
                 raise ComparisonLifecycleError(
-                    review_id, "absent", f"unknown review item {review_id!r}"
+                    review_id, "absent", "unknown review item"
                 )
             if item["status"] != "pending":
                 existing = conn.execute(
@@ -1337,11 +1681,13 @@ def decide_review(
                 """
                 INSERT INTO comparison_review_events (
                     event_id, review_id, comparison_id, evaluation_id,
-                    action, reviewer_id, reason_code, reviewer_note,
+                    action, reviewer_id, actor_auth_method, actor_token_id,
+                    actor_policy_id, actor_policy_version,
+                    reason_code, reviewer_note,
                     request_hash, original_governed_result_hash,
                     final_reviewed_result_hash, reviewed_result_json,
                     edit_summary_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -1350,6 +1696,10 @@ def decide_review(
                     item["evaluation_id"],
                     action,
                     reviewer_id,
+                    attribution["actor_auth_method"],
+                    attribution["actor_token_id"],
+                    attribution["actor_policy_id"],
+                    attribution["actor_policy_version"],
                     reason_code,
                     reviewer_note,
                     request_hash,
@@ -1526,7 +1876,7 @@ def start_detection_attempt(
             ).fetchone()
             if record is None:
                 raise ComparisonLifecycleError(
-                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                    comparison_id, "absent", "unknown comparison"
                 )
 
             # Checked BEFORE the status check so a comparison left in
@@ -1978,6 +2328,10 @@ def start_detection_replay(
     workflow_version: str,
     previous_source_hash: str,
     current_source_hash: str,
+    actor_auth_method: str = ACTOR_AUTH_LEGACY_SELF_ASSERTED,
+    actor_token_id: str | None = None,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
     now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], bool]:
@@ -1999,6 +2353,12 @@ def start_detection_replay(
     afterwards, never inside it.
     """
     db_path = db_path or config.COMPARISON_DB_PATH
+    attribution = validated_actor_attribution(
+        actor_auth_method=actor_auth_method,
+        actor_token_id=actor_token_id,
+        actor_policy_id=actor_policy_id,
+        actor_policy_version=actor_policy_version,
+    )
     init_db(db_path)
     moment = now or datetime.now(timezone.utc)
     now_iso = moment.astimezone(timezone.utc).isoformat()
@@ -2048,7 +2408,7 @@ def start_detection_replay(
             ).fetchone()
             if comparison is None:
                 raise ComparisonLifecycleError(
-                    comparison_id, "absent", f"unknown comparison {comparison_id!r}"
+                    comparison_id, "absent", "unknown comparison"
                 )
             if comparison["status"] != STATUS_DETECTING:
                 raise DetectionStateError(
@@ -2202,10 +2562,11 @@ def start_detection_replay(
                 """
                 INSERT INTO comparison_detection_replays (
                     replay_id, comparison_id, source_attempt_id,
-                    replacement_attempt_id, operator_id, reason_code,
+                    replacement_attempt_id, operator_id, actor_auth_method,
+                    actor_token_id, actor_policy_id, actor_policy_version, reason_code,
                     operator_note, request_hash, policy_id, policy_version,
                     requested_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     replay_id,
@@ -2213,6 +2574,10 @@ def start_detection_replay(
                     source_attempt_id,
                     replacement_id,
                     operator_id,
+                    attribution["actor_auth_method"],
+                    attribution["actor_token_id"],
+                    attribution["actor_policy_id"],
+                    attribution["actor_policy_version"],
                     reason_code,
                     operator_note,
                     request_hash,
@@ -2417,9 +2782,9 @@ def list_exports(
 #   4. COLUMN ALLOWLIST. Each SELECT names its columns. result_json,
 #      governed_result_json, reviewed_result_json, export_payload_json,
 #      evidence, excerpts, reviewer notes, and operator notes are never
-#      selected — the operator_id / operator_note columns of a replay are
-#      omitted here on purpose, so reliability output cannot carry operator
-#      prose even by accident.
+#      selected — replay actor identifiers, authentication linkage, and
+#      operator_note are omitted here on purpose, so reliability output cannot
+#      carry actor metadata or operator prose even by accident.
 
 # Stable reasons for a database that cannot be observed at all.
 RELIABILITY_STORAGE_ABSENT = "comparison_database_absent"

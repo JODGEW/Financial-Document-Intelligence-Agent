@@ -24,8 +24,9 @@ import config
 import filing_registry
 from comparison_review import ReviewDecisionError, decide
 from governance.comparison_schema import load_comparison
+from tests.auth_helpers import DEFAULT_TEST_SUBJECT, authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 PREV = "acme-corporation:10-k:2024-12-31"
 CURR = "acme-corporation:10-k:2025-12-31"
@@ -583,7 +584,7 @@ def test_api_decision_lifecycle(api_env):
     assert client.get("/api/comparison-reviews/crev_nope").status_code == 404
     assert client.get("/api/comparison-reviews/crev_nope/events").status_code == 404
     assert _post_decision("crev_nope", {
-        "action": "approved", "reviewerId": "r", "reasonCode": "approved_as_is",
+        "action": "approved", "reasonCode": "approved_as_is",
         "reviewerNote": "n",
     }).status_code == 404
 
@@ -597,7 +598,6 @@ def test_api_decision_lifecycle(api_env):
 
     body = {
         "action": "approved",
-        "reviewerId": "reviewer@example.com",
         "reasonCode": "approved_with_summary_edits",
         "reviewerNote": "Verified against both filings.",
         "edits": [{"changeId": "chg-cyber0000001", "summary": SUPPORTED_EDIT}],
@@ -615,15 +615,15 @@ def test_api_decision_lifecycle(api_env):
     assert replay.json()["created"] is False
 
     conflicting = _post_decision(api_env.review_id, {
-        "action": "rejected", "reviewerId": "other",
-        "reasonCode": "rejected_other", "reviewerNote": "no",
+        "action": "rejected", "reasonCode": "rejected_other",
+        "reviewerNote": "no",
     })
     assert conflicting.status_code == 409
     assert conflicting.json()["detail"]["code"] == "review_already_decided"
 
     invalid = _post_decision(api_env.review_id, {
-        "action": "approved", "reviewerId": "r",
-        "reasonCode": "not_a_reason", "reviewerNote": "n",
+        "action": "approved", "reasonCode": "not_a_reason",
+        "reviewerNote": "n",
     })
     assert invalid.status_code in (409, 422)  # decided-first wins as 409 here
 
@@ -631,7 +631,8 @@ def test_api_decision_lifecycle(api_env):
     decided = client.get(f"/api/comparison-reviews/{api_env.review_id}").json()
     assert decided["status"] == "approved"
     assert decided["decidedAt"]
-    assert decided["decision"]["reviewerId"] == "reviewer@example.com"
+    assert decided["decision"]["reviewerId"] == DEFAULT_TEST_SUBJECT
+    assert decided["decision"]["reviewerIdBasis"] == "local_hs256"
     assert decided["decision"]["reasonCode"] == "approved_with_summary_edits"
     assert decided["decision"]["reviewerNote"] == "Verified against both filings."
     events = client.get(
@@ -640,7 +641,7 @@ def test_api_decision_lifecycle(api_env):
     assert len(events) == 1
     assert set(events[0]) == {
         "eventId", "reviewId", "comparisonId", "evaluationId", "action",
-        "reviewerId", "reasonCode", "reviewerNote",
+        "reviewerId", "reviewerIdBasis", "reasonCode", "reviewerNote",
         "originalGovernedResultHash", "finalReviewedResultHash",
         "editedChangeIds", "createdAt",
     }
@@ -648,15 +649,15 @@ def test_api_decision_lifecycle(api_env):
 
 def test_api_422_codes_for_invalid_input(api_env):
     bad_reason = _post_decision(api_env.review_id, {
-        "action": "approved", "reviewerId": "r",
-        "reasonCode": "rejected_other", "reviewerNote": "n",
+        "action": "approved", "reasonCode": "rejected_other",
+        "reviewerNote": "n",
     })
     assert bad_reason.status_code == 422
     assert bad_reason.json()["detail"]["code"] == "invalid_reason_code"
 
     bad_edit = _post_decision(api_env.review_id, {
-        "action": "approved", "reviewerId": "r",
-        "reasonCode": "approved_with_summary_edits", "reviewerNote": "n",
+        "action": "approved", "reasonCode": "approved_with_summary_edits",
+        "reviewerNote": "n",
         "edits": [{"changeId": "chg-cyber0000001",
                    "summary": "Risk factor 'Liquidity Risks' changed."}],
     })
@@ -696,8 +697,7 @@ def test_api_storage_failure_sanitized(api_env, monkeypatch, caplog):
     monkeypatch.setattr(api.comparison_review, "decide", boom)
     with caplog.at_level(logging.ERROR, logger="api"):
         response = _post_decision(api_env.review_id, {
-            "action": "approved", "reviewerId": "r",
-            "reasonCode": "approved_as_is",
+            "action": "approved", "reasonCode": "approved_as_is",
             "reviewerNote": "SUPER-PRIVATE-NOTE",
         })
     assert response.status_code == 500

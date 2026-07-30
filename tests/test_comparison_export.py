@@ -26,8 +26,9 @@ import config
 import filing_registry
 from governance.comparison_export_schema import dump_export, load_export
 from governance.comparison_schema import dump_comparison, load_comparison
+from tests.auth_helpers import authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 SECTION = "item_1a_risk_factors"
 YEARS = list(range(2018, 2028))
