@@ -1,0 +1,54 @@
+# Detection recovery policy (Stage 3.5 reliability step 2).
+#
+# Recovery as policy, not code: detection_recovery.py reads this file at import
+# and falls back to identical baked-in defaults ONLY when the file is missing.
+# A present but invalid file fails startup with GovernancePolicyConfigError —
+# reliability configuration is never silently replaced by permissive defaults
+# (same convention as comparison_risk_policy.yaml and risk_thresholds.yaml).
+#
+# WHAT THIS POLICY DOES — and does not. It answers exactly two questions:
+#
+#   1. After how long is a still-running detection attempt old enough that an
+#      operator is ALLOWED to declare it dead and ask for a replacement?
+#   2. How many attempts may one comparison ever accumulate?
+#
+# It does NOT cause anything to happen on its own. There is no scheduler, no
+# background worker, no polling loop, and no automatic retry anywhere in this
+# repository. Crossing stale_after_seconds changes nothing by itself: the
+# attempt keeps its `running` status and the comparison keeps its `detecting`
+# status until a human explicitly POSTs a replay request. Reading the recovery
+# endpoint never mutates state either. "Stale" is a statement about
+# ELIGIBILITY, not an action.
+#
+# Operator identity attached to a replay is SELF-ASSERTED LOCAL METADATA (an
+# email-like string, a local username, a test id). It is never inferred from
+# the environment, IP, or request metadata, and it is NOT authenticated —
+# there is no auth in this prototype.
+
+detection_recovery_policy:
+  policy_id: detection_recovery_v1
+  policy_version: "1"
+
+staleness:
+  # An attempt is stale when age >= this many seconds (the boundary is
+  # inclusive). Validated as an actual integer in [1, 86400]; the upper bound
+  # exists so an accidental extreme value (a mistyped 900000) fails loudly
+  # instead of quietly disabling recovery forever.
+  #
+  # Why 900 (15 minutes): detection is fully synchronous inside one HTTP
+  # request and the controlled detector completes in well under a second, so a
+  # run still marked `running` a quarter of an hour later is not slow — it is
+  # an interrupted process. The margin is deliberately generous: the cost of
+  # waiting is an operator's patience, while the cost of declaring a LIVE run
+  # dead would be two executions racing for the same comparison.
+  stale_after_seconds: 900
+
+attempt_limits:
+  # Total attempts one comparison may ever accumulate, counting every status
+  # (running, succeeded, failed, timed_out). Validated as an actual integer in
+  # [1, 10]. With 3: the original execution plus at most two operator replays.
+  # The limit is checked inside the replay transaction, so it holds under
+  # concurrent requests. Reaching it is a terminal condition for this
+  # comparison — a genuinely new run means creating a new comparison, which is
+  # what a workflow-version bump already does.
+  max_attempts_per_comparison: 3

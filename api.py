@@ -22,6 +22,7 @@ import comparison_governance
 import comparison_review
 import comparison_store
 import config
+import detection_recovery
 from governance import review_queue
 from loaders.registry import supported_extensions
 
@@ -376,7 +377,7 @@ class DetectionAttemptDTO(BaseModel):
     attemptId: str
     comparisonId: str
     attemptNumber: int
-    status: Literal["running", "succeeded", "failed"]
+    status: Literal["running", "succeeded", "failed", "timed_out"]
     detectorVersion: str
     workflowVersion: str
     previousSourceHash: str
@@ -400,12 +401,94 @@ class DetectionEventDTO(BaseModel):
     attemptId: str
     comparisonId: str
     eventType: Literal[
-        "detection_started", "detection_succeeded", "detection_failed"
+        "detection_started",
+        "detection_succeeded",
+        "detection_failed",
+        "detection_timed_out",
     ]
     eventSeq: int
     createdAt: str
     resultHash: str | None = None
     failureCode: str | None = None
+
+
+class DetectionRecoveryDTO(BaseModel):
+    """READ-ONLY recovery assessment for one detection attempt.
+
+    Reports whether the attempt has crossed the configured stale threshold and
+    whether a replay would currently be accepted. Reading it never mutates
+    state: an attempt is retired only by an explicit replay request.
+    ``blockingReason`` uses the same stable codes a replay would return.
+    """
+
+    attemptId: str
+    comparisonId: str
+    status: Literal["running", "succeeded", "failed", "timed_out"]
+    startedAt: str
+    staleAt: str
+    ageSeconds: float
+    isStale: bool
+    replayEligible: bool
+    attemptsUsed: int
+    maxAttempts: int
+    remainingAttempts: int
+    policyId: str
+    policyVersion: str
+    blockingReason: str | None = None
+
+
+class DetectionReplayRequest(BaseModel):
+    """Body for an operator-requested replay. Identity fields only.
+
+    operatorId is a SELF-ASSERTED local identifier (email-like string, local
+    username, test id) — recorded as attribution metadata and NOT authenticated
+    identity. reasonCode must come from the allowlist; operatorNote is
+    required, bounded prose. The client cannot submit staleness, policy
+    identity, attempt state, or the replacement attempt id: all of that is
+    resolved server-side from persisted records and the checked-in policy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    operatorId: str = Field(min_length=1)
+    reasonCode: str = Field(min_length=1)
+    operatorNote: str = Field(min_length=1)
+
+
+class DetectionReplayDTO(BaseModel):
+    """One operator replay linking a retired attempt to its replacement.
+
+    Allowlisted fields only — no raw error text, evidence, paths, SQL, or
+    environment values. Append-only application records, NOT authenticated and
+    NOT tamper-proof storage.
+    """
+
+    replayId: str
+    comparisonId: str
+    sourceAttemptId: str
+    replacementAttemptId: str
+    operatorId: str
+    operatorIdBasis: Literal["self_asserted_local_metadata"] = (
+        "self_asserted_local_metadata"
+    )
+    reasonCode: str
+    operatorNote: str
+    policyId: str
+    policyVersion: str
+    requestedAt: str
+
+
+class DetectionReplayResponse(BaseModel):
+    """POST replay response: the linkage, the replacement's terminal status,
+    and the comparison result when it succeeded (the existing comparison.v1
+    wire shape — recovery metadata is never inserted into that document)."""
+
+    created: bool
+    replay: DetectionReplayDTO
+    sourceAttemptId: str
+    replacementAttemptId: str
+    replacementStatus: Literal["running", "succeeded", "failed", "timed_out"]
+    result: dict | None = None
 
 
 class ComparisonDetectResponse(BaseModel):
@@ -976,6 +1059,156 @@ def list_detection_events(attempt_id: str) -> list[DetectionEventDTO]:
     except (sqlite3.Error, OSError) as exc:
         raise _comparison_storage_error(exc) from exc
     return [_to_detection_event_dto(record) for record in records]
+
+
+def _to_detection_replay_dto(record: dict) -> DetectionReplayDTO:
+    """Map a stored replay onto the allowlist, field by field."""
+    return DetectionReplayDTO(
+        replayId=record.get("replay_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        sourceAttemptId=record.get("source_attempt_id", ""),
+        replacementAttemptId=record.get("replacement_attempt_id", ""),
+        operatorId=record.get("operator_id", ""),
+        reasonCode=record.get("reason_code", ""),
+        operatorNote=record.get("operator_note", ""),
+        policyId=record.get("policy_id", ""),
+        policyVersion=record.get("policy_version", ""),
+        requestedAt=record.get("requested_at", ""),
+    )
+
+
+@app.get(
+    "/api/detection-attempts/{attempt_id}/recovery",
+    response_model=DetectionRecoveryDTO,
+)
+def get_detection_recovery(attempt_id: str) -> DetectionRecoveryDTO:
+    """Read-only recovery assessment; 404 when the attempt does not exist.
+
+    This endpoint MUTATES NOTHING. Observing that an attempt has passed the
+    stale threshold does not retire it — only an explicit replay request does.
+    """
+    try:
+        view = detection_recovery.recovery_view(attempt_id)
+    except detection_recovery.ReplayAttemptNotFound:
+        raise HTTPException(status_code=404, detail="Detection attempt not found.")
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return DetectionRecoveryDTO(
+        attemptId=view["attempt_id"],
+        comparisonId=view["comparison_id"],
+        status=view["status"],
+        startedAt=view["started_at"],
+        staleAt=view["stale_at"],
+        ageSeconds=view["age_seconds"],
+        isStale=view["is_stale"],
+        replayEligible=view["replay_eligible"],
+        attemptsUsed=view["attempts_used"],
+        maxAttempts=view["max_attempts"],
+        remainingAttempts=view["remaining_attempts"],
+        policyId=view["policy_id"],
+        policyVersion=view["policy_version"],
+        blockingReason=view["blocking_reason"],
+    )
+
+
+@app.post(
+    "/api/detection-attempts/{attempt_id}/replay",
+    response_model=DetectionReplayResponse,
+)
+def replay_detection_attempt(
+    attempt_id: str, request: DetectionReplayRequest, response: Response
+) -> DetectionReplayResponse:
+    """Retire a stale running attempt and execute its replacement.
+
+    Requires an EXPLICIT operator request: nothing here happens on a timer, and
+    no scheduler or worker exists. 201 when this request retired the stale
+    attempt and ran the replacement; 200 for the byte-equivalent idempotent
+    replay (the stored replay and the replacement's current terminal outcome,
+    with no second execution); 404 unknown attempt or comparison; 409 with a
+    stable code when the persisted state does not permit replay (not stale,
+    already replayed by a different request, wrong lifecycle, attempt limit
+    reached, changed inputs or versions); 422 invalid operator fields or reason
+    code; safe 500 with a correlation id for unexpected storage or detector
+    faults.
+    """
+    try:
+        outcome, created = detection_recovery.replay_attempt(
+            attempt_id,
+            operator_id=request.operatorId,
+            reason_code=request.reasonCode,
+            operator_note=request.operatorNote,
+        )
+    except detection_recovery.ReplayAttemptNotFound:
+        raise HTTPException(status_code=404, detail="Detection attempt not found.")
+    except comparison_detector.UnknownComparison:
+        raise HTTPException(status_code=404, detail="Comparison not found.")
+    except detection_recovery.ReplayRequestError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": exc.code, "message": exc.message}
+        ) from exc
+    except comparison_store.ComparisonPairError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_comparison_pair",
+                "reasons": exc.reasons,
+                "message": exc.detail,
+            },
+        ) from exc
+    except comparison_store.DetectionStateError as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": exc.message}
+        ) from exc
+    except comparison_store.ComparisonLifecycleError as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.status, "message": str(exc)}
+        ) from exc
+    except comparison_detector.DetectionInternalError as exc:
+        # The replacement attempt is already durably finalized as failed; the
+        # client gets a correlation id and no raw fault text. The operator note
+        # is deliberately NOT logged.
+        error_id = _new_error_id()
+        logger.exception("Replay detection failed (error_id=%s)", error_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": exc.code,
+                "message": "Replay detection failed unexpectedly. Please try again.",
+                "error_id": error_id,
+            },
+        ) from exc
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+
+    response.status_code = 201 if created else 200
+    return DetectionReplayResponse(
+        created=created,
+        replay=_to_detection_replay_dto(outcome["replay"]),
+        sourceAttemptId=outcome["source_attempt_id"],
+        replacementAttemptId=outcome["replacement_attempt_id"],
+        replacementStatus=outcome["replacement_status"],
+        result=outcome["result"],
+    )
+
+
+@app.get(
+    "/api/detection-attempts/{attempt_id}/replays",
+    response_model=list[DetectionReplayDTO],
+)
+def list_detection_replays(attempt_id: str) -> list[DetectionReplayDTO]:
+    """The replay that retired this attempt: zero or one row under the v1
+    design (UNIQUE(source_attempt_id)). 404 when the attempt does not exist."""
+    try:
+        if comparison_store.get_detection_attempt(attempt_id) is None:
+            raise HTTPException(
+                status_code=404, detail="Detection attempt not found."
+            )
+        replay = comparison_store.get_detection_replay_for_source(attempt_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [] if replay is None else [_to_detection_replay_dto(replay)]
 
 
 def _to_governance_dto(record: dict) -> GovernanceEvaluationDTO:
