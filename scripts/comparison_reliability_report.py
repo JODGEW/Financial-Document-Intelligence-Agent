@@ -94,6 +94,7 @@ def print_summary(report: dict) -> None:
     print("\nCurrent state (evaluated now, NOT restricted by the window):")
     for label, key in (
         ("comparisons ready_for_detection", "comparisons_ready_for_detection"),
+        ("comparisons queued_for_detection", "comparisons_queued_for_detection"),
         ("comparisons detecting", "comparisons_detecting"),
         ("comparisons detected", "comparisons_detected"),
         ("comparisons failed", "comparisons_failed"),
@@ -101,9 +102,36 @@ def print_summary(report: dict) -> None:
         ("stale running attempts", "stale_running_attempts"),
         ("replay-eligible attempts", "replay_eligible_attempts"),
         ("attempt-limit-exhausted comparisons", "attempt_limit_exhausted_comparisons"),
+        ("detection jobs queued", "detection_jobs_queued"),
+        ("detection jobs running", "detection_jobs_running"),
+        ("detection jobs succeeded", "detection_jobs_succeeded"),
+        ("detection jobs failed", "detection_jobs_failed"),
         ("unresolved operational issues", "unresolved_operational_issues"),
     ):
         print(f"  {label:<38} {gauges[key]}")
+
+    jobs = report["jobs"]
+    print("\nDetection jobs in window (queued_at):")
+    for label, key in (
+        ("queued", "jobs_queued"),
+        ("claimed", "jobs_claimed"),
+        ("succeeded", "jobs_succeeded"),
+        ("failed", "jobs_failed"),
+    ):
+        print(f"  {label:<38} {jobs[key]}")
+
+    job_durations = report["job_durations"]
+    print(
+        f"\nJob durations (percentile={job_durations['percentile_method']}):"
+    )
+    for prefix, label in (
+        ("queue_wait", "queue wait"),
+        ("execution", "execution"),
+    ):
+        print(f"  {label + ' count':<38} {job_durations[prefix + '_count']}")
+        for statistic in ("min", "max", "mean", "p50", "p95"):
+            key = f"{prefix}_seconds_{statistic}"
+            print(f"  {(label + ' ' + statistic):<38} {_seconds(job_durations[key])}")
 
     attempts = report["attempts"]
     print("\nAttempts in window:")

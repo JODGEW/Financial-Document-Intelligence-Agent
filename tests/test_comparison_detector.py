@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from langchain_core.embeddings import Embeddings
 
 import api
+import comparison_detection_worker
 import comparison_detector
 import comparison_store
 import config
@@ -748,7 +749,7 @@ def _api_create(prev=PREV_ID, curr=CURR_ID):
 
 
 def test_detect_api_lifecycle_and_status_codes(api_env):
-    """Test 26: 404 unknown; 201 new; 200 idempotent repeat; 409 stale."""
+    """Test 26: 404 unknown; 202 queued/idempotent; worker; 200 detected."""
     assert client.post("/api/comparisons/cmp_nope/detect").status_code == 404
     assert client.get("/api/comparisons/cmp_nope/result").status_code == 404
 
@@ -757,13 +758,21 @@ def test_detect_api_lifecycle_and_status_codes(api_env):
     assert missing.status_code == 404  # created but not yet detected
 
     first = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert first.status_code == 201
+    assert first.status_code == 202
     assert first.json()["created"] is True
+    assert first.json()["jobStatus"] == "queued"
 
     second = client.post(f"/api/comparisons/{comparison_id}/detect")
-    assert second.status_code == 200
+    assert second.status_code == 202
     assert second.json()["created"] is False
-    assert second.json()["result"] == first.json()["result"]
+    assert second.json()["jobId"] == first.json()["jobId"]
+
+    outcome = comparison_detection_worker.run_one_job(worker_id="detector-test")
+    assert outcome["job_status"] == "succeeded"
+    detected = client.post(f"/api/comparisons/{comparison_id}/detect")
+    assert detected.status_code == 200
+    assert detected.json()["created"] is False
+    assert detected.json()["attemptId"] == outcome["attempt_id"]
 
     # The entity routes serve the transitioned lifecycle (regression: the DTO
     # Literal must accept 'detected').
@@ -777,12 +786,16 @@ def test_detect_api_lifecycle_and_status_codes(api_env):
 def test_result_api_returns_comparison_v1_wire_shape(api_env):
     """Test 27: GET result is the persisted, schema-valid wire document."""
     comparison_id = _api_create()
-    posted = client.post(f"/api/comparisons/{comparison_id}/detect").json()["result"]
+    queued = client.post(f"/api/comparisons/{comparison_id}/detect")
+    assert queued.status_code == 202
+    comparison_detection_worker.run_one_job(worker_id="result-api-test")
 
     response = client.get(f"/api/comparisons/{comparison_id}/result")
     assert response.status_code == 200
     wire = response.json()
-    assert wire == posted
+    assert wire == comparison_store.get_result(
+        comparison_id, db_path=api_env
+    )["result"]
     model = load_comparison(wire)  # validates as comparison.v1
     assert model.producer == DETECTOR_VERSION
     assert wire["schema_version"] == "comparison.v1"
@@ -793,7 +806,7 @@ def test_result_api_returns_comparison_v1_wire_shape(api_env):
 
 
 def test_api_internal_failure_is_sanitized(api_env, monkeypatch, caplog):
-    """Test 25: unexpected exceptions leak no paths, SQL, or content."""
+    """Test 25: enqueue is isolated; worker persists a sanitized failure."""
     comparison_id = _api_create()
     secret = "kaboom /secret/corpus/path SELECT result_json FROM comparison_results"
 
@@ -801,16 +814,16 @@ def test_api_internal_failure_is_sanitized(api_env, monkeypatch, caplog):
         raise RuntimeError(secret)
 
     monkeypatch.setattr(comparison_detector, "detect_changes", boom)
-    with caplog.at_level(logging.ERROR, logger="api"):
-        response = client.post(f"/api/comparisons/{comparison_id}/detect")
-
-    assert response.status_code == 500
+    response = client.post(f"/api/comparisons/{comparison_id}/detect")
+    assert response.status_code == 202
+    with caplog.at_level(logging.ERROR, logger="comparison_detector"):
+        outcome = comparison_detection_worker.run_one_job(
+            worker_id="failure-test"
+        )
+    assert outcome["job_status"] == "failed"
     assert "/secret" not in response.text
     assert "SELECT" not in response.text
     assert "RuntimeError" not in response.text
-    detail = response.json()["detail"]
-    assert detail["code"] == "detector_internal_error"
-    assert detail["error_id"].startswith("err_")
     assert secret in caplog.text  # full fault preserved server-side
 
     # And the lifecycle honestly reflects the failure.

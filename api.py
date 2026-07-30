@@ -22,6 +22,7 @@ from starlette.routing import Match
 
 from agent import detect_guardrail_intervention, query, stream_query
 import access_control
+import comparison_detection_worker
 import comparison_detector
 import comparison_export
 import comparison_governance
@@ -372,7 +373,13 @@ class ComparisonRecordDTO(BaseModel):
     previousFilingId: str
     currentFilingId: str
     sectionScope: list[str]
-    status: Literal["ready_for_detection", "detecting", "detected", "failed"]
+    status: Literal[
+        "ready_for_detection",
+        "queued_for_detection",
+        "detecting",
+        "detected",
+        "failed",
+    ]
     createdAt: str
     updatedAt: str
     failureCode: str | None = None
@@ -596,6 +603,50 @@ class DetectionEventDTO(BaseModel):
     failureCode: str | None = None
 
 
+class DetectionJobDTO(BaseModel):
+    """Read-only detection-job allowlist; no claim or request hashes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jobId: str
+    comparisonId: str
+    attemptId: str | None = None
+    triggerType: Literal["initial_detection"]
+    status: Literal["queued", "running", "succeeded", "failed"]
+    detectorVersion: str
+    workflowVersion: str
+    requestedBySubject: str
+    requestedByAuthMethod: Literal["local_hs256"]
+    queuedAt: str
+    claimedAt: str | None = None
+    finishedAt: str | None = None
+    workerId: str | None = None
+    resultHash: str | None = None
+    failureCode: str | None = None
+
+
+class DetectionJobEventDTO(BaseModel):
+    """Insert-only job transition allowlist."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    eventId: str
+    jobId: str
+    comparisonId: str
+    attemptId: str | None = None
+    eventType: Literal[
+        "detection_job_queued",
+        "detection_job_claimed",
+        "detection_job_succeeded",
+        "detection_job_failed",
+    ]
+    eventSeq: int
+    createdAt: str
+    workerId: str | None = None
+    resultHash: str | None = None
+    failureCode: str | None = None
+
+
 class DetectionRecoveryDTO(BaseModel):
     """READ-ONLY recovery assessment for one detection attempt.
 
@@ -693,6 +744,7 @@ class ReliabilityGaugesDTO(BaseModel):
     """Current state at query time. NOT restricted by the historical window."""
 
     comparisonsReadyForDetection: int
+    comparisonsQueuedForDetection: int
     comparisonsDetecting: int
     comparisonsDetected: int
     comparisonsFailed: int
@@ -700,7 +752,36 @@ class ReliabilityGaugesDTO(BaseModel):
     staleRunningAttempts: int
     replayEligibleAttempts: int
     attemptLimitExhaustedComparisons: int
+    detectionJobsQueued: int
+    detectionJobsRunning: int
+    detectionJobsSucceeded: int
+    detectionJobsFailed: int
     unresolvedOperationalIssues: int
+
+
+class ReliabilityJobCountersDTO(BaseModel):
+    jobsQueued: int
+    jobsClaimed: int
+    jobsSucceeded: int
+    jobsFailed: int
+
+
+class ReliabilityJobDurationsDTO(BaseModel):
+    queueWaitCount: int
+    queueWaitSecondsMin: float | None = None
+    queueWaitSecondsMax: float | None = None
+    queueWaitSecondsMean: float | None = None
+    queueWaitSecondsP50: float | None = None
+    queueWaitSecondsP95: float | None = None
+    executionCount: int
+    executionSecondsMin: float | None = None
+    executionSecondsMax: float | None = None
+    executionSecondsMean: float | None = None
+    executionSecondsP50: float | None = None
+    executionSecondsP95: float | None = None
+    negativeQueueWaitJobs: int
+    negativeExecutionJobs: int
+    percentileMethod: str
 
 
 class ReliabilityAttemptCountersDTO(BaseModel):
@@ -787,6 +868,8 @@ class ReliabilitySummaryDTO(BaseModel):
     staleAfterSeconds: int
     maxAttemptsPerComparison: int
     gauges: ReliabilityGaugesDTO
+    jobs: ReliabilityJobCountersDTO
+    jobDurations: ReliabilityJobDurationsDTO
     attempts: ReliabilityAttemptCountersDTO
     attemptRates: ReliabilityAttemptRatesDTO
     replays: ReliabilityReplayCountersDTO
@@ -810,13 +893,18 @@ class ReliabilityIssueDTO(BaseModel):
         "comparison_failed",
         "replacement_attempt_failed",
         "invalid_negative_duration",
+        "queued_detection_job",
+        "running_detection_job_without_lease",
     ]
     comparisonId: str
+    jobId: str | None = None
     attemptId: str | None = None
     replayId: str | None = None
     status: str
     failureCode: str | None = None
     startedAt: str | None = None
+    queuedAt: str | None = None
+    claimedAt: str | None = None
     createdAt: str | None = None
     detectedAt: str
     ageSeconds: float | None = None
@@ -831,6 +919,8 @@ class ReliabilityIssueDTO(BaseModel):
         "inspect_failure",
         "no_replay_available",
         "inspect_clock_integrity",
+        "run_one_shot_detection_worker",
+        "inspect_running_job_no_automatic_recovery",
     ]
 
 
@@ -890,7 +980,7 @@ class ReliabilityFailuresResponse(BaseModel):
 
 
 class ComparisonDetectResponse(BaseModel):
-    """POST /api/comparisons/{id}/detect response.
+    """Idempotent already-detected response.
 
     ``result`` is the validated comparison.v1 wire document exactly as
     persisted (the schema contract IS the API shape for detection results —
@@ -909,6 +999,20 @@ class ComparisonDetectResponse(BaseModel):
     attemptId: str | None = None
 
 
+class ComparisonDetectionJobResponse(BaseModel):
+    """202 response for a newly queued or equivalent active detection job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    created: bool
+    comparisonId: str
+    jobId: str
+    jobStatus: Literal["queued", "running"]
+    comparisonStatus: Literal["queued_for_detection", "detecting"]
+    queuedAt: str
+    attemptId: str | None = None
+
+
 COMPARISON_ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     ("POST", "/api/comparisons"): "comparison.create",
     ("GET", "/api/comparisons"): "comparison.read",
@@ -920,6 +1024,18 @@ COMPARISON_ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     (
         "GET",
         "/api/comparisons/{comparison_id}/detection-attempts",
+    ): "detection_attempt.read",
+    (
+        "GET",
+        "/api/comparisons/{comparison_id}/detection-jobs",
+    ): "detection_attempt.read",
+    (
+        "GET",
+        "/api/comparison-detection-jobs/{job_id}",
+    ): "detection_attempt.read",
+    (
+        "GET",
+        "/api/comparison-detection-jobs/{job_id}/events",
     ): "detection_attempt.read",
     ("GET", "/api/detection-attempts/{attempt_id}"): "detection_attempt.read",
     (
@@ -1583,7 +1699,14 @@ def create_comparison(
 )
 def list_comparisons(
     filing_id: str | None = None,
-    status: Literal["ready_for_detection", "detecting", "detected", "failed"] | None = None,
+    status: Literal[
+        "ready_for_detection",
+        "queued_for_detection",
+        "detecting",
+        "detected",
+        "failed",
+    ]
+    | None = None,
 ) -> list[ComparisonRecordDTO]:
     """List comparisons, newest first. Minimal stable filters only:
     filing_id matches either side of the pair; status matches exactly."""
@@ -1614,7 +1737,17 @@ def get_comparison(comparison_id: str) -> ComparisonRecordDTO:
 
 @app.post(
     "/api/comparisons/{comparison_id}/detect",
-    response_model=ComparisonDetectResponse,
+    response_model=ComparisonDetectionJobResponse | ComparisonDetectResponse,
+    responses={
+        202: {
+            "model": ComparisonDetectionJobResponse,
+            "description": "Detection job queued or equivalent active job returned.",
+        },
+        200: {
+            "model": ComparisonDetectResponse,
+            "description": "Existing detected result returned idempotently.",
+        },
+    },
 )
 def detect_comparison(
     comparison_id: str,
@@ -1623,32 +1756,27 @@ def detect_comparison(
         access_control.Principal,
         Depends(require_permission("comparison.detect")),
     ],
-) -> ComparisonDetectResponse:
-    """Run deterministic Item 1A change detection for a persisted comparison.
+) -> ComparisonDetectionJobResponse | ComparisonDetectResponse:
+    """Durably queue deterministic Item 1A detection; never execute it inline.
 
-    201 + created=true for a newly persisted result; 200 + created=false when
-    the same detector version already produced a result for the same source
-    hashes; 404 unknown comparison; 409 for lifecycle violations, an already
-    running attempt (`detection_in_progress`), or stale inputs; 422 when the
-    filing pair no longer validates against the registry; safe 500 with a
-    correlation id for unexpected faults.
-
-    The response additionally carries `attemptId`, naming the durable execution
-    behind the result.
+    202 creates or idempotently returns one active job. No attempt exists until
+    a separate one-shot worker claims it. A current already-detected result
+    preserves the existing 200 result contract and creates no job.
     """
+    actor_context = _actor_context(principal, "comparison.detect")
     try:
-        result, created, attempt_id = comparison_detector.detect_with_attempt(
+        outcome = comparison_detection_worker.enqueue_initial_detection(
             comparison_id,
-            actor_context=_actor_context(principal, "comparison.detect"),
+            requested_by_subject=principal.subject,
+            requested_by_auth_method=principal.auth_method,
+            requested_by_token_id=principal.token_id,
+            requested_by_policy_id=principal.policy_id,
+            requested_by_policy_version=principal.policy_version,
+            actor_context=actor_context,
         )
     except comparison_detector.UnknownComparison:
         raise HTTPException(status_code=404, detail="Comparison not found.")
-    except (
-        comparison_detector.DetectionNotReady,
-        comparison_detector.DetectionInProgress,
-        comparison_detector.DetectionInputsStale,
-        comparison_detector.DetectionVersionSuperseded,
-    ) as exc:
+    except comparison_store.DetectionStateError as exc:
         raise HTTPException(
             status_code=409,
             detail={"code": exc.code, "message": exc.message},
@@ -1662,23 +1790,31 @@ def detect_comparison(
                 "message": exc.detail,
             },
         ) from exc
-    except comparison_detector.DetectionInternalError as exc:
-        error_id = _new_error_id()
-        logger.exception("Comparison detection failed (error_id=%s)", error_id)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": exc.code,
-                "message": "Detection failed unexpectedly. Please try again.",
-                "error_id": error_id,
-            },
-        ) from exc
     except (sqlite3.Error, OSError) as exc:
         raise _comparison_storage_error(exc) from exc
 
-    response.status_code = 201 if created else 200
-    return ComparisonDetectResponse(
-        created=created, result=result, attemptId=attempt_id
+    if outcome["kind"] == "result":
+        response.status_code = 200
+        return ComparisonDetectResponse(
+            created=False,
+            result=outcome["result"]["result"],
+            attemptId=outcome["attempt_id"],
+        )
+
+    job = outcome["job"]
+    response.status_code = 202
+    return ComparisonDetectionJobResponse(
+        created=outcome["created"],
+        comparisonId=job["comparison_id"],
+        jobId=job["job_id"],
+        jobStatus=job["status"],
+        comparisonStatus=(
+            "queued_for_detection"
+            if job["status"] == comparison_store.JOB_QUEUED
+            else "detecting"
+        ),
+        queuedAt=job["queued_at"],
+        attemptId=job["attempt_id"],
     )
 
 
@@ -1713,6 +1849,96 @@ def _to_detection_event_dto(record: dict) -> DetectionEventDTO:
         resultHash=record.get("result_hash"),
         failureCode=record.get("failure_code"),
     )
+
+
+def _to_detection_job_dto(record: dict) -> DetectionJobDTO:
+    return DetectionJobDTO(
+        jobId=record.get("job_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        attemptId=record.get("attempt_id"),
+        triggerType=record.get("trigger_type", "initial_detection"),
+        status=record.get("status", "queued"),
+        detectorVersion=record.get("detector_version", ""),
+        workflowVersion=record.get("workflow_version", ""),
+        requestedBySubject=record.get("requested_by_subject", ""),
+        requestedByAuthMethod=record.get(
+            "requested_by_auth_method", "local_hs256"
+        ),
+        queuedAt=record.get("queued_at", ""),
+        claimedAt=record.get("claimed_at"),
+        finishedAt=record.get("finished_at"),
+        workerId=record.get("worker_id"),
+        resultHash=record.get("result_hash"),
+        failureCode=record.get("failure_code"),
+    )
+
+
+def _to_detection_job_event_dto(record: dict) -> DetectionJobEventDTO:
+    return DetectionJobEventDTO(
+        eventId=record.get("event_id", ""),
+        jobId=record.get("job_id", ""),
+        comparisonId=record.get("comparison_id", ""),
+        attemptId=record.get("attempt_id"),
+        eventType=record.get("event_type", "detection_job_queued"),
+        eventSeq=record.get("event_seq", 0),
+        createdAt=record.get("created_at", ""),
+        workerId=record.get("worker_id"),
+        resultHash=record.get("result_hash"),
+        failureCode=record.get("failure_code"),
+    )
+
+
+@app.get(
+    "/api/comparisons/{comparison_id}/detection-jobs",
+    response_model=list[DetectionJobDTO],
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
+)
+def list_comparison_detection_jobs(
+    comparison_id: str,
+) -> list[DetectionJobDTO]:
+    try:
+        if comparison_store.get_comparison(comparison_id) is None:
+            raise HTTPException(status_code=404, detail="Comparison not found.")
+        records = comparison_store.list_detection_jobs(comparison_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_detection_job_dto(record) for record in records]
+
+
+@app.get(
+    "/api/comparison-detection-jobs/{job_id}",
+    response_model=DetectionJobDTO,
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
+)
+def get_comparison_detection_job(job_id: str) -> DetectionJobDTO:
+    try:
+        record = comparison_store.get_detection_job(job_id)
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Detection job not found.")
+    return _to_detection_job_dto(record)
+
+
+@app.get(
+    "/api/comparison-detection-jobs/{job_id}/events",
+    response_model=list[DetectionJobEventDTO],
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
+)
+def list_comparison_detection_job_events(
+    job_id: str,
+) -> list[DetectionJobEventDTO]:
+    try:
+        if comparison_store.get_detection_job(job_id) is None:
+            raise HTTPException(status_code=404, detail="Detection job not found.")
+        records = comparison_store.list_detection_job_events(job_id)
+    except HTTPException:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        raise _comparison_storage_error(exc) from exc
+    return [_to_detection_job_event_dto(record) for record in records]
 
 
 @app.get(
@@ -1848,8 +2074,9 @@ def replay_detection_attempt(
     """Retire a stale running attempt and execute its replacement.
 
     Requires an EXPLICIT operator request: nothing here happens on a timer, and
-    no scheduler or worker exists. 201 when this request retired the stale
-    attempt and ran the replacement; 200 for the byte-equivalent idempotent
+    replay remains synchronous — the one-shot initial-detection worker never
+    handles replay. 201 when this request retired the stale attempt and ran the
+    replacement; 200 for the byte-equivalent idempotent
     replay (the stored replay and the replacement's current terminal outcome,
     with no second execution); 404 unknown attempt or comparison; 409 with a
     stable code when the persisted state does not permit replay (not stale,
@@ -1951,9 +2178,10 @@ def list_detection_replays(attempt_id: str) -> list[DetectionReplayDTO]:
 # Three GET routes over the persisted comparison lifecycle. NONE of them
 # mutates anything: they open the database read-only, they never start, retire,
 # retry, or replay an attempt, and observing a stale attempt here does not
-# change it — that still requires the explicit replay route above. There is no
-# scheduler, worker, queue, notification, or external monitoring integration
-# behind them.
+# change it — that still requires the explicit replay route above for an
+# eligible direct/replay attempt. These reads never enqueue, claim, or execute
+# the one-shot job path, and no scheduler, daemon, notification, or external
+# monitoring integration sits behind them.
 
 
 def _reliability_query_error(exc: comparison_reliability.ReliabilityQueryError):
@@ -2093,6 +2321,7 @@ def get_reliability_summary(
 def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
     """Map the service report onto the camelCase allowlist, field by field."""
     gauges, attempts = report["gauges"], report["attempts"]
+    jobs, job_durations = report["jobs"], report["job_durations"]
     replays, durations = report["replays"], report["durations"]
     breakdown = report["failure_breakdown"]
     return ReliabilitySummaryDTO(
@@ -2108,6 +2337,9 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
         maxAttemptsPerComparison=report["max_attempts_per_comparison"],
         gauges=ReliabilityGaugesDTO(
             comparisonsReadyForDetection=gauges["comparisons_ready_for_detection"],
+            comparisonsQueuedForDetection=gauges[
+                "comparisons_queued_for_detection"
+            ],
             comparisonsDetecting=gauges["comparisons_detecting"],
             comparisonsDetected=gauges["comparisons_detected"],
             comparisonsFailed=gauges["comparisons_failed"],
@@ -2117,7 +2349,34 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             attemptLimitExhaustedComparisons=gauges[
                 "attempt_limit_exhausted_comparisons"
             ],
+            detectionJobsQueued=gauges["detection_jobs_queued"],
+            detectionJobsRunning=gauges["detection_jobs_running"],
+            detectionJobsSucceeded=gauges["detection_jobs_succeeded"],
+            detectionJobsFailed=gauges["detection_jobs_failed"],
             unresolvedOperationalIssues=gauges["unresolved_operational_issues"],
+        ),
+        jobs=ReliabilityJobCountersDTO(
+            jobsQueued=jobs["jobs_queued"],
+            jobsClaimed=jobs["jobs_claimed"],
+            jobsSucceeded=jobs["jobs_succeeded"],
+            jobsFailed=jobs["jobs_failed"],
+        ),
+        jobDurations=ReliabilityJobDurationsDTO(
+            queueWaitCount=job_durations["queue_wait_count"],
+            queueWaitSecondsMin=job_durations["queue_wait_seconds_min"],
+            queueWaitSecondsMax=job_durations["queue_wait_seconds_max"],
+            queueWaitSecondsMean=job_durations["queue_wait_seconds_mean"],
+            queueWaitSecondsP50=job_durations["queue_wait_seconds_p50"],
+            queueWaitSecondsP95=job_durations["queue_wait_seconds_p95"],
+            executionCount=job_durations["execution_count"],
+            executionSecondsMin=job_durations["execution_seconds_min"],
+            executionSecondsMax=job_durations["execution_seconds_max"],
+            executionSecondsMean=job_durations["execution_seconds_mean"],
+            executionSecondsP50=job_durations["execution_seconds_p50"],
+            executionSecondsP95=job_durations["execution_seconds_p95"],
+            negativeQueueWaitJobs=job_durations["negative_queue_wait_jobs"],
+            negativeExecutionJobs=job_durations["negative_execution_jobs"],
+            percentileMethod=job_durations["percentile_method"],
         ),
         attempts=ReliabilityAttemptCountersDTO(
             attemptsStarted=attempts["attempts_started"],
@@ -2240,11 +2499,14 @@ def _to_reliability_issue_dto(issue: dict) -> ReliabilityIssueDTO:
     return ReliabilityIssueDTO(
         issueType=issue["issue_type"],
         comparisonId=issue["comparison_id"],
+        jobId=issue["job_id"],
         attemptId=issue["attempt_id"],
         replayId=issue["replay_id"],
         status=issue["status"],
         failureCode=issue["failure_code"],
         startedAt=issue["started_at"],
+        queuedAt=issue["queued_at"],
+        claimedAt=issue["claimed_at"],
         createdAt=issue["created_at"],
         detectedAt=issue["detected_at"],
         ageSeconds=issue["age_seconds"],

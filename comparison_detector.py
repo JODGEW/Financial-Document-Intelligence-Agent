@@ -49,16 +49,14 @@ held while Chroma is read or the detector runs, and the running-attempt
 constraint means concurrent requests do not duplicate detector work — the loser
 gets DetectionInProgress rather than re-running everything.
 
-INTERRUPTION BOUNDARY, stated plainly: killing the process between those two
-transactions leaves ``comparison.status='detecting'`` with a ``running``
-attempt and only a ``detection_started`` event, indefinitely. Every later
-detect request keeps reporting ``detection_in_progress``. That is deliberate —
-nothing here infers termination from age, wall-clock, or file mtime, nothing
-marks the attempt failed on a guess, and nothing starts a replacement attempt.
-The state is instead made VISIBLE and queryable so an operator can see it.
-Bounded stale-attempt detection and operator-controlled replay are the next
-reliability commit; there is no retry, timeout takeover, queue, scheduler, or
-background worker anywhere in this module.
+INTERRUPTION BOUNDARY, stated plainly: killing a direct/replay process between
+those transactions leaves ``comparison.status='detecting'`` with a ``running``
+attempt until an eligible explicit replay. Authenticated API initial detection
+instead queues before reaching this module; its one-shot worker calls the same
+execution seam after an atomic claim. Killing that worker after claim leaves
+the job and attempt running indefinitely because no lease, heartbeat, fencing,
+timeout takeover, or safe reclaim exists. Nothing here infers termination from
+age or file mtime, marks work failed on a guess, or starts a replacement.
 """
 
 from __future__ import annotations
@@ -196,10 +194,9 @@ class DetectionInProgress(DetectionError):
 
     Deliberately distinct from DetectionNotReady: the comparison is mid-flight,
     not terminal. Because the running attempt is persisted rather than held in
-    memory, a process killed during detection leaves this state visible and a
-    later request keeps reporting it. Nothing here recovers it automatically —
-    bounded stale-attempt detection and operator-controlled replay are the next
-    reliability commit.
+    memory, a process killed during detection leaves this state visible.
+    Eligible direct/replay attempts require explicit bounded replay; a
+    worker-owned claim cannot be reclaimed until leases and fencing exist.
     """
 
 
@@ -1128,6 +1125,9 @@ def execute_attempt(
     chroma_client=None,
     db_path: str | Path | None = None,
     actor_context: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
+    worker_id: str | None = None,
+    claim_token: str | None = None,
 ) -> tuple[dict[str, Any], bool, str | None]:
     """Compute and finalize ONE already-started running attempt.
 
@@ -1144,6 +1144,16 @@ def execute_attempt(
     """
     db_path = db_path or config.COMPARISON_DB_PATH
     comparison_id = record["comparison_id"]
+    job_execution = any(
+        value is not None for value in (job_id, worker_id, claim_token)
+    )
+    if job_execution and not all(
+        isinstance(value, str) and value
+        for value in (job_id, worker_id, claim_token)
+    ):
+        raise ValueError(
+            "job_id, worker_id, and claim_token must be supplied together"
+        )
     try:
         wire = _compute_result(
             record, previous_ref, current_ref, previous_entry, current_entry,
@@ -1153,20 +1163,39 @@ def execute_attempt(
         try:
             # Result insert + attempt succeeded + detection_succeeded event +
             # detecting -> detected, all in one transaction.
-            finalized = comparison_store.complete_detection_attempt(
-                attempt_id,
-                result_json=json.dumps(wire),
-                result_hash=_result_hash(wire),
-                detector_version=DETECTOR_VERSION,
-                workflow_version=comparison_store.WORKFLOW_VERSION,
-                previous_source_hash=previous_hash,
-                current_source_hash=current_hash,
-                db_path=db_path,
-            )
+            result_hash = _result_hash(wire)
+            if job_execution:
+                terminal = comparison_store.complete_detection_job(
+                    job_id,
+                    attempt_id,
+                    worker_id=worker_id,
+                    claim_token=claim_token,
+                    result_json=json.dumps(wire),
+                    result_hash=result_hash,
+                    detector_version=DETECTOR_VERSION,
+                    workflow_version=comparison_store.WORKFLOW_VERSION,
+                    previous_source_hash=previous_hash,
+                    current_source_hash=current_hash,
+                    db_path=db_path,
+                )
+                finalized = terminal["attempt"]
+            else:
+                finalized = comparison_store.complete_detection_attempt(
+                    attempt_id,
+                    result_json=json.dumps(wire),
+                    result_hash=result_hash,
+                    detector_version=DETECTOR_VERSION,
+                    workflow_version=comparison_store.WORKFLOW_VERSION,
+                    previous_source_hash=previous_hash,
+                    current_source_hash=current_hash,
+                    db_path=db_path,
+                )
         except comparison_store.ComparisonResultExists:
             # Defensive: the running-attempt constraint makes a concurrent
             # identical detection unreachable, but a result is never
             # overwritten, so serve the stored one.
+            if job_execution:
+                raise
             stored = comparison_store.get_result(comparison_id, db_path=db_path)
             return stored["result"], False, attempt_id
         comparison_reliability.log_lifecycle_event(
@@ -1186,6 +1215,9 @@ def execute_attempt(
             _persisted_failure_code(exc),
             db_path,
             actor_context=actor_context,
+            job_id=job_id,
+            worker_id=worker_id,
+            claim_token=claim_token,
         )
         raise
     except Exception as exc:
@@ -1202,6 +1234,9 @@ def execute_attempt(
             REASON_DETECTOR_INTERNAL_ERROR,
             db_path,
             actor_context=actor_context,
+            job_id=job_id,
+            worker_id=worker_id,
+            claim_token=claim_token,
         )
         # Chained so the API layer's logger.exception also captures the real
         # fault; the DetectionInternalError message itself stays safe.
@@ -1367,6 +1402,9 @@ def _finalize_failed_attempt(
     db_path: str | Path,
     *,
     actor_context: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
+    worker_id: str | None = None,
+    claim_token: str | None = None,
 ) -> None:
     """Mark the running attempt failed, never masking the original fault.
 
@@ -1381,18 +1419,32 @@ def _finalize_failed_attempt(
     committed, and carries the STABLE failure code — never exception text.
     """
     try:
-        finalized = comparison_store.fail_detection_attempt(
-            attempt_id,
-            failure_code=failure_code,
-            failure_summary=_safe_failure_summary(failure_code),
-            db_path=db_path,
-        )
+        if job_id is not None:
+            terminal = comparison_store.fail_detection_job(
+                job_id,
+                attempt_id,
+                worker_id=worker_id,
+                claim_token=claim_token,
+                failure_code=failure_code,
+                failure_summary=_safe_failure_summary(failure_code),
+                db_path=db_path,
+            )
+            finalized = terminal["attempt"]
+        else:
+            finalized = comparison_store.fail_detection_attempt(
+                attempt_id,
+                failure_code=failure_code,
+                failure_summary=_safe_failure_summary(failure_code),
+                db_path=db_path,
+            )
     except Exception:
         logger.exception(
             "Could not finalize detection attempt %s as failed; it remains "
             "running and its comparison remains 'detecting'",
             attempt_id,
         )
+        if job_id is not None:
+            raise
         return
     comparison_reliability.log_lifecycle_event(
         comparison_reliability.EVENT_ATTEMPT_FAILED,

@@ -8,15 +8,15 @@ nothing else does.
 
 What this module does NOT do, stated plainly
 --------------------------------------------
-There is no automatic retry, no automatic replay, no background worker, no
-scheduler, no polling loop, no cron entry, no dead-letter queue, no message
-queue, and no exponential backoff anywhere in this repository. Crossing the
-configured stale threshold changes NOTHING on its own: the attempt keeps its
-``running`` status and the comparison keeps its ``detecting`` status until a
-human explicitly POSTs a replay request. Reading the recovery endpoint is
-side-effect free — observing an old attempt never retires it. "Stale" is a
-statement about ELIGIBILITY, not an action, and an attempt becomes
-``timed_out`` only inside the explicit replay transaction.
+There is no automatic retry or replay, replay worker, scheduler, polling loop,
+cron entry, dead-letter queue, or exponential backoff. The separate
+initial-detection worker is one-shot and never handles replay. Crossing the
+configured stale threshold changes NOTHING on its own: an eligible
+direct/replay attempt remains ``running`` until a human explicitly POSTs a
+replay request. A worker-owned job attempt is not eligible in this commit
+because no lease, heartbeat, fencing, or safe reclaim exists. Reading the
+recovery endpoint is side-effect free — observing an old attempt never retires
+it. "Stale" is a statement about eligibility, not an action.
 
 Failed attempts are also NOT replayable here. Replay exists for one narrow
 condition: a ``running`` attempt whose process is gone. General retry of a
@@ -90,6 +90,9 @@ BLOCK_ALREADY_REPLAYED = comparison_store.REASON_REPLAY_ALREADY_EXISTS
 BLOCK_INPUTS_CHANGED = comparison_store.REASON_REPLAY_INPUTS_CHANGED
 BLOCK_VERSION_CHANGED = comparison_store.REASON_REPLAY_VERSION_CHANGED
 BLOCK_LIFECYCLE_INVALID = comparison_store.REASON_TRANSITION_INVALID
+BLOCK_JOB_RECLAIM_NOT_SUPPORTED = (
+    comparison_store.REASON_JOB_RECLAIM_NOT_SUPPORTED
+)
 
 
 class ReplayRequestError(Exception):
@@ -273,6 +276,7 @@ def build_recovery_view_from_records(
     resolve_source_hashes: Callable[[], tuple[str, str]],
     policy: dict[str, Any],
     now: datetime,
+    active_detection_job: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PURE recovery assessment over already-loaded records. No storage access.
 
@@ -305,6 +309,7 @@ def build_recovery_view_from_records(
         attempts_used=attempts_used,
         max_attempts=max_attempts,
         existing_replay=existing_replay,
+        active_detection_job=active_detection_job,
         resolve_source_hashes=resolve_source_hashes,
     )
     return {
@@ -369,6 +374,9 @@ def recovery_view(
         existing_replay=comparison_store.get_detection_replay_for_source(
             attempt_id, db_path=db_path
         ),
+        active_detection_job=comparison_store.get_detection_job_for_attempt(
+            attempt_id, db_path=db_path
+        ),
         resolve_source_hashes=resolve_source_hashes,
         policy=policy,
         now=moment,
@@ -383,6 +391,7 @@ def _blocking_reason_from_records(
     attempts_used: int,
     max_attempts: int,
     existing_replay: dict[str, Any] | None,
+    active_detection_job: dict[str, Any] | None,
     resolve_source_hashes: Callable[[], tuple[str, str]],
 ) -> str | None:
     """The first stable code that would refuse a replay right now, or None.
@@ -393,6 +402,11 @@ def _blocking_reason_from_records(
     """
     if existing_replay is not None:
         return BLOCK_ALREADY_REPLAYED
+    if (
+        active_detection_job is not None
+        and active_detection_job.get("status") == comparison_store.JOB_RUNNING
+    ):
+        return BLOCK_JOB_RECLAIM_NOT_SUPPORTED
     if comparison is None or comparison["status"] != comparison_store.STATUS_DETECTING:
         return BLOCK_LIFECYCLE_INVALID
     if source_attempt["status"] != comparison_store.ATTEMPT_RUNNING:

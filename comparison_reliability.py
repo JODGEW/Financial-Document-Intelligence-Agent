@@ -10,12 +10,13 @@ detector/workflow versions produced those records.
 
 What this module does NOT do, stated plainly
 --------------------------------------------
-It EXPOSES state. It never repairs, retries, replays, deletes, or mutates a
-workflow record, and it adds no automatic retry, background worker, scheduler,
-polling loop, alert, notification, or external monitoring integration — there
-are still none of those anywhere in this repository. A stale attempt reported
-here stays exactly as stale as it was: resolving it means an operator
-explicitly POSTing to the existing replay endpoint.
+It EXPOSES state. It never repairs, retries, reclaims, replays, deletes, or
+mutates a workflow record, and it starts no worker or scheduler. The explicit
+initial-detection worker is a separate one-shot process; there is no daemon
+loop, lease manager, alert, notification, or external monitoring integration.
+A stale attempt reported here stays exactly as stale as it was: an eligible
+direct/replay attempt needs an explicit replay, while a worker-owned claim has
+no automatic recovery in this commit.
 
 TRANSITIVELY READ-ONLY, by construction: the ONLY SQLite access on any
 reliability path is ``comparison_store.read_reliability_snapshot``, which opens
@@ -36,10 +37,10 @@ Time windows
 ------------
 ``since`` / ``until`` are optional, timezone-aware, and INCLUSIVE
 (``since <= t <= until``). A naive timestamp is rejected rather than assumed to
-be UTC, and ``until`` must not precede ``since``. Historical attempt metrics
-are windowed on ``started_at``; historical replay metrics on ``requested_at``
-(which is the same instant as its replacement attempt's ``started_at`` — both
-are written by the one replay transaction).
+be UTC, and ``until`` must not precede ``since``. Historical job metrics window
+on ``queued_at``, attempt metrics on ``started_at``, and replay metrics on
+``requested_at`` (the same instant as its replacement attempt's
+``started_at``).
 
 CURRENT-STATE GAUGES AND THE ENTIRE ISSUE SET ARE NOT WINDOWED. They are
 evaluated at query time, because "how many attempts are stuck right now" is not
@@ -125,7 +126,7 @@ import config
 
 logger = logging.getLogger("comparison_reliability")
 
-RELIABILITY_CONTRACT_VERSION = "comparison_reliability.v1"
+RELIABILITY_CONTRACT_VERSION = "comparison_reliability.v2"
 
 # A rate whose denominator is zero asserts nothing. It is reported as null with
 # its numerator and denominator visible — never NaN, never 0.0, never dropped.
@@ -141,6 +142,7 @@ PERCENTILE_METHOD = "nearest_rank"
 # vanishing from every count.
 _GAUGED_COMPARISON_STATUSES = (
     comparison_store.STATUS_READY_FOR_DETECTION,
+    comparison_store.STATUS_QUEUED_FOR_DETECTION,
     comparison_store.STATUS_DETECTING,
     comparison_store.STATUS_DETECTED,
     comparison_store.STATUS_FAILED,
@@ -153,6 +155,8 @@ ISSUE_ATTEMPT_LIMIT_EXHAUSTED = "attempt_limit_exhausted"
 ISSUE_COMPARISON_FAILED = "comparison_failed"
 ISSUE_REPLACEMENT_ATTEMPT_FAILED = "replacement_attempt_failed"
 ISSUE_INVALID_NEGATIVE_DURATION = "invalid_negative_duration"
+ISSUE_QUEUED_DETECTION_JOB = "queued_detection_job"
+ISSUE_RUNNING_JOB_WITHOUT_LEASE = "running_detection_job_without_lease"
 
 ISSUE_TYPES = (
     ISSUE_STALE_RUNNING_ATTEMPT,
@@ -160,6 +164,8 @@ ISSUE_TYPES = (
     ISSUE_COMPARISON_FAILED,
     ISSUE_REPLACEMENT_ATTEMPT_FAILED,
     ISSUE_INVALID_NEGATIVE_DURATION,
+    ISSUE_QUEUED_DETECTION_JOB,
+    ISSUE_RUNNING_JOB_WITHOUT_LEASE,
 )
 
 ACTION_INSPECT_AND_REPLAY = "inspect_and_replay_if_valid"
@@ -167,6 +173,8 @@ ACTION_NEW_WORKFLOW_VERSION = "create_new_workflow_version"
 ACTION_INSPECT_FAILURE = "inspect_failure"
 ACTION_NO_REPLAY_AVAILABLE = "no_replay_available"
 ACTION_INSPECT_CLOCK = "inspect_clock_integrity"
+ACTION_RUN_WORKER = "run_one_shot_detection_worker"
+ACTION_INSPECT_RUNNING_JOB = "inspect_running_job_no_automatic_recovery"
 
 RECOMMENDED_ACTION_CODES = (
     ACTION_INSPECT_AND_REPLAY,
@@ -174,6 +182,8 @@ RECOMMENDED_ACTION_CODES = (
     ACTION_INSPECT_FAILURE,
     ACTION_NO_REPLAY_AVAILABLE,
     ACTION_INSPECT_CLOCK,
+    ACTION_RUN_WORKER,
+    ACTION_INSPECT_RUNNING_JOB,
 )
 
 # Triage order. A skewed clock comes first because it makes the duration
@@ -183,9 +193,11 @@ RECOMMENDED_ACTION_CODES = (
 _ISSUE_SEVERITY = {
     ISSUE_INVALID_NEGATIVE_DURATION: 0,
     ISSUE_ATTEMPT_LIMIT_EXHAUSTED: 1,
-    ISSUE_STALE_RUNNING_ATTEMPT: 2,
-    ISSUE_REPLACEMENT_ATTEMPT_FAILED: 3,
-    ISSUE_COMPARISON_FAILED: 4,
+    ISSUE_RUNNING_JOB_WITHOUT_LEASE: 2,
+    ISSUE_STALE_RUNNING_ATTEMPT: 3,
+    ISSUE_REPLACEMENT_ATTEMPT_FAILED: 4,
+    ISSUE_COMPARISON_FAILED: 5,
+    ISSUE_QUEUED_DETECTION_JOB: 6,
 }
 
 # The complete issue field allowlist. No evidence, no result JSON, no filing
@@ -195,11 +207,14 @@ _ISSUE_SEVERITY = {
 ISSUE_FIELDS = (
     "issue_type",
     "comparison_id",
+    "job_id",
     "attempt_id",
     "replay_id",
     "status",
     "failure_code",
     "started_at",
+    "queued_at",
+    "claimed_at",
     "created_at",
     "detected_at",
     "age_seconds",
@@ -260,6 +275,10 @@ DATA_UNKNOWN_COMPARISON_STATUS = "unknown_comparison_status"
 DATA_REPLAY_MISSING_REPLACEMENT = "replay_missing_replacement_attempt"
 DATA_REPLAY_MISSING_SOURCE = "replay_missing_source_attempt"
 DATA_UNPARSABLE_TIMESTAMP = "unparsable_timestamp"
+DATA_UNKNOWN_JOB_STATUS = "unknown_detection_job_status"
+DATA_JOB_MISSING_ATTEMPT = "detection_job_missing_attempt"
+DATA_JOB_COMPARISON_MISSING = "detection_job_comparison_missing"
+DATA_JOB_STATE_INVALID = "detection_job_state_invalid"
 
 
 def data_missing_table_reason(table: str) -> str:
@@ -345,6 +364,16 @@ EVENT_REVIEW_DECIDED = "comparison_review_decided"
 EVENT_COMPARISON_CREATED = "comparison_created"
 EVENT_GOVERNANCE_EVALUATED = "comparison_governance_evaluated"
 EVENT_EXPORT_CREATED = "comparison_export_created"
+EVENT_JOB_QUEUED = comparison_store.EVENT_JOB_QUEUED
+EVENT_JOB_CLAIMED = comparison_store.EVENT_JOB_CLAIMED
+EVENT_JOB_SUCCEEDED = comparison_store.EVENT_JOB_SUCCEEDED
+EVENT_JOB_FAILED = comparison_store.EVENT_JOB_FAILED
+JOB_LOG_EVENTS = (
+    EVENT_JOB_QUEUED,
+    EVENT_JOB_CLAIMED,
+    EVENT_JOB_SUCCEEDED,
+    EVENT_JOB_FAILED,
+)
 
 # Backward-compatible detection/replay registry consumed by the existing
 # reliability contract tests. Review decisions use their own closed registry;
@@ -395,6 +424,28 @@ LOG_FIELDS = (
     "actor_auth_method",
     "actor_token_id",
     "required_permission",
+)
+
+# Job records use their own exact allowlist. In particular, token JTI is
+# persisted for authenticated provenance but is deliberately absent from job
+# logs; enqueue carries only subject/auth method/the checked permission.
+JOB_LOG_FIELDS = (
+    "event",
+    "job_id",
+    "comparison_id",
+    "attempt_id",
+    "worker_id",
+    "job_status",
+    "attempt_status",
+    "detector_version",
+    "workflow_version",
+    "actor_subject",
+    "actor_auth_method",
+    "required_permission",
+    "failure_code",
+    "result_hash",
+    "queue_wait_ms",
+    "execution_elapsed_ms",
 )
 
 
@@ -486,6 +537,76 @@ def log_lifecycle_event(
     except Exception:  # pragma: no cover - defensive
         # Deliberately silent: a logging failure must not affect the committed
         # workflow state or the caller's control flow.
+        pass
+
+
+def _elapsed_between_ms(start: Any, finish: Any) -> int | None:
+    if not start or not finish:
+        return None
+    try:
+        start_dt = comparison_store.parse_utc_timestamp(start)
+        finish_dt = comparison_store.parse_utc_timestamp(finish)
+    except ValueError:
+        return None
+    seconds = (finish_dt - start_dt).total_seconds()
+    return None if seconds < 0 else int(round(seconds * 1000))
+
+
+def log_detection_job_event(
+    event: str,
+    *,
+    job: dict[str, Any],
+    attempt: dict[str, Any] | None = None,
+    actor_context: Mapping[str, Any] | None = None,
+) -> None:
+    """Emit one exact, post-commit job transition record.
+
+    Logging failure is swallowed and cannot alter committed workflow state.
+    The raw claim token and its persisted hash are not parameters, so neither
+    can enter the LogRecord.
+    """
+    try:
+        if event not in JOB_LOG_EVENTS:
+            return
+        attempt = attempt or {}
+        actor = _safe_actor_log_context(actor_context)
+        payload = {
+            "event": event,
+            "job_id": job.get("job_id"),
+            "comparison_id": job.get("comparison_id"),
+            "attempt_id": job.get("attempt_id"),
+            "worker_id": job.get("worker_id"),
+            "job_status": job.get("status"),
+            "attempt_status": attempt.get("status"),
+            "detector_version": job.get("detector_version"),
+            "workflow_version": job.get("workflow_version"),
+            "actor_subject": (
+                actor["actor_subject"] if event == EVENT_JOB_QUEUED else None
+            ),
+            "actor_auth_method": (
+                actor["actor_auth_method"] if event == EVENT_JOB_QUEUED else None
+            ),
+            "required_permission": (
+                actor["required_permission"] if event == EVENT_JOB_QUEUED else None
+            ),
+            "failure_code": job.get("failure_code"),
+            "result_hash": job.get("result_hash"),
+            "queue_wait_ms": _elapsed_between_ms(
+                job.get("queued_at"), job.get("claimed_at")
+            ),
+            "execution_elapsed_ms": _elapsed_between_ms(
+                job.get("claimed_at"), job.get("finished_at")
+            ),
+        }
+        logger.info(
+            "%s job=%s comparison=%s status=%s",
+            payload["event"],
+            payload["job_id"],
+            payload["comparison_id"],
+            payload["job_status"],
+            extra={key: payload[key] for key in JOB_LOG_FIELDS},
+        )
+    except Exception:  # pragma: no cover - defensive
         pass
 
 
@@ -704,6 +825,9 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
         ) from exc
     problems: list[tuple[str, str]] = []
     attempt_ids = {attempt["attempt_id"] for attempt in snapshot["attempts"]}
+    comparison_ids = {
+        comparison["comparison_id"] for comparison in snapshot["comparisons"]
+    }
 
     for comparison in snapshot["comparisons"]:
         if comparison["status"] not in _GAUGED_COMPARISON_STATUSES:
@@ -735,6 +859,44 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
             else None
         )
 
+    for job in snapshot["jobs"]:
+        status, job_id = job["status"], job["job_id"]
+        if status not in comparison_store.JOB_STATUSES:
+            problems.append((DATA_UNKNOWN_JOB_STATUS, job_id))
+        if job["comparison_id"] not in comparison_ids:
+            problems.append((DATA_JOB_COMPARISON_MISSING, job_id))
+        if job["attempt_id"] is not None and job["attempt_id"] not in attempt_ids:
+            problems.append((DATA_JOB_MISSING_ATTEMPT, job_id))
+        if status == comparison_store.JOB_QUEUED:
+            coherent = (
+                job["attempt_id"] is None
+                and job["claimed_at"] is None
+                and job["finished_at"] is None
+            )
+        elif status == comparison_store.JOB_RUNNING:
+            coherent = (
+                job["attempt_id"] is not None
+                and job["claimed_at"] is not None
+                and job["finished_at"] is None
+            )
+        else:
+            coherent = job["finished_at"] is not None
+        if not coherent:
+            problems.append((DATA_JOB_STATE_INVALID, job_id))
+        job["queued_dt"] = _parsed(
+            job["queued_at"], "queued_at", job_id, problems
+        )
+        job["claimed_dt"] = (
+            _parsed(job["claimed_at"], "claimed_at", job_id, problems)
+            if job["claimed_at"] is not None
+            else None
+        )
+        job["finished_dt"] = (
+            _parsed(job["finished_at"], "finished_at", job_id, problems)
+            if job["finished_at"] is not None
+            else None
+        )
+
     for replay in snapshot["replays"]:
         if replay["replacement_attempt_id"] not in attempt_ids:
             problems.append((DATA_REPLAY_MISSING_REPLACEMENT, replay["replay_id"]))
@@ -762,6 +924,11 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
     # without any further store read.
     snapshot["replays_by_source"] = {
         replay["source_attempt_id"]: replay for replay in snapshot["replays"]
+    }
+    snapshot["jobs_by_attempt"] = {
+        job["attempt_id"]: job
+        for job in snapshot["jobs"]
+        if job["attempt_id"] is not None
     }
     return snapshot
 
@@ -901,8 +1068,33 @@ def _replay_eligible(
     """
     import detection_recovery
 
-    _require_filing_registry(registry_path)
     comparison = snapshot["comparisons_by_id"].get(attempt["comparison_id"])
+    active_job = snapshot["jobs_by_attempt"].get(attempt["attempt_id"])
+    if (
+        active_job is not None
+        and active_job["status"] == comparison_store.JOB_RUNNING
+    ):
+        # Worker-owned claims have no safe replay/reclaim protocol yet. The
+        # pure recovery calculation blocks before registry truth is needed.
+        view = detection_recovery.build_recovery_view_from_records(
+            comparison=comparison,
+            source_attempt=attempt,
+            attempts_used=snapshot["attempts_per_comparison"].get(
+                attempt["comparison_id"], 0
+            ),
+            existing_replay=snapshot["replays_by_source"].get(
+                attempt["attempt_id"]
+            ),
+            active_detection_job=active_job,
+            resolve_source_hashes=_raising_resolver(
+                RuntimeError("worker-owned claims are not replayable")
+            ),
+            policy=policy,
+            now=moment,
+        )
+        return bool(view["replay_eligible"])
+
+    _require_filing_registry(registry_path)
     if comparison is None:
         # No comparison row: the lifecycle check blocks before the resolver
         # could ever run, so the outcome cannot depend on this exception.
@@ -932,6 +1124,7 @@ def _replay_eligible(
             attempt["comparison_id"], 0
         ),
         existing_replay=snapshot["replays_by_source"].get(attempt["attempt_id"]),
+        active_detection_job=active_job,
         resolve_source_hashes=resolve_source_hashes,
         policy=policy,
         now=moment,
@@ -967,6 +1160,7 @@ def _issue(
     recommended_action_code: str,
     status: str,
     attempt: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
     replay_id: str | None = None,
     failure_code: str | None = None,
     stale_at: str | None = None,
@@ -978,11 +1172,14 @@ def _issue(
     record = {
         "issue_type": issue_type,
         "comparison_id": comparison_id,
+        "job_id": (job or {}).get("job_id"),
         "attempt_id": (attempt or {}).get("attempt_id"),
         "replay_id": replay_id,
         "status": status,
         "failure_code": failure_code,
         "started_at": (attempt or {}).get("started_at"),
+        "queued_at": (job or {}).get("queued_at"),
+        "claimed_at": (job or {}).get("claimed_at"),
         "created_at": created_dt.isoformat() if created_dt is not None else None,
         "detected_at": detected_at.isoformat(),
         "age_seconds": age_seconds,
@@ -1002,6 +1199,7 @@ def _issue_sort_key(issue: dict[str, Any]) -> tuple:
         _ISSUE_SEVERITY[issue["issue_type"]],
         issue["created_at"] or "",
         issue["comparison_id"] or "",
+        issue["job_id"] or "",
         issue["attempt_id"] or "",
         issue["replay_id"] or "",
         issue["issue_type"],
@@ -1027,6 +1225,43 @@ def _generate_issues(
     counts = snapshot["attempts_per_comparison"]
     max_attempts = policy["max_attempts_per_comparison"]
     issues: list[dict[str, Any]] = []
+
+    for job in snapshot["jobs"]:
+        comparison_id = job["comparison_id"]
+        if job["status"] == comparison_store.JOB_QUEUED:
+            issues.append(
+                _issue(
+                    ISSUE_QUEUED_DETECTION_JOB,
+                    comparison_id=comparison_id,
+                    detected_at=moment,
+                    created_dt=job["queued_dt"],
+                    attempts_used=counts.get(comparison_id, 0),
+                    max_attempts=max_attempts,
+                    recommended_action_code=ACTION_RUN_WORKER,
+                    status=job["status"],
+                    job=job,
+                )
+            )
+        elif job["status"] == comparison_store.JOB_RUNNING:
+            claim_age = comparison_store.evaluate_staleness(
+                job["claimed_at"], moment, policy["stale_after_seconds"]
+            )
+            if claim_age["is_stale"]:
+                issues.append(
+                    _issue(
+                        ISSUE_RUNNING_JOB_WITHOUT_LEASE,
+                        comparison_id=comparison_id,
+                        detected_at=moment,
+                        created_dt=job["claimed_dt"],
+                        attempts_used=counts.get(comparison_id, 0),
+                        max_attempts=max_attempts,
+                        recommended_action_code=ACTION_INSPECT_RUNNING_JOB,
+                        status=job["status"],
+                        attempt=snapshot["attempts_by_id"].get(job["attempt_id"]),
+                        job=job,
+                        stale_at=claim_age["stale_at"],
+                    )
+                )
 
     running_by_comparison: dict[str, dict[str, Any]] = {}
     for attempt in _running_attempts(snapshot):
@@ -1241,6 +1476,7 @@ def summary(
             "failure_rate": _rate(failed, terminal, "failure_rate"),
             "timeout_rate": _rate(timed_out, terminal, "timeout_rate"),
         },
+        **_job_metrics(snapshot, parsed_since, parsed_until),
         **_replay_metrics(snapshot, parsed_since, parsed_until),
         "durations": _durations(windowed),
         "failure_breakdown": _failure_breakdown(windowed),
@@ -1302,9 +1538,15 @@ def _gauges(
         and snapshot["attempts_per_comparison"].get(comparison["comparison_id"], 0)
         >= max_attempts
     )
+    job_status_counts = {status: 0 for status in comparison_store.JOB_STATUSES}
+    for job in snapshot["jobs"]:
+        job_status_counts[job["status"]] += 1
     return {
         "comparisons_ready_for_detection": status_counts[
             comparison_store.STATUS_READY_FOR_DETECTION
+        ],
+        "comparisons_queued_for_detection": status_counts[
+            comparison_store.STATUS_QUEUED_FOR_DETECTION
         ],
         "comparisons_detecting": status_counts[comparison_store.STATUS_DETECTING],
         "comparisons_detected": status_counts[comparison_store.STATUS_DETECTED],
@@ -1313,6 +1555,12 @@ def _gauges(
         "stale_running_attempts": len(stale),
         "replay_eligible_attempts": len(eligible),
         "attempt_limit_exhausted_comparisons": exhausted,
+        "detection_jobs_queued": job_status_counts[comparison_store.JOB_QUEUED],
+        "detection_jobs_running": job_status_counts[comparison_store.JOB_RUNNING],
+        "detection_jobs_succeeded": job_status_counts[
+            comparison_store.JOB_SUCCEEDED
+        ],
+        "detection_jobs_failed": job_status_counts[comparison_store.JOB_FAILED],
         "unresolved_operational_issues": len(issues),
     }
 
@@ -1352,6 +1600,71 @@ def _replay_metrics(
         },
         "replay_rates": {
             "replay_success_rate": _rate(succeeded, terminal, "replay_success_rate")
+        },
+    }
+
+
+def _duration_statistics(values: list[float], prefix: str) -> dict[str, Any]:
+    return {
+        f"{prefix}_count": len(values),
+        f"{prefix}_seconds_min": round(min(values), 6) if values else None,
+        f"{prefix}_seconds_max": round(max(values), 6) if values else None,
+        f"{prefix}_seconds_mean": (
+            round(sum(values) / len(values), 6) if values else None
+        ),
+        f"{prefix}_seconds_p50": _rounded(percentile(values, 0.50)),
+        f"{prefix}_seconds_p95": _rounded(percentile(values, 0.95)),
+    }
+
+
+def _job_metrics(
+    snapshot: dict[str, Any],
+    since: datetime | None,
+    until: datetime | None,
+) -> dict[str, Any]:
+    """Job counters and honest durations, windowed on ``queued_at``."""
+    windowed = [
+        job
+        for job in snapshot["jobs"]
+        if _in_window(job["queued_dt"], since, until)
+    ]
+    claimed = [job for job in windowed if job["claimed_dt"] is not None]
+    succeeded = sum(
+        job["status"] == comparison_store.JOB_SUCCEEDED for job in windowed
+    )
+    failed = sum(job["status"] == comparison_store.JOB_FAILED for job in windowed)
+    queue_waits: list[float] = []
+    executions: list[float] = []
+    negative_queue = 0
+    negative_execution = 0
+    for job in claimed:
+        queue_seconds = (job["claimed_dt"] - job["queued_dt"]).total_seconds()
+        if queue_seconds < 0:
+            negative_queue += 1
+        else:
+            queue_waits.append(queue_seconds)
+        if job["finished_dt"] is None:
+            continue
+        execution_seconds = (
+            job["finished_dt"] - job["claimed_dt"]
+        ).total_seconds()
+        if execution_seconds < 0:
+            negative_execution += 1
+        else:
+            executions.append(execution_seconds)
+    return {
+        "jobs": {
+            "jobs_queued": len(windowed),
+            "jobs_claimed": len(claimed),
+            "jobs_succeeded": succeeded,
+            "jobs_failed": failed,
+        },
+        "job_durations": {
+            **_duration_statistics(queue_waits, "queue_wait"),
+            **_duration_statistics(executions, "execution"),
+            "negative_queue_wait_jobs": negative_queue,
+            "negative_execution_jobs": negative_execution,
+            "percentile_method": PERCENTILE_METHOD,
         },
     }
 

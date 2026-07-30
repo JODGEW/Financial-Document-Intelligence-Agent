@@ -759,13 +759,25 @@ def test_operator_can_create_and_detect(monkeypatch):
         captured["create"] = (args, kwargs)
         return created_record, True
 
-    def fake_detect(comparison_id, **kwargs):
+    def fake_enqueue(comparison_id, **kwargs):
         captured["detect"] = (comparison_id, kwargs)
-        return {"schema_version": "comparison.v1"}, True, "att_operator_allowed"
+        return {
+            "kind": "job",
+            "created": True,
+            "job": {
+                "job_id": "djob_operator_allowed",
+                "comparison_id": comparison_id,
+                "attempt_id": None,
+                "status": "queued",
+                "queued_at": NOW.isoformat(),
+            },
+        }
 
     monkeypatch.setattr(api.comparison_store, "create_comparison", fake_create)
     monkeypatch.setattr(
-        api.comparison_detector, "detect_with_attempt", fake_detect
+        api.comparison_detection_worker,
+        "enqueue_initial_detection",
+        fake_enqueue,
     )
     client = _role_client("operator", subject="operator-positive@example.local")
 
@@ -781,8 +793,9 @@ def test_operator_can_create_and_detect(monkeypatch):
 
     assert created.status_code == 201
     assert created.json()["comparison"]["comparisonId"] == "cmp_operator_allowed"
-    assert detected.status_code == 201
-    assert detected.json()["attemptId"] == "att_operator_allowed"
+    assert detected.status_code == 202
+    assert detected.json()["jobId"] == "djob_operator_allowed"
+    assert detected.json()["attemptId"] is None
     assert captured["create"][0][:2] == ("filing_previous", "filing_current")
     assert (
         captured["detect"][1]["actor_context"]["actor_subject"]
@@ -859,7 +872,7 @@ def test_admin_reaches_every_comparison_route_without_auth_refusal(
         ): {"evaluationId": "gov_missing"},
     }
 
-    assert len(api.COMPARISON_ROUTE_PERMISSION_MATRIX) == 23
+    assert len(api.COMPARISON_ROUTE_PERMISSION_MATRIX) == 26
     for method, template in sorted(api.COMPARISON_ROUTE_PERMISSION_MATRIX):
         path = (
             template.replace("{comparison_id}", "cmp_missing")
@@ -961,6 +974,7 @@ def test_every_comparison_route_is_in_the_matrix_with_its_dependency():
         "/api/comparisons",
         "/api/detection-attempts",
         "/api/comparison-reliability",
+        "/api/comparison-detection-jobs",
         "/api/comparison-reviews",
         "/api/comparison-exports",
     )
