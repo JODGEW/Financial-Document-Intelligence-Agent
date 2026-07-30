@@ -49,6 +49,8 @@ jobs:
       # merge-blocking required check, so a suite it does not run is a suite
       # that cannot block a regression. tests/test_comparison_reliability.py is
       # pinned to this list by a test in that file, which parses this workflow.
+      # tests/conftest.py derives the deterministic test-only signing secret
+      # inside pytest; no repository secret or runtime credential is injected.
       - name: Offline comparison test suites
         run: |
           python -m pytest -q \
@@ -63,6 +65,7 @@ jobs:
             tests/test_comparison_detection_attempts.py \
             tests/test_detection_recovery.py \
             tests/test_comparison_reliability.py \
+            tests/test_access_control.py \
             tests/test_api.py \
             tests/test_api_errors.py
 

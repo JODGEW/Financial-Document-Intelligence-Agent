@@ -377,7 +377,7 @@ def govern(
     record = comparison_store.get_comparison(comparison_id, db_path=db_path)
     if record is None:
         raise GovernanceNotFound(
-            "comparison_not_found", f"comparison {comparison_id!r} does not exist"
+            "comparison_not_found", "comparison does not exist"
         )
     stored = comparison_store.get_result(comparison_id, db_path=db_path)
     if stored is None:

@@ -24,8 +24,9 @@ import filing_registry
 import ingest
 from governance.comparison_schema import load_comparison
 from governance.policy_validation import GovernancePolicyConfigError
+from tests.auth_helpers import authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 PREV = "acme-corporation:10-k:2024-12-31"
 CURR = "acme-corporation:10-k:2025-12-31"

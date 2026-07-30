@@ -12,8 +12,9 @@ from fastapi.testclient import TestClient
 import api
 import config
 import filing_registry
+from tests.auth_helpers import authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 PREV_ID = "acme-corporation:10-k:2024-12-31"
 CURR_ID = "acme-corporation:10-k:2025-12-31"

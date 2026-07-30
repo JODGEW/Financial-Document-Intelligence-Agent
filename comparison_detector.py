@@ -69,7 +69,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import comparison_reliability
 import comparison_store
@@ -1008,6 +1008,7 @@ def detect_with_attempt(
     db_path: str | Path | None = None,
     registry_path: str | Path | None = None,
     chroma_client=None,
+    actor_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool, str | None]:
     """Detection with the durable attempt id exposed: (result, created, attempt).
 
@@ -1037,7 +1038,7 @@ def detect_with_attempt(
     record = comparison_store.get_comparison(comparison_id, db_path=db_path)
     if record is None:
         raise UnknownComparison(
-            "comparison_not_found", f"comparison {comparison_id!r} does not exist"
+            "comparison_not_found", "comparison does not exist"
         )
 
     # Registry truth for the pair (re-validated at detect time) + input hashes.
@@ -1094,7 +1095,9 @@ def detect_with_attempt(
     # Logged AFTER the start transaction committed, so the record can never
     # describe a transition that rolled back (Stage 3.5 step 3).
     comparison_reliability.log_lifecycle_event(
-        comparison_reliability.EVENT_ATTEMPT_STARTED, attempt=attempt
+        comparison_reliability.EVENT_ATTEMPT_STARTED,
+        attempt=attempt,
+        actor_context=actor_context,
     )
 
     return execute_attempt(
@@ -1108,6 +1111,7 @@ def detect_with_attempt(
         current_hash=current_hash,
         chroma_client=chroma_client,
         db_path=db_path,
+        actor_context=actor_context,
     )
 
 
@@ -1123,6 +1127,7 @@ def execute_attempt(
     current_hash: str,
     chroma_client=None,
     db_path: str | Path | None = None,
+    actor_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool, str | None]:
     """Compute and finalize ONE already-started running attempt.
 
@@ -1168,6 +1173,7 @@ def execute_attempt(
             comparison_reliability.EVENT_ATTEMPT_SUCCEEDED,
             attempt=finalized,
             elapsed_ms=comparison_reliability.elapsed_ms_for(finalized),
+            actor_context=actor_context,
         )
         return wire, True, attempt_id
     except DetectionError as exc:
@@ -1175,7 +1181,12 @@ def execute_attempt(
         # execution really ran and really failed, so finalize it durably under
         # its OWN stable code. Collapsing it into detector_internal_error would
         # destroy exactly the diagnostic the attempt record exists to keep.
-        _finalize_failed_attempt(attempt_id, _persisted_failure_code(exc), db_path)
+        _finalize_failed_attempt(
+            attempt_id,
+            _persisted_failure_code(exc),
+            db_path,
+            actor_context=actor_context,
+        )
         raise
     except Exception as exc:
         # Unexpected, non-domain fault. Full diagnostics are logged here so they
@@ -1187,7 +1198,10 @@ def execute_attempt(
             REASON_DETECTOR_INTERNAL_ERROR,
         )
         _finalize_failed_attempt(
-            attempt_id, REASON_DETECTOR_INTERNAL_ERROR, db_path
+            attempt_id,
+            REASON_DETECTOR_INTERNAL_ERROR,
+            db_path,
+            actor_context=actor_context,
         )
         # Chained so the API layer's logger.exception also captures the real
         # fault; the DetectionInternalError message itself stays safe.
@@ -1215,7 +1229,7 @@ def resolve_detection_inputs(
     record = comparison_store.get_comparison(comparison_id, db_path=db_path)
     if record is None:
         raise UnknownComparison(
-            "comparison_not_found", f"comparison {comparison_id!r} does not exist"
+            "comparison_not_found", "comparison does not exist"
         )
     previous_ref, current_ref = comparison_store.validate_pair(
         record["previous_filing_id"], record["current_filing_id"], registry_path
@@ -1348,7 +1362,11 @@ def _stored_outcome(
 
 
 def _finalize_failed_attempt(
-    attempt_id: str, failure_code: str, db_path: str | Path
+    attempt_id: str,
+    failure_code: str,
+    db_path: str | Path,
+    *,
+    actor_context: Mapping[str, Any] | None = None,
 ) -> None:
     """Mark the running attempt failed, never masking the original fault.
 
@@ -1380,6 +1398,7 @@ def _finalize_failed_attempt(
         comparison_reliability.EVENT_ATTEMPT_FAILED,
         attempt=finalized,
         elapsed_ms=comparison_reliability.elapsed_ms_for(finalized),
+        actor_context=actor_context,
     )
 
 

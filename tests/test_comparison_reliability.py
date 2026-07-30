@@ -44,8 +44,9 @@ import filing_registry
 import ingest
 from comparison_detector import DETECTOR_VERSION
 from comparison_store import WORKFLOW_VERSION
+from tests.auth_helpers import authorization_headers
 
-client = TestClient(api.app)
+client = TestClient(api.app, headers=authorization_headers())
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -3099,6 +3100,8 @@ _REQUIRED_CI_SUITES = (
     "tests/test_comparison_detection_attempts.py",
     "tests/test_detection_recovery.py",
     "tests/test_comparison_reliability.py",
+    # Stage 3.5 local authentication and permission authorization
+    "tests/test_access_control.py",
     # offline API
     "tests/test_api.py",
     "tests/test_api_errors.py",

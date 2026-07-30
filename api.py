@@ -3,19 +3,25 @@
 import json
 import logging
 import mimetypes
+import re
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Callable, Literal
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.routing import Match
 
 from agent import detect_guardrail_intervention, query, stream_query
+import access_control
 import comparison_detector
 import comparison_export
 import comparison_governance
@@ -41,6 +47,178 @@ SAFE_ERROR_MESSAGE = "The request could not be completed. Please try again."
 
 def _new_error_id() -> str:
     return f"err_{uuid.uuid4().hex[:12]}"
+
+
+AUTHENTICATION_REQUIRED = "authentication_required"
+INSUFFICIENT_PERMISSION = "insufficient_permission"
+# Detection only, never parsing or authorization: locally issued PyJWT compact
+# tokens use a JSON header (base64url starts with ``eyJ``) and an HS256
+# signature. Protected inputs containing a complete compact token are refused
+# before domain code can persist it or interpolate it into an exception.
+_COMPACT_ACCESS_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    + "ey"
+    + r"J[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{32,}"
+    r"(?![A-Za-z0-9_-])"
+)
+_BEARER = HTTPBearer(
+    auto_error=False,
+    bearerFormat="JWT",
+    description="Local signed comparison-workflow access token.",
+)
+
+
+def _safe_auth_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    request: Request,
+    required_permission: str | None = None,
+    principal: access_control.Principal | None = None,
+    route_template: str | None = None,
+) -> HTTPException:
+    """Build and safely log a stable authentication/authorization refusal.
+
+    The Authorization header and bearer value are deliberately unreachable
+    from the log payload. Subject and JTI are included only after successful
+    verification produced an immutable Principal.
+    """
+    error_id = _new_error_id()
+    resolved_route = route_template
+    if resolved_route is None:
+        resolved_route = getattr(request.scope.get("route"), "path", None)
+    if not isinstance(resolved_route, str):
+        resolved_route = "unmatched_route"
+    safe_extra = {
+        "event": (
+            "authorization_rejected"
+            if status_code == 403
+            else "authentication_rejected"
+        ),
+        "error_id": error_id,
+        "route": resolved_route,
+        "required_permission": required_permission,
+        "actor_subject": principal.subject if principal else None,
+        "actor_token_id": principal.token_id if principal else None,
+    }
+    logger.warning(
+        "%s error_id=%s route=%s",
+        safe_extra["event"],
+        error_id,
+        resolved_route,
+        extra=safe_extra,
+    )
+    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, "error_id": error_id},
+        headers=headers,
+    )
+
+
+def require_principal(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(_BEARER)
+    ],
+) -> access_control.Principal:
+    """Resolve one verified Principal from an Authorization: Bearer header."""
+    preverified = getattr(request.state, "principal", None)
+    if isinstance(preverified, access_control.Principal):
+        return preverified
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _safe_auth_error(
+            status_code=401,
+            code=AUTHENTICATION_REQUIRED,
+            message="A valid bearer access token is required.",
+            request=request,
+            required_permission=getattr(
+                request.state, "required_permission", None
+            ),
+            route_template=getattr(
+                request.state, "comparison_route_template", None
+            ),
+        )
+    try:
+        return request.app.state.authenticator.verify(credentials.credentials)
+    except access_control.AccessTokenError as exc:
+        raise _safe_auth_error(
+            status_code=401,
+            code=exc.code,
+            message=exc.public_message,
+            request=request,
+            required_permission=getattr(
+                request.state, "required_permission", None
+            ),
+            route_template=getattr(
+                request.state, "comparison_route_template", None
+            ),
+        ) from exc
+
+
+def require_permission(
+    permission: str,
+) -> Callable[..., access_control.Principal]:
+    """Create an explicit exact-permission dependency for one route."""
+    if permission not in access_control.DEFINED_PERMISSIONS:
+        raise access_control.AccessControlConfigError(
+            f"access_control policy: unknown required permission {permission!r}."
+        )
+
+    def dependency(
+        request: Request,
+        principal: Annotated[
+            access_control.Principal, Depends(require_principal)
+        ],
+    ) -> access_control.Principal:
+        if permission not in principal.permissions:
+            raise _safe_auth_error(
+                status_code=403,
+                code=INSUFFICIENT_PERMISSION,
+                message="The authenticated principal lacks the required permission.",
+                request=request,
+                required_permission=permission,
+                principal=principal,
+            )
+        return principal
+
+    dependency.__name__ = f"require_{permission.replace('.', '_')}"
+    setattr(dependency, "required_permission", permission)
+    return dependency
+
+
+def _actor_context(
+    principal: access_control.Principal, required_permission: str
+) -> dict[str, str]:
+    """Allowlisted Principal-derived context for persistence/logging seams."""
+    return {
+        "actor_subject": principal.subject,
+        "actor_auth_method": principal.auth_method,
+        "actor_token_id": principal.token_id,
+        "required_permission": required_permission,
+    }
+
+
+def _authenticated_actor(
+    supplied: str | None,
+    principal: access_control.Principal,
+    *,
+    field_name: str,
+) -> str:
+    """Honor a deprecated actor field only when it exactly matches the token."""
+    if supplied is not None and supplied != principal.subject:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "actor_identity_mismatch",
+                "message": (
+                    f"{field_name} is deprecated and, when supplied, must "
+                    "exactly match the authenticated subject."
+                ),
+            },
+        )
+    return principal.subject
 
 
 MAX_HISTORY_TURNS = 4
@@ -263,14 +441,18 @@ class ComparisonReviewEditRequest(BaseModel):
 class ComparisonReviewDecisionRequest(BaseModel):
     """Body for the terminal comparison-review decision.
 
-    reviewerId is a SELF-ASSERTED local identifier (email-like string, local
-    username, test id) — it is recorded as attribution metadata and is NOT
-    authenticated identity. reasonCode must come from the action's allowlist;
-    reviewerNote is required, bounded prose.
+    ``reviewerId`` is retained only as a deprecated compatibility field. When
+    present it must exactly match the authenticated Principal; it is never the
+    identity source. ``reasonCode`` must come from the action's allowlist and
+    ``reviewerNote`` remains required bounded prose.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     action: Literal["approved", "rejected"]
-    reviewerId: str = Field(min_length=1)
+    reviewerId: str | None = Field(
+        default=None, min_length=1, max_length=120, deprecated=True
+    )
     reasonCode: str = Field(min_length=1)
     reviewerNote: str = Field(min_length=1)
     edits: list[ComparisonReviewEditRequest] | None = None
@@ -285,6 +467,7 @@ class ComparisonReviewEventDTO(BaseModel):
     evaluationId: str
     action: Literal["approved", "rejected"]
     reviewerId: str
+    reviewerIdBasis: Literal["legacy_self_asserted", "local_hs256"]
     reasonCode: str
     reviewerNote: str
     originalGovernedResultHash: str
@@ -439,19 +622,19 @@ class DetectionRecoveryDTO(BaseModel):
 
 
 class DetectionReplayRequest(BaseModel):
-    """Body for an operator-requested replay. Identity fields only.
+    """Body for an authenticated operator-requested replay.
 
-    operatorId is a SELF-ASSERTED local identifier (email-like string, local
-    username, test id) — recorded as attribution metadata and NOT authenticated
-    identity. reasonCode must come from the allowlist; operatorNote is
-    required, bounded prose. The client cannot submit staleness, policy
-    identity, attempt state, or the replacement attempt id: all of that is
-    resolved server-side from persisted records and the checked-in policy.
+    ``operatorId`` is retained only as a deprecated compatibility field. When
+    present it must exactly match the authenticated Principal and is never the
+    identity source. The client cannot submit staleness, policy identity,
+    attempt state, or the replacement attempt id.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    operatorId: str = Field(min_length=1)
+    operatorId: str | None = Field(
+        default=None, min_length=1, max_length=120, deprecated=True
+    )
     reasonCode: str = Field(min_length=1)
     operatorNote: str = Field(min_length=1)
 
@@ -460,8 +643,9 @@ class DetectionReplayDTO(BaseModel):
     """One operator replay linking a retired attempt to its replacement.
 
     Allowlisted fields only — no raw error text, evidence, paths, SQL, or
-    environment values. Append-only application records, NOT authenticated and
-    NOT tamper-proof storage.
+    environment values. New API-created rows carry authenticated actor
+    provenance; historical rows remain visibly legacy self-asserted.
+    Application records are still NOT tamper-proof storage.
     """
 
     replayId: str
@@ -469,9 +653,7 @@ class DetectionReplayDTO(BaseModel):
     sourceAttemptId: str
     replacementAttemptId: str
     operatorId: str
-    operatorIdBasis: Literal["self_asserted_local_metadata"] = (
-        "self_asserted_local_metadata"
-    )
+    operatorIdBasis: Literal["legacy_self_asserted", "local_hs256"]
     reasonCode: str
     operatorNote: str
     policyId: str
@@ -727,7 +909,72 @@ class ComparisonDetectResponse(BaseModel):
     attemptId: str | None = None
 
 
+COMPARISON_ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
+    ("POST", "/api/comparisons"): "comparison.create",
+    ("GET", "/api/comparisons"): "comparison.read",
+    ("GET", "/api/comparisons/{comparison_id}"): "comparison.read",
+    (
+        "POST",
+        "/api/comparisons/{comparison_id}/detect",
+    ): "comparison.detect",
+    (
+        "GET",
+        "/api/comparisons/{comparison_id}/detection-attempts",
+    ): "detection_attempt.read",
+    ("GET", "/api/detection-attempts/{attempt_id}"): "detection_attempt.read",
+    (
+        "GET",
+        "/api/detection-attempts/{attempt_id}/events",
+    ): "detection_attempt.read",
+    (
+        "GET",
+        "/api/detection-attempts/{attempt_id}/recovery",
+    ): "recovery.read",
+    (
+        "POST",
+        "/api/detection-attempts/{attempt_id}/replay",
+    ): "recovery.replay",
+    (
+        "GET",
+        "/api/detection-attempts/{attempt_id}/replays",
+    ): "recovery.read",
+    ("GET", "/api/comparison-reliability/summary"): "reliability.read",
+    ("GET", "/api/comparison-reliability/issues"): "reliability.read",
+    ("GET", "/api/comparison-reliability/failures"): "reliability.read",
+    (
+        "POST",
+        "/api/comparisons/{comparison_id}/governance",
+    ): "governance.evaluate",
+    (
+        "GET",
+        "/api/comparisons/{comparison_id}/governance",
+    ): "governance.read",
+    ("GET", "/api/comparison-reviews"): "review.read",
+    ("GET", "/api/comparison-reviews/{review_id}"): "review.read",
+    (
+        "POST",
+        "/api/comparison-reviews/{review_id}/decision",
+    ): "review.decide",
+    (
+        "GET",
+        "/api/comparison-reviews/{review_id}/events",
+    ): "review.read",
+    ("GET", "/api/comparisons/{comparison_id}/result"): "comparison.read",
+    (
+        "POST",
+        "/api/comparisons/{comparison_id}/exports",
+    ): "export.create",
+    (
+        "GET",
+        "/api/comparisons/{comparison_id}/exports",
+    ): "export.read",
+    ("GET", "/api/comparison-exports/{export_id}"): "export.read",
+}
+
+
+_AUTHENTICATOR = access_control.Authenticator.from_environment()
 app = FastAPI(title="Financial Document Intelligence API")
+app.state.authenticator = _AUTHENTICATOR
 
 app.add_middleware(
     CORSMiddleware,
@@ -739,6 +986,225 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _comparison_route_requirement(
+    request: Request,
+) -> tuple[str, str] | None:
+    """Resolve a protected request to its route template and permission.
+
+    This runs before routing and body parsing. Only checked-in route templates
+    are returned; raw URL paths, query strings, and headers are never retained
+    or logged.
+    """
+    for route in request.app.router.routes:
+        match, _ = route.matches(request.scope)
+        if match is not Match.FULL:
+            continue
+        route_template = getattr(route, "path", None)
+        if not isinstance(route_template, str):
+            return None
+        permission = COMPARISON_ROUTE_PERMISSION_MATRIX.get(
+            (request.method.upper(), route_template)
+        )
+        if permission is None:
+            return None
+        return route_template, permission
+    return None
+
+
+def _verify_comparison_request(
+    request: Request,
+    *,
+    route_template: str,
+    required_permission: str,
+) -> access_control.Principal:
+    """Authenticate and authorize without exposing the bearer value."""
+    authorization_values = request.headers.getlist("authorization")
+    if not authorization_values:
+        raise _safe_auth_error(
+            status_code=401,
+            code=AUTHENTICATION_REQUIRED,
+            message="A valid bearer access token is required.",
+            request=request,
+            required_permission=required_permission,
+            route_template=route_template,
+        )
+    if len(authorization_values) != 1:
+        raise _safe_auth_error(
+            status_code=401,
+            code=access_control.INVALID_ACCESS_TOKEN,
+            message="The access token is invalid.",
+            request=request,
+            required_permission=required_permission,
+            route_template=route_template,
+        )
+
+    scheme, separator, token = authorization_values[0].partition(" ")
+    if (
+        separator != " "
+        or scheme.casefold() != "bearer"
+        or not token
+        or token != token.strip()
+    ):
+        raise _safe_auth_error(
+            status_code=401,
+            code=access_control.INVALID_ACCESS_TOKEN,
+            message="The access token is invalid.",
+            request=request,
+            required_permission=required_permission,
+            route_template=route_template,
+        )
+    try:
+        principal = request.app.state.authenticator.verify(token)
+    except access_control.AccessTokenError as exc:
+        raise _safe_auth_error(
+            status_code=401,
+            code=exc.code,
+            message=exc.public_message,
+            request=request,
+            required_permission=required_permission,
+            route_template=route_template,
+        ) from exc
+
+    if required_permission not in principal.permissions:
+        raise _safe_auth_error(
+            status_code=403,
+            code=INSUFFICIENT_PERMISSION,
+            message="The authenticated principal lacks the required permission.",
+            request=request,
+            required_permission=required_permission,
+            principal=principal,
+            route_template=route_template,
+        )
+    return principal
+
+
+def _http_exception_response(exc: HTTPException) -> JSONResponse:
+    """Render a locally constructed safe HTTPException from middleware."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
+
+
+def _contains_compact_access_token(value: object) -> bool:
+    """Find token-shaped strings recursively without decoding any claims."""
+    if isinstance(value, str):
+        return _COMPACT_ACCESS_TOKEN_PATTERN.search(value) is not None
+    if isinstance(value, dict):
+        return any(
+            _contains_compact_access_token(key)
+            or _contains_compact_access_token(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_compact_access_token(item) for item in value)
+    return False
+
+
+async def _protected_input_contains_compact_token(request: Request) -> bool:
+    """Inspect protected path/query/body values after auth, before routing."""
+    if _contains_compact_access_token(request.url.path):
+        return True
+    if any(
+        _contains_compact_access_token(key)
+        or _contains_compact_access_token(value)
+        for key, value in request.query_params.multi_items()
+    ):
+        return True
+
+    body = await request.body()
+    if not body:
+        return False
+    if _contains_compact_access_token(body.decode("utf-8", errors="ignore")):
+        return True
+    if "json" not in request.headers.get("content-type", "").casefold():
+        return False
+    try:
+        decoded = json.loads(body)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    return _contains_compact_access_token(decoded)
+
+
+def _protected_validation_response(request: Request) -> JSONResponse:
+    """Return and log one closed validation refusal without input values."""
+    error_id = _new_error_id()
+    principal = getattr(request.state, "principal", None)
+    safe_extra = {
+        "event": "protected_request_validation_rejected",
+        "error_id": error_id,
+        "route": getattr(
+            request.state, "comparison_route_template", "unmatched_route"
+        ),
+        "required_permission": getattr(
+            request.state, "required_permission", None
+        ),
+        "actor_subject": (
+            principal.subject
+            if isinstance(principal, access_control.Principal)
+            else None
+        ),
+        "actor_token_id": (
+            principal.token_id
+            if isinstance(principal, access_control.Principal)
+            else None
+        ),
+    }
+    logger.warning(
+        "protected_request_validation_rejected error_id=%s route=%s",
+        error_id,
+        safe_extra["route"],
+        extra=safe_extra,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "invalid_request",
+                "message": "The request body or parameters are invalid.",
+                "error_id": error_id,
+            }
+        },
+    )
+
+
+@app.middleware("http")
+async def authenticate_comparison_routes(
+    request: Request,
+    call_next: Callable,
+) -> Response:
+    """Enforce comparison RBAC before request bodies or resources are read."""
+    requirement = _comparison_route_requirement(request)
+    if requirement is not None:
+        route_template, required_permission = requirement
+        request.state.comparison_route_template = route_template
+        request.state.required_permission = required_permission
+        try:
+            request.state.principal = _verify_comparison_request(
+                request,
+                route_template=route_template,
+                required_permission=required_permission,
+            )
+        except HTTPException as exc:
+            return _http_exception_response(exc)
+        request.state.comparison_protected = True
+        if await _protected_input_contains_compact_token(request):
+            return _protected_validation_response(request)
+    return await call_next(request)
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitize_protected_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+) -> Response:
+    """Do not echo protected request inputs from FastAPI validation errors."""
+    if not getattr(request.state, "comparison_protected", False):
+        return await request_validation_exception_handler(request, exc)
+    return _protected_validation_response(request)
 
 
 def _to_agent_history(history: list[ChatMessage]) -> list[tuple[str, str]]:
@@ -1061,9 +1527,17 @@ def _comparison_storage_error(exc: Exception) -> HTTPException:
     )
 
 
-@app.post("/api/comparisons", response_model=ComparisonCreateResponse)
+@app.post(
+    "/api/comparisons",
+    response_model=ComparisonCreateResponse,
+)
 def create_comparison(
-    request: ComparisonCreateRequest, response: Response
+    request: ComparisonCreateRequest,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("comparison.create")),
+    ],
 ) -> ComparisonCreateResponse:
     """Create (or idempotently return) a comparison for a validated filing pair.
 
@@ -1090,12 +1564,23 @@ def create_comparison(
         raise _comparison_storage_error(exc) from exc
 
     response.status_code = 201 if created else 200
+    if created:
+        comparison_reliability.log_lifecycle_event(
+            comparison_reliability.EVENT_COMPARISON_CREATED,
+            comparison_id=record.get("comparison_id"),
+            status=record.get("status"),
+            actor_context=_actor_context(principal, "comparison.create"),
+        )
     return ComparisonCreateResponse(
         created=created, comparison=_to_comparison_dto(record)
     )
 
 
-@app.get("/api/comparisons", response_model=list[ComparisonRecordDTO])
+@app.get(
+    "/api/comparisons",
+    response_model=list[ComparisonRecordDTO],
+    dependencies=[Depends(require_permission("comparison.read"))],
+)
 def list_comparisons(
     filing_id: str | None = None,
     status: Literal["ready_for_detection", "detecting", "detected", "failed"] | None = None,
@@ -1111,7 +1596,11 @@ def list_comparisons(
     return [_to_comparison_dto(record) for record in records]
 
 
-@app.get("/api/comparisons/{comparison_id}", response_model=ComparisonRecordDTO)
+@app.get(
+    "/api/comparisons/{comparison_id}",
+    response_model=ComparisonRecordDTO,
+    dependencies=[Depends(require_permission("comparison.read"))],
+)
 def get_comparison(comparison_id: str) -> ComparisonRecordDTO:
     """Fetch one comparison by id; 404 when it does not exist."""
     try:
@@ -1128,7 +1617,12 @@ def get_comparison(comparison_id: str) -> ComparisonRecordDTO:
     response_model=ComparisonDetectResponse,
 )
 def detect_comparison(
-    comparison_id: str, response: Response
+    comparison_id: str,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("comparison.detect")),
+    ],
 ) -> ComparisonDetectResponse:
     """Run deterministic Item 1A change detection for a persisted comparison.
 
@@ -1144,7 +1638,8 @@ def detect_comparison(
     """
     try:
         result, created, attempt_id = comparison_detector.detect_with_attempt(
-            comparison_id
+            comparison_id,
+            actor_context=_actor_context(principal, "comparison.detect"),
         )
     except comparison_detector.UnknownComparison:
         raise HTTPException(status_code=404, detail="Comparison not found.")
@@ -1223,6 +1718,7 @@ def _to_detection_event_dto(record: dict) -> DetectionEventDTO:
 @app.get(
     "/api/comparisons/{comparison_id}/detection-attempts",
     response_model=list[DetectionAttemptDTO],
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
 )
 def list_detection_attempts(comparison_id: str) -> list[DetectionAttemptDTO]:
     """Every detection attempt for one comparison, in execution order
@@ -1241,7 +1737,11 @@ def list_detection_attempts(comparison_id: str) -> list[DetectionAttemptDTO]:
     return [_to_detection_attempt_dto(record) for record in records]
 
 
-@app.get("/api/detection-attempts/{attempt_id}", response_model=DetectionAttemptDTO)
+@app.get(
+    "/api/detection-attempts/{attempt_id}",
+    response_model=DetectionAttemptDTO,
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
+)
 def get_detection_attempt(attempt_id: str) -> DetectionAttemptDTO:
     """One detection attempt by id; 404 when it does not exist."""
     try:
@@ -1256,6 +1756,7 @@ def get_detection_attempt(attempt_id: str) -> DetectionAttemptDTO:
 @app.get(
     "/api/detection-attempts/{attempt_id}/events",
     response_model=list[DetectionEventDTO],
+    dependencies=[Depends(require_permission("detection_attempt.read"))],
 )
 def list_detection_events(attempt_id: str) -> list[DetectionEventDTO]:
     """Append-only transition events for one attempt, oldest first.
@@ -1285,6 +1786,9 @@ def _to_detection_replay_dto(record: dict) -> DetectionReplayDTO:
         sourceAttemptId=record.get("source_attempt_id", ""),
         replacementAttemptId=record.get("replacement_attempt_id", ""),
         operatorId=record.get("operator_id", ""),
+        operatorIdBasis=record.get(
+            "actor_auth_method", "legacy_self_asserted"
+        ),
         reasonCode=record.get("reason_code", ""),
         operatorNote=record.get("operator_note", ""),
         policyId=record.get("policy_id", ""),
@@ -1296,6 +1800,7 @@ def _to_detection_replay_dto(record: dict) -> DetectionReplayDTO:
 @app.get(
     "/api/detection-attempts/{attempt_id}/recovery",
     response_model=DetectionRecoveryDTO,
+    dependencies=[Depends(require_permission("recovery.read"))],
 )
 def get_detection_recovery(attempt_id: str) -> DetectionRecoveryDTO:
     """Read-only recovery assessment; 404 when the attempt does not exist.
@@ -1332,7 +1837,13 @@ def get_detection_recovery(attempt_id: str) -> DetectionRecoveryDTO:
     response_model=DetectionReplayResponse,
 )
 def replay_detection_attempt(
-    attempt_id: str, request: DetectionReplayRequest, response: Response
+    attempt_id: str,
+    request: DetectionReplayRequest,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("recovery.replay")),
+    ],
 ) -> DetectionReplayResponse:
     """Retire a stale running attempt and execute its replacement.
 
@@ -1347,12 +1858,19 @@ def replay_detection_attempt(
     code; safe 500 with a correlation id for unexpected storage or detector
     faults.
     """
+    operator_id = _authenticated_actor(
+        request.model_dump()["operatorId"], principal, field_name="operatorId"
+    )
+    actor_context = _actor_context(principal, "recovery.replay")
     try:
         outcome, created = detection_recovery.replay_attempt(
             attempt_id,
-            operator_id=request.operatorId,
+            operator_id=operator_id,
             reason_code=request.reasonCode,
             operator_note=request.operatorNote,
+            actor_policy_id=principal.policy_id,
+            actor_policy_version=principal.policy_version,
+            actor_context=actor_context,
         )
     except detection_recovery.ReplayAttemptNotFound:
         raise HTTPException(status_code=404, detail="Detection attempt not found.")
@@ -1410,6 +1928,7 @@ def replay_detection_attempt(
 @app.get(
     "/api/detection-attempts/{attempt_id}/replays",
     response_model=list[DetectionReplayDTO],
+    dependencies=[Depends(require_permission("recovery.read"))],
 )
 def list_detection_replays(attempt_id: str) -> list[DetectionReplayDTO]:
     """The replay that retired this attempt: zero or one row under the v1
@@ -1540,7 +2059,9 @@ def _reliability_dependency_error(
 
 
 @app.get(
-    "/api/comparison-reliability/summary", response_model=ReliabilitySummaryDTO
+    "/api/comparison-reliability/summary",
+    response_model=ReliabilitySummaryDTO,
+    dependencies=[Depends(require_permission("reliability.read"))],
 )
 def get_reliability_summary(
     since: str | None = None, until: str | None = None
@@ -1661,7 +2182,9 @@ def _to_reliability_rate_dto(metric: dict) -> ReliabilityRateDTO:
 
 
 @app.get(
-    "/api/comparison-reliability/issues", response_model=ReliabilityIssuesResponse
+    "/api/comparison-reliability/issues",
+    response_model=ReliabilityIssuesResponse,
+    dependencies=[Depends(require_permission("reliability.read"))],
 )
 def get_reliability_issues(
     issue_type: Literal[
@@ -1737,6 +2260,7 @@ def _to_reliability_issue_dto(issue: dict) -> ReliabilityIssueDTO:
 @app.get(
     "/api/comparison-reliability/failures",
     response_model=ReliabilityFailuresResponse,
+    dependencies=[Depends(require_permission("reliability.read"))],
 )
 def get_reliability_failures(
     since: str | None = None,
@@ -1832,7 +2356,12 @@ def _to_governance_dto(record: dict) -> GovernanceEvaluationDTO:
     response_model=GovernanceEvaluateResponse,
 )
 def evaluate_comparison_governance(
-    comparison_id: str, response: Response
+    comparison_id: str,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("governance.evaluate")),
+    ],
 ) -> GovernanceEvaluateResponse:
     """Evaluate a detected comparison under the comparison risk policy.
 
@@ -1859,6 +2388,15 @@ def evaluate_comparison_governance(
         raise _comparison_storage_error(exc) from exc
 
     response.status_code = 201 if created else 200
+    if created:
+        comparison_reliability.log_lifecycle_event(
+            comparison_reliability.EVENT_GOVERNANCE_EVALUATED,
+            comparison_id=record.get("comparison_id"),
+            evaluation_id=record.get("evaluation_id"),
+            status=record.get("decision"),
+            result_hash=record.get("governed_result_hash"),
+            actor_context=_actor_context(principal, "governance.evaluate"),
+        )
     return GovernanceEvaluateResponse(
         created=created, evaluation=_to_governance_dto(record)
     )
@@ -1867,6 +2405,7 @@ def evaluate_comparison_governance(
 @app.get(
     "/api/comparisons/{comparison_id}/governance",
     response_model=GovernanceEvaluationDTO,
+    dependencies=[Depends(require_permission("governance.read"))],
 )
 def get_comparison_governance(comparison_id: str) -> GovernanceEvaluationDTO:
     """The evaluation for the current policy id/version and current result
@@ -1884,7 +2423,11 @@ def get_comparison_governance(comparison_id: str) -> GovernanceEvaluationDTO:
     return _to_governance_dto(record)
 
 
-@app.get("/api/comparison-reviews", response_model=list[ComparisonReviewSummaryDTO])
+@app.get(
+    "/api/comparison-reviews",
+    response_model=list[ComparisonReviewSummaryDTO],
+    dependencies=[Depends(require_permission("review.read"))],
+)
 def list_comparison_reviews(
     comparison_id: str | None = None,
 ) -> list[ComparisonReviewSummaryDTO]:
@@ -1920,6 +2463,9 @@ def _to_review_event_dto(event: dict, with_result: bool) -> ComparisonReviewDeci
         evaluationId=event.get("evaluation_id", ""),
         action=event.get("action", "approved"),
         reviewerId=event.get("reviewer_id", ""),
+        reviewerIdBasis=event.get(
+            "actor_auth_method", "legacy_self_asserted"
+        ),
         reasonCode=event.get("reason_code", ""),
         reviewerNote=event.get("reviewer_note", ""),
         originalGovernedResultHash=event.get("original_governed_result_hash", ""),
@@ -1939,6 +2485,7 @@ def _to_review_event_dto(event: dict, with_result: bool) -> ComparisonReviewDeci
 @app.get(
     "/api/comparison-reviews/{review_id}",
     response_model=ComparisonReviewDetailDTO,
+    dependencies=[Depends(require_permission("review.read"))],
 )
 def get_comparison_review(review_id: str) -> ComparisonReviewDetailDTO:
     """One review item with governance metadata, the governed result, and the
@@ -1979,7 +2526,13 @@ def get_comparison_review(review_id: str) -> ComparisonReviewDetailDTO:
     response_model=ComparisonReviewDecisionResponse,
 )
 def decide_comparison_review(
-    review_id: str, request: ComparisonReviewDecisionRequest, response: Response
+    review_id: str,
+    request: ComparisonReviewDecisionRequest,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("review.decide")),
+    ],
 ) -> ComparisonReviewDecisionResponse:
     """Apply the single terminal decision to a pending comparison review.
 
@@ -1987,11 +2540,14 @@ def decide_comparison_review(
     review; 409 already decided by a different request; 422 invalid reviewer /
     reason / action-edit combination / unsupported edit; safe 500 otherwise.
     """
+    reviewer_id = _authenticated_actor(
+        request.model_dump()["reviewerId"], principal, field_name="reviewerId"
+    )
     try:
         event, created = comparison_review.decide(
             review_id,
             action=request.action,
-            reviewer_id=request.reviewerId,
+            reviewer_id=reviewer_id,
             reason_code=request.reasonCode,
             reviewer_note=request.reviewerNote,
             edits=[
@@ -1999,6 +2555,9 @@ def decide_comparison_review(
                 for edit in (request.edits or [])
             ]
             or None,
+            actor_policy_id=principal.policy_id,
+            actor_policy_version=principal.policy_version,
+            actor_context=_actor_context(principal, "review.decide"),
         )
     except comparison_review.ReviewNotFound:
         raise HTTPException(status_code=404, detail="Review item not found.")
@@ -2029,6 +2588,7 @@ def decide_comparison_review(
 @app.get(
     "/api/comparison-reviews/{review_id}/events",
     response_model=list[ComparisonReviewEventDTO],
+    dependencies=[Depends(require_permission("review.read"))],
 )
 def list_comparison_review_events(review_id: str) -> list[ComparisonReviewEventDTO]:
     """Append-only decision history, oldest first (currently 0 or 1 terminal
@@ -2044,7 +2604,10 @@ def list_comparison_review_events(review_id: str) -> list[ComparisonReviewEventD
     return [_to_review_event_dto(event, with_result=False) for event in events]
 
 
-@app.get("/api/comparisons/{comparison_id}/result")
+@app.get(
+    "/api/comparisons/{comparison_id}/result",
+    dependencies=[Depends(require_permission("comparison.read"))],
+)
 def get_comparison_result(comparison_id: str) -> dict:
     """Return the persisted, validated comparison.v1 wire document.
 
@@ -2087,7 +2650,13 @@ def _to_export_summary_dto(record: dict) -> ComparisonExportSummaryDTO:
     response_model=ComparisonExportCreateResponse,
 )
 def create_comparison_export(
-    comparison_id: str, request: ComparisonExportCreateRequest, response: Response
+    comparison_id: str,
+    request: ComparisonExportCreateRequest,
+    response: Response,
+    principal: Annotated[
+        access_control.Principal,
+        Depends(require_permission("export.create")),
+    ],
 ) -> ComparisonExportCreateResponse:
     """Create (or idempotently return) the release-gated export for one
     governance evaluation.
@@ -2117,12 +2686,30 @@ def create_comparison_export(
         raise _comparison_storage_error(exc) from exc
 
     response.status_code = 201 if created else 200
+    if created:
+        export_payload = record.get("export") or {}
+        comparison_reliability.log_lifecycle_event(
+            comparison_reliability.EVENT_EXPORT_CREATED,
+            comparison_id=comparison_id,
+            export_id=(
+                record.get("export_id")
+                or export_payload.get("export_id")
+                or export_payload.get("exportId")
+            ),
+            status="created",
+            result_hash=(
+                record.get("export_payload_hash")
+                or export_payload.get("exportPayloadHash")
+            ),
+            actor_context=_actor_context(principal, "export.create"),
+        )
     return ComparisonExportCreateResponse(created=created, export=record["export"])
 
 
 @app.get(
     "/api/comparisons/{comparison_id}/exports",
     response_model=list[ComparisonExportSummaryDTO],
+    dependencies=[Depends(require_permission("export.read"))],
 )
 def list_comparison_exports(comparison_id: str) -> list[ComparisonExportSummaryDTO]:
     """Export summaries for one comparison, newest first; 404 when the
@@ -2139,7 +2726,10 @@ def list_comparison_exports(comparison_id: str) -> list[ComparisonExportSummaryD
     return [_to_export_summary_dto(record) for record in records]
 
 
-@app.get("/api/comparison-exports/{export_id}")
+@app.get(
+    "/api/comparison-exports/{export_id}",
+    dependencies=[Depends(require_permission("export.read"))],
+)
 def get_comparison_export(export_id: str) -> dict:
     """Return the persisted comparison.export.v1 document verbatim
     (application/json) — that schema IS the API contract for exports. 404

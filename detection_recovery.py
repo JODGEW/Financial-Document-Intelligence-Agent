@@ -22,12 +22,11 @@ Failed attempts are also NOT replayable here. Replay exists for one narrow
 condition: a ``running`` attempt whose process is gone. General retry of a
 failed detection is deliberately out of scope.
 
-Operator identity, stated plainly: ``operator_id`` is SELF-ASSERTED LOCAL
-METADATA (an email-like string, a local username, a test id). It is never
-inferred from the environment, IP, or request metadata, and it is NOT
-authenticated identity — there is no auth in this prototype. Replay records and
-transition events are append-only application records, NOT tamper-proof
-storage.
+Operator identity is attributable at two explicit trust levels. Direct library
+callers retain ``legacy_self_asserted`` metadata for backward compatibility.
+The protected API supplies a verified Principal subject plus narrow
+``local_hs256`` token/policy provenance. Replay records and transition events
+are append-only application records, NOT tamper-proof storage.
 
 Boundedness
 -----------
@@ -42,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -431,6 +431,9 @@ def replay_attempt(
     registry_path: str | Path | None = None,
     chroma_client=None,
     policy: dict[str, Any] | None = None,
+    actor_context: Mapping[str, Any] | None = None,
+    actor_policy_id: str | None = None,
+    actor_policy_version: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Retire a stale attempt and run its replacement. EXPLICIT operator action.
 
@@ -456,6 +459,12 @@ def replay_attempt(
     operator_note = _clean_bounded(
         operator_note, field="operatorNote", code="invalid_operator_note",
         max_chars=MAX_OPERATOR_NOTE_CHARS,
+    )
+    attribution = comparison_store.actor_attribution_from_context(
+        operator_id,
+        actor_context,
+        actor_policy_id=actor_policy_id,
+        actor_policy_version=actor_policy_version,
     )
     if reason_code not in comparison_store.REPLAY_REASON_CODES:
         raise ReplayRequestError(
@@ -498,6 +507,7 @@ def replay_attempt(
         workflow_version=comparison_store.WORKFLOW_VERSION,
         previous_source_hash=inputs["previous_hash"],
         current_source_hash=inputs["current_hash"],
+        **attribution,
         now=now,
         db_path=db_path,
     )
@@ -512,7 +522,13 @@ def replay_attempt(
 
     # Transaction closed and committed. Emit the three transitions it applied,
     # correlated by replay_id (Stage 3.5 step 3). Reads only.
-    _log_replay_transitions(replay, attempt_id, replacement_id, db_path)
+    _log_replay_transitions(
+        replay,
+        attempt_id,
+        replacement_id,
+        db_path,
+        actor_context=actor_context,
+    )
 
     # Now run the replacement through the SAME execution seam a first attempt
     # uses (which emits the replacement's own succeeded/failed record).
@@ -527,6 +543,7 @@ def replay_attempt(
         current_hash=inputs["current_hash"],
         chroma_client=chroma_client,
         db_path=db_path,
+        actor_context=actor_context,
     )
     outcome = _replay_outcome(replay, replacement_id, db_path)
     outcome["result"] = result
@@ -540,6 +557,7 @@ def replay_attempt(
         replay_id=replay["replay_id"],
         source_attempt_id=attempt_id,
         elapsed_ms=comparison_reliability.elapsed_ms_for(replacement),
+        actor_context=actor_context,
     )
     return outcome, True
 
@@ -549,14 +567,16 @@ def _log_replay_transitions(
     source_attempt_id: str,
     replacement_id: str,
     db_path: str | Path,
+    *,
+    actor_context: Mapping[str, Any] | None = None,
 ) -> None:
     """Structured records for the three transitions one replay transaction made.
 
     Emitted after the commit and never inside it: a logging fault must not be
     able to abort the replay, and a rolled-back transaction must not leave a
-    record claiming it happened. Operator id and operator note are deliberately
-    NOT part of any structured field — the allowlist in comparison_reliability
-    cannot carry them.
+    record claiming it happened. Operator note is deliberately absent. When
+    present, actor context is the narrow Principal-derived allowlist; legacy
+    self-asserted identifiers do not enter authenticated actor fields.
     """
     source = comparison_store.get_detection_attempt(
         source_attempt_id, db_path=db_path
@@ -570,6 +590,7 @@ def _log_replay_transitions(
         comparison_id=replay["comparison_id"],
         replay_id=replay["replay_id"],
         elapsed_ms=comparison_reliability.elapsed_ms_for(source),
+        actor_context=actor_context,
     )
     comparison_reliability.log_lifecycle_event(
         comparison_reliability.EVENT_ATTEMPT_STARTED,
@@ -577,6 +598,7 @@ def _log_replay_transitions(
         comparison_id=replay["comparison_id"],
         replay_id=replay["replay_id"],
         source_attempt_id=source_attempt_id,
+        actor_context=actor_context,
     )
     comparison_reliability.log_lifecycle_event(
         comparison_reliability.EVENT_REPLAY_CREATED,
@@ -584,6 +606,7 @@ def _log_replay_transitions(
         comparison_id=replay["comparison_id"],
         replay_id=replay["replay_id"],
         source_attempt_id=source_attempt_id,
+        actor_context=actor_context,
     )
 
 

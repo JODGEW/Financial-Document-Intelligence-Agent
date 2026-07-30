@@ -286,7 +286,7 @@ def export_comparison(
     record = comparison_store.get_comparison(comparison_id, db_path=db_path)
     if record is None:
         raise ExportNotFound(
-            "comparison_not_found", f"comparison {comparison_id!r} does not exist"
+            "comparison_not_found", "comparison does not exist"
         )
     evaluation = comparison_store.get_evaluation(evaluation_id, db_path=db_path)
     if evaluation is None:

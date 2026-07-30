@@ -20,4 +20,5 @@ uvicorn[standard]>=0.30.0
 python-dotenv>=1.0.0
 boto3>=1.35.0
 pyyaml>=6.0
+PyJWT>=2.10,<3
 pytest>=8.0.0
