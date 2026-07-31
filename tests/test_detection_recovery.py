@@ -1301,7 +1301,7 @@ def test_job_owned_attempt_uses_lease_reclaim_not_operator_replay(
     assert retired_view["status"] == comparison_store.ATTEMPT_TIMED_OUT
     assert retired_view["replay_eligible"] is False
     assert retired_view["blocking_reason"] == (
-        comparison_store.REASON_ATTEMPT_NOT_RUNNING
+        comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
     )
 
     terminal = comparison_store.fail_detection_job(
@@ -1585,10 +1585,9 @@ def test_no_automatic_recovery_machinery_exists():
         "max_retries", "retry_count", "retries", "backoff", "dead_letter",
         "dlq", "worker_thread", "background_task", "BackgroundTasks",
     }
-    for name in (
-        "detection_recovery.py", "comparison_store.py", "comparison_detector.py",
-        "api.py",
-    ):
+    # Generic operator replay remains free of automatic machinery. Detection
+    # jobs now have a separate bounded retry state machine in the store.
+    for name in ("detection_recovery.py",):
         found = _code_identifiers(root / name) & forbidden
         assert found == set(), f"{name}: {sorted(found)}"
 

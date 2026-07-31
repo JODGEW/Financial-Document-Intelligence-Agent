@@ -79,7 +79,7 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds answers that meet a mandatory-review policy condition in a human review queue — either weighted risk at/above the 0.75 threshold or grounding strictly below the 0.50 review floor, each with an explicit reason code (a low weighted-risk answer can still be held by the floor). Hold or flag mode via `HUMAN_REVIEW_HOLD`; resolved in the React reviewer workspace or the CLI (approve/reject with an optional note — no draft editing yet)
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 917 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), durable leased comparison-detection jobs, local access control, and thread safety
+- [x] 928 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), durable leased and bounded-retry comparison-detection jobs, local access control, and thread safety
 
 ## Best-fit use cases
 
@@ -385,7 +385,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 917 tests (including leased detection jobs, comparison regression, reliability, authenticated actors, and access control)
+├── tests/           # 928 tests (including leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -543,7 +543,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-917 tests are collected and pass in the credential-free local test harness.
+928 tests are collected; the offline credential-free required-check suites pass locally.
 The access-control and comparison-regression suites use deterministic local
 fixtures and a test-only signing secret; they require no real AWS credentials,
 repository secret, or network. Live external-service execution is a separate,
@@ -660,7 +660,8 @@ already-detected comparison still returns the existing result contract with
 **200** and creates no job.
 
 The API lifecycle is `ready_for_detection → queued_for_detection → detecting
-→ detected | failed`. `queued_for_detection` means one active queued job,
+→ waiting_for_detection_retry → detecting → detected | failed`.
+`queued_for_detection` means one active queued job,
 no running attempt, and no detector execution. A separate process claims the
 job and creates the existing durable running attempt in the same transaction
 that records `detection_started` and `detection_job_claimed`. The initial claim
@@ -673,8 +674,17 @@ detector execution is active, the worker maintains its own lease through an
 in-process controller. Its cadence is one third of the smaller lease/extension
 window, bounded to 0.25–30 seconds (30 seconds under the checked policy). The
 controller uses an interruptible timed wait, heartbeats only that job, and
-stops immediately after success, failure, or lost ownership. It is not a job
-polling loop, scheduler, retry mechanism, or worker daemon.
+stops immediately after success, retry scheduling, terminal failure, or lost
+ownership. It is not a job polling loop, scheduler, or worker daemon.
+
+Job failures use the closed registry and checked
+[`detection_job_retry_policy.yaml`](policies/detection_job_retry_policy.yaml).
+Only `detection_dependency_unavailable`, an explicit dependency-boundary
+condition, is initially allowlisted as `retryable_transient`.
+`detector_internal_error`, unknown codes, deterministic domain failures,
+validation/policy faults, input/version drift, and ownership loss fail closed
+without retry. The policy allows two retries at deterministic delays of 5 and
+30 seconds, with no random jitter.
 
 Success or failure is one fenced terminal transaction spanning the job,
 attempt, transition events, comparison, and, on success, the canonical result.
@@ -686,9 +696,9 @@ Direct library detection and the comparison regression runner remain synchronous
 (`ready_for_detection → detecting → detected | failed`) and create no API job.
 Operator-controlled stale replay also remains synchronous and creates no
 initial-detection job. It remains available for direct synchronous/replay
-attempts, but a running attempt owned by an active detection job reports
+attempts, but every attempt owned by a detection job reports
 `detection_attempt_managed_by_job`, is never replay eligible, and can be
-replaced only through fenced job-lease reclaim.
+replaced only through fenced job-lease reclaim or bounded job retry.
 
 Run one queued job, or a specific queued job, with:
 
@@ -713,7 +723,12 @@ explicit invocation may reclaim one running job only after
 expiry/job id. Reclaim atomically times out the old attempt with
 `detection_attempt_worker_lease_expired`, creates the next running attempt,
 increments the generation, replaces the worker and token hash, and keeps the
-comparison `detecting`. The old generation is fenced from heartbeat, success,
+comparison detecting. With neither queued nor reclaimable work, a due
+`retry_wait` job is selected by `next_attempt_at`/job id. The boundary is
+inclusive. Claiming it creates a fresh attempt, generation, token, finite
+lease, and one-execution heartbeat controller. Before the due time the worker
+returns immediately without mutation or sleeping.
+The old generation is fenced from heartbeat, success,
 and failure finalization. At the configured generation limit, the invocation
 times out the last attempt and terminally fails the job and comparison with
 `detection_job_claims_exhausted`; it creates no replacement attempt.
@@ -734,10 +749,12 @@ python scripts/run_comparison_detection_worker.py \
 The one-shot worker already heartbeats internally during detector execution;
 an operator does not normally extract or handle its claim token. This command
 is only a local diagnostic/reference mechanism for an explicitly available
-claim token. Each invocation claims/reclaims and executes at most one job, or
+claim token. Each invocation claims/reclaims/claims one due retry and executes
+at most one job, or
 sends one heartbeat; there is no job polling loop.
-No available job exits 0 and writes nothing. A successfully persisted detector
-success or domain failure also exits 0 because the worker completed its
+No available or not-yet-due job exits 0 and writes nothing. A successfully
+persisted detector success, `retry_wait`, non-retryable failure, or terminal
+retry exhaustion also exits 0 because the worker completed its
 responsibility; invalid arguments exit 2, and storage/configuration/unexpected
 worker failures exit 1 with a bounded message. The worker imports neither the
 API nor authentication boundary and requires no `FDIA_AUTH_SECRET`. Its
@@ -753,8 +770,9 @@ claim stops its in-memory heartbeat controller; the job and attempt remain
 last extended lease expires and a later explicit one-shot invocation reclaims
 it. Wall-clock passage alone changes nothing. A death after the terminal commit
 but before CLI output leaves the terminal state intact, and a later worker does
-not repeat the detector work. There is no automatic detector retry, retry
-classification, backoff, scheduler, job-processing daemon loop, external
+not repeat the detector work. A classified retry still requires a later
+explicit invocation; wall-clock passage never invokes it. There is no random
+jitter, generalized backoff, scheduler, job-processing daemon loop, external
 queue, or multi-node coordination. This local SQLite queue remains a
 single-node reference implementation and does not provide exactly-once
 execution, distributed leases, high availability, or production readiness.
@@ -773,7 +791,7 @@ Job events are insert-only application records, not tamper-proof storage.
 
 ## Reliability visibility and operations
 
-**Read-only, transitively.** [comparison_reliability.py](comparison_reliability.py) aggregates comparisons, detection jobs and their events, attempts, and replays without repairing, heartbeating, retrying, reclaiming, replaying, deleting, or mutating anything. Its only SQLite access is one `mode=ro` snapshot read — a write is refused by the driver rather than merely avoided by convention. Replay eligibility is calculated from those already-loaded records through a **pure recovery calculation** in [detection_recovery.py](detection_recovery.py) (`build_recovery_view_from_records`, the same function the single-attempt recovery endpoint delegates to), so **no reliability API or CLI path calls `init_db`, an initializing store getter, or `recovery_view` — nothing reachable from a reliability request can create a database, create a table or index, run a migration, change database bytes or mtime, or leave a journal/WAL sidecar**, which an AST guard and poisoned-`init_db` tests pin. Filing-registry reads stay external JSONL file reads that never create or rewrite the registry. **An expired lease reported here stays expired** until a later explicit one-shot worker invocation reclaims it; direct/replay attempts still require explicit operator replay. Everything derives from local persisted records plus the checked-in recovery and lease policies: no AWS credentials, no Bedrock, no embeddings, no vector retrieval, no network.
+**Read-only, transitively.** [comparison_reliability.py](comparison_reliability.py) aggregates comparisons, detection jobs and their events, attempts, and replays without repairing, heartbeating, retrying, reclaiming, replaying, deleting, or mutating anything. Its only SQLite access is one `mode=ro` snapshot read — a write is refused by the driver rather than merely avoided by convention. Replay eligibility is calculated from those already-loaded records through a **pure recovery calculation** in [detection_recovery.py](detection_recovery.py) (`build_recovery_view_from_records`, the same function the single-attempt recovery endpoint delegates to), so **no reliability API or CLI path calls `init_db`, an initializing store getter, or `recovery_view` — nothing reachable from a reliability request can create a database, create a table or index, run a migration, change database bytes or mtime, or leave a journal/WAL sidecar**, which an AST guard and poisoned-`init_db` tests pin. Filing-registry reads stay external JSONL file reads that never create or rewrite the registry. **An expired lease reported here stays expired** until a later explicit one-shot worker invocation reclaims it, and a due retry stays waiting until an invocation claims it; direct/replay attempts still require explicit operator replay. Everything derives from local persisted records plus the checked-in recovery, lease, and retry policies: no AWS credentials, no Bedrock, no embeddings, no vector retrieval, no network.
 
 **An unobservable store is not an empty one.** A correctly initialized comparison database holding **zero records is a valid empty system** and produces the explicit empty report — zero counters, `null` zero-denominator rates, empty issue and failure listings, exit 0. But a **missing** database (`reliability_storage_unavailable`), an **unreadable or corrupt** one (`reliability_storage_unavailable`), and one **missing a required workflow table** — `comparisons`, `comparison_detection_jobs`, `comparison_detection_job_events`, `comparison_detection_attempts`, or `comparison_detection_replays` (`reliability_data_invalid`, naming the absent table) — all **fail closed**. Reporting any of those as "zero detecting comparisons, zero failed attempts, zero unresolved issues" would be a false clean signal produced at exactly the moment the service cannot see workflow state. All three surfaces behave identically, and no partial metrics are returned. Full storage diagnostics — the configured path, the SQLite fault, which table is absent — stay **server-side only**; the API returns a stable code plus a correlation `error_id`, and the CLI prints stable codes with nothing on stdout.
 
@@ -789,11 +807,11 @@ python scripts/comparison_reliability_report.py \
 
 Three GET routes expose the same service: `GET /api/comparison-reliability/summary`, `.../issues`, and `.../failures`. DTOs are camelCase allowlists; `limit` is bounded (default 100, max 500) and the listings carry `total` / `returned` / `truncated` so a cap is never silent. Invalid timestamps, ranges, filters, and limits are 422 with stable codes (`invalid_timestamp`, `invalid_time_range`). Refusals are safe 500s carrying only a stable code, a concise message, and a correlation `error_id` — never a database path, SQLite error, SQL, schema text, raw exception, or any counter, gauge, issue, or partial report: `reliability_storage_unavailable`, `reliability_data_invalid`, and `reliability_dependency_unavailable` stay distinguishable so an operator can tell unreadable storage from unusable records from an unanswerable dependency. **None of the three mutates state, and the existing recovery and replay routes are unchanged.**
 
-**Time windows.** `since` / `until` are optional, timezone-aware, and inclusive (`since <= t <= until`); a naive timestamp is rejected rather than assumed to be UTC, and `until` must not precede `since`. Historical job lifecycle totals are windowed on `queued_at`; heartbeat, reclaim, and claim-exhaustion counters use their event `created_at`; attempt metrics use `started_at`, and replay metrics use `requested_at`. **Current-state gauges and the entire issue set are evaluated at query time and are never windowed** — "how much work is queued or stuck right now" is not a question about a past interval, which is also why `unresolvedOperationalIssues` always equals the unfiltered issue total.
+**Time windows.** `since` / `until` are optional, timezone-aware, and inclusive (`since <= t <= until`); a naive timestamp is rejected rather than assumed to be UTC, and `until` must not precede `since`. Historical job lifecycle totals are windowed on `queued_at`; heartbeat, reclaim, claim-exhaustion, retry-scheduled, retry-claimed, and retry-exhausted counters use event `created_at`; attempt metrics use `started_at`, and replay metrics use `requested_at`. **Current-state gauges and the entire issue set are evaluated at query time and are never windowed** — "how much work is queued or stuck right now" is not a question about a past interval, which is also why `unresolvedOperationalIssues` always equals the unfiltered issue total.
 
 **Denominators, stated exactly.** `success_rate`, `failure_rate`, and `timeout_rate` are each over `terminal_attempts` (`succeeded + failed + timed_out`); `replay_success_rate` is over terminal replay replacements. **Running work never enters a terminal denominator** — a running attempt is not a failure, and neither is a still-running replay replacement — so `attemptsRunningInWindow` is reported separately and `attemptsStarted` reconciles. A zero denominator is reported as `value: null` with its numerator, denominator, and `zeroDenominator: true` visible: never NaN, never silently 0.0, never omitted. Failure breakdowns are keyed by stable failure code, and the two version breakdowns count **failed and timed-out** attempts together.
 
-**Job and duration metrics.** Current gauges expose queued/running/succeeded/failed detection jobs plus active leases, expired leases, reclaimable jobs, and terminal claim-exhausted jobs. Historical counters expose jobs queued, claimed, succeeded, failed, heartbeats, reclaims, and claim exhaustion. Queue wait is `claimed_at − queued_at`; execution duration is `finished_at − claimed_at` for terminal claimed jobs. One percentile definition applies to jobs and attempts: **nearest-rank**, stdlib only — sort ascending, `rank = ceil(p × n)`, take index `rank − 1`. For n = 1 every percentile is the sole value; for n = 2, p50 is the lower value and p95 the upper. Attempt duration is `finished_at − started_at` over terminal attempts. A **negative** attempt or lease duration is surfaced honestly and never folded into a min or mean.
+**Job and duration metrics.** Current gauges expose queued/running/retry-wait/succeeded/failed jobs, retry due/not-due/exhausted state, plus active leases, expired leases, reclaimable jobs, and terminal claim-exhausted jobs. Historical counters expose jobs queued, claimed, succeeded, failed, heartbeats, reclaims, claim exhaustion, and retries scheduled/claimed/succeeded/failed/exhausted. Breakdowns distinguish retryable codes, non-retryable codes, and original codes that exhausted. Waiting and running retries are excluded from terminal success calculations. Queue wait is `claimed_at − queued_at`; execution duration is `finished_at − claimed_at` for terminal claimed jobs. One percentile definition applies to jobs and attempts: **nearest-rank**, stdlib only — sort ascending, `rank = ceil(p × n)`, take index `rank − 1`. For n = 1 every percentile is the sole value; for n = 2, p50 is the lower value and p95 the upper. Attempt duration is `finished_at − started_at` over terminal attempts. A **negative** attempt or lease duration is surfaced honestly and never folded into a min or mean.
 
 **Operational issues** are calculated from source records, not persisted: there is no issue table and **no acknowledgement state**, so an issue keeps appearing for exactly as long as the record state producing it exists. Each record carries a closed allowlist of stable codes and identifiers — no evidence, result JSON, filing content, reviewer or operator notes, paths, SQL, or exception text — and its `recommendedActionCode` is a machine-readable code, never prose instructions. Ordering is deterministic: severity, then oldest condition first, then stable ids.
 
@@ -805,6 +823,9 @@ Three GET routes expose the same service: `GET /api/comparison-reliability/summa
 | `stale_running_attempt` | a `running` attempt reached the configured stale threshold | `inspect_and_replay_if_valid`, or `no_replay_available` when a replay would currently be refused |
 | `expired_detection_job_lease` | a worker-owned running job's finite lease is expired | `run_one_shot_worker_to_reclaim` |
 | `detection_job_claims_exhausted` | a job terminally exhausted its bounded claim generations | `inspect_failure` |
+| `detection_job_waiting_for_retry` | a retry is scheduled but not overdue | `run_one_shot_worker_to_claim_retry` |
+| `detection_job_retry_overdue` | a retry remained due for 60 seconds without a worker claim | `run_one_shot_worker_to_claim_retry` |
+| `detection_job_retries_exhausted` | retry or absolute claim-generation budget terminally exhausted | `inspect_failure` |
 | `replacement_attempt_failed` | a replay's replacement attempt itself `failed` | `inspect_failure` |
 | `comparison_failed` | the comparison is in `failed` | `inspect_failure` |
 | `queued_detection_job` | an initial-detection job is queued and needs a one-shot worker invocation | `run_one_shot_detection_worker` |
@@ -816,7 +837,8 @@ The gauge `attemptLimitExhaustedComparisons` uses **exactly the same scope** as 
 **Fail-closed data validation.** Metrics come from stored rows, so contradictory rows would otherwise produce clean-looking numbers that are false. The report is **refused** with the stable code `reliability_data_invalid` when it finds an incoherent job lifecycle or missing job linkage, a terminal attempt without `finished_at`, a running attempt with one, a job/attempt/comparison status outside the store's vocabulary, a replay whose source or replacement attempt is missing, or a stored timestamp that is not parseable as timezone-aware UTC. No partial metrics are returned after a structural error, on any surface. The deliberate exceptions are negative attempt or lease durations, which become visible issues instead. Detection-attempt transition events are not consumed; detection-job events are read only for the heartbeat, reclaim, and claim-exhaustion historical counters.
 
 **Structured logging.** Lifecycle records cover comparison creation, durable
-detection-job queue/claim/heartbeat/reclaim/claim-exhaustion/success/failure
+detection-job queue/claim/heartbeat/reclaim/claim-exhaustion,
+retry-scheduled/retry-claimed/retry-exhaustion, success/failure
 and rejected stale finalization, detection attempt start and terminal
 transitions, replay creation/completion, governance evaluation, authenticated
 comparison-review decisions, and export creation.
@@ -837,8 +859,8 @@ that change nothing emit no duplicate lifecycle record.
 **What does not exist here.** No dashboard, no frontend surface, no alerting,
 no notifications (email, Slack, SNS), no external monitoring integration
 (Prometheus, OpenTelemetry, CloudWatch), and no scheduler, daemon/polling
-worker, external queue, automatic detector retry, retry classification,
-backoff, or dead-letter queue.
+worker, external queue, automatic background invocation, generalized backoff,
+random jitter, or dead-letter queue.
 The only worker is an explicitly invoked one-shot local process over the
 single-node SQLite queue. Reliability API reads require a verified local access token
 with `reliability.read`; the credential-free local report CLI still reads the
@@ -944,7 +966,7 @@ Known limitations:
 * The comparison regression suite and its `comparison-regression` CI gate protect deterministic behavior over **five controlled synthetic fixture pairs** (fictional companies, hand-written chunk fixtures plus the two Acme excerpts). Exact gates there mean "nothing drifted", **not** "the detector is accurate": no metric in this repository has been measured against real SEC filings, and real public-filing evaluation with a labeled EDGAR dataset remains future work. The gated limitations remain Item 1A only, lexical heading alignment with no similarity stage, local SQLite storage, and a local shared-secret authentication boundary
 * The filing registry ([filing_registry.py](filing_registry.py)) detects exact-content duplicates (a renamed byte-identical file records a `duplicate` outcome and is not indexed twice) and identity conflicts (same company/form/period from different content records a `conflict` and is not indexed). Detection happens at ingest time within the local registry only — there is no fuzzy near-duplicate detection, and cross-process registry writes are unprotected (same JSONL limitation as the review queue)
 * The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
-* Authenticated initial comparison detection has a durable SQLite job, finite leases, fenced claim generations, and a separate one-shot worker, but this is a **single-node reference queue**, not a distributed or highly available execution system. While its one detector execution is active, the worker owns a bounded in-process heartbeat controller for that claim only; terminal finalization still performs the authoritative fence checks. A queued job survives API restart; a worker crash stops heartbeats and leaves the job and attempt `running` until the last extended lease expires and a later explicit worker invocation reclaims it. Nothing runs merely because time passes. Reclaim can repeat only to the bounded generation limit, then terminally exhausts the job. There is no exactly-once guarantee, automatic retry/replay for detector or dependency failures, retry classification, dead-letter queue, scheduler, job-processing daemon loop, backoff, external queue, distributed lease, or high availability. The reliability view reports lease state but never repairs it. Direct library/regression detection and operator-controlled stale replay remain synchronous; a current job-owned attempt returns `detection_attempt_managed_by_job` and stays outside generic replay because its claim-generation budget and lease flow exclusively own retirement and replacement. The generic chat side still has no durable task record, and the audit log remains an append-only local file, not immutable storage
+* Authenticated initial comparison detection has a durable SQLite job, finite leases, fenced claim generations, deterministic bounded retries for explicitly allowlisted transient codes, and a separate one-shot worker, but this is a **single-node reference queue**, not a distributed or highly available execution system. While one detector execution is active, the worker owns a bounded in-process heartbeat controller for that claim only; terminal finalization still performs authoritative fence checks. A queued job survives API restart; a worker crash stops heartbeats and leaves the job and attempt `running` until the last extended lease expires and a later explicit worker invocation reclaims it. An allowlisted transient failure moves the logical job to `retry_wait`, but reaching `next_attempt_at` runs nothing: only a later one-shot invocation claims it with a fresh attempt, generation, token, lease, and heartbeat. Retry count and lease reclaim are distinct, while claim generation remains the hard combined execution-ownership bound. Unknown, internal, deterministic, validation, input/version, and ownership failures never retry. Exhaustion is terminal and visible. There is no exactly-once guarantee, random jitter, dead-letter queue, scheduler, job-processing daemon loop, external queue, distributed lease, or high availability. The reliability view reports lease/retry state but never repairs or triggers it. Direct library/regression detection and operator-controlled stale replay remain synchronous; every job-owned attempt returns `detection_attempt_managed_by_job` and stays outside generic replay. The generic chat side still has no durable task record, and the audit log remains an append-only local file, not immutable storage
 * Replay through the protected API requires `recovery.replay`, and every API-created replay stores the verified Principal subject with `local_hs256` attribution; an optional deprecated `operatorId` is accepted only when it exactly matches that subject. Direct library calls and historical rows stay marked `legacy_self_asserted`. Replay records and detection transition events are append-only **application records** in a local SQLite file, not tamper-proof storage
 * Detection attempts and their transition events are append-only **application records** in a local SQLite file — not tamper-proof storage. Anyone with file access can alter them
 * Reliability visibility is **read-only and exposes state only**: it never repairs, heartbeats, retries, reclaims, replays, deletes, or mutates a workflow record. Its API routes require `reliability.read`; the local report CLI remains available to an operator with filesystem access. There is still no dashboard, frontend, alerting, notification, external monitoring integration, scheduler, daemon loop, or external queue. Lifecycle fields travel through stdlib logging but are not guaranteed JSON. Replay eligibility still depends on the filing registry and fails closed when it cannot be evaluated. Local SQLite records and process logs remain application records, not tamper-proof storage
@@ -967,14 +989,16 @@ and export artifacts are local files and SQLite, not immutable or tamper-proof
 storage. This is not enterprise-ready, not compliance-grade, and carries no
 production security posture.
 
-**Stage 3.5 work is in progress and not complete.** Six bounded steps have
+**Stage 3.5 work is in progress and not complete.** Seven bounded steps have
 landed (roadmap step 12): durable detection attempts and lifecycle events;
 explicit bounded stale replay; read-only reliability metrics and correlated
 structured logs; and now signed local access tokens, policy-derived route
 permissions, plus authenticated attribution for new protected-API replay and
 review actions; durable authenticated initial-detection jobs and a
 credential-free one-shot worker; and finite job leases, heartbeat, fenced
-generations, and explicit expired-claim reclaim.
+generations, and explicit expired-claim reclaim; plus deterministic
+allowlisted failure classification, bounded retry scheduling, and terminal
+retry exhaustion.
 The authentication step proves callers inside one local shared-secret trust
 boundary; possession of that secret permits token issuance, revocation is not
 implemented, and rotation invalidates every outstanding token. It does not
@@ -985,13 +1009,15 @@ The queue is local SQLite and the worker is explicitly invoked, one job at a
 time. Its in-process heartbeat controller maintains only the claimed
 execution's lease and never selects another job. A worker crash stops those
 heartbeats and is recoverable only after the last lease expiry, and only when a
-later explicit invocation performs the fenced reclaim. What still does not
-exist is bounded retry classification and terminal exhaustion for transient
-detector/dependency failures, or any scheduler, job-processing daemon loop,
-automatic background recovery, external queue, or multi-node coordination.
-Maturity therefore remains **Stage 3**. Stage 3.5 remains in progress; the next
-dependency is **bounded retry classification and terminal exhaustion for
-transient detector/dependency failures**.
+later explicit invocation performs the fenced reclaim. Only explicitly
+allowlisted transient codes schedule deterministic bounded delays; unknown and
+deterministic failures fail closed, and a due retry still requires a later
+explicit invocation. What still does not exist is deployment/fault-injection
+validation, controlled real-filing evaluation, any scheduler, job-processing
+daemon loop, automatic background invocation, external queue, or multi-node
+coordination. Maturity therefore remains **Stage 3**. Stage 3.5 remains in
+progress; the next dependencies are **deployment/fault-injection validation
+and controlled real-filing evaluation**.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 
@@ -1018,7 +1044,9 @@ The next implementation phase is a governed two-filing change review for one com
 
     The fifth bounded Stage-3.5 step is done: **durable asynchronous authenticated initial-detection jobs and one-shot worker execution**. API detect atomically enqueues and returns 202 without detector/Chroma work; a separate credential-free invocation claims at most one job, creates the existing running attempt, executes the existing deterministic seam, and atomically finalizes job, attempt, events, result, and comparison. Equivalent enqueues and claim races are storage-constrained and idempotent. Queued and claimed state survives process restart
 
-    The sixth bounded Stage-3.5 step is now done: **finite detection-job leases, worker-owned heartbeat, fenced generations, and safe explicit reclaim**. Initial claims start at generation 1. During its single detector execution, the one-shot worker maintains only that claim at a bounded policy-derived cadence and stops its controller after terminal finalization or ownership loss. Heartbeat and authoritative finalization accept the exact expiry instant and reject later calls; reclaim requires expiry plus grace to be strictly past. A reclaim retires the old attempt as timed out and creates its replacement atomically. Old generations cannot heartbeat, succeed, or fail the replacement. Reaching the policy's maximum generation terminally exhausts the job without creating another attempt. Job-owned attempts cannot also consume generic operator-replay replacements; one attempt maps to each claim generation. Expiry alone triggers nothing: only a later explicit one-shot worker invocation reclaims. There is still no automatic detector retry, scheduler, job-processing daemon, external queue, distributed lease, or exactly-once guarantee. **Stage 3.5 remains in progress; the next dependency is bounded retry classification and terminal exhaustion for transient detector/dependency failures**
+    The sixth bounded Stage-3.5 step is now done: **finite detection-job leases, worker-owned heartbeat, fenced generations, and safe explicit reclaim**. Initial claims start at generation 1. During its single detector execution, the one-shot worker maintains only that claim at a bounded policy-derived cadence and stops its controller after terminal finalization or ownership loss. Heartbeat and authoritative finalization accept the exact expiry instant and reject later calls; reclaim requires expiry plus grace to be strictly past. A reclaim retires the old attempt as timed out and creates its replacement atomically. Old generations cannot heartbeat, succeed, or fail the replacement. Reaching the policy's maximum generation terminally exhausts the job without creating another attempt. Job-owned attempts cannot also consume generic operator-replay replacements; one attempt maps to each claim generation. Expiry alone triggers nothing: only a later explicit one-shot worker invocation reclaims. There is still no scheduler, job-processing daemon, external queue, distributed lease, or exactly-once guarantee
+
+    The seventh bounded Stage-3.5 step is now done: **closed failure classification, deterministic bounded retry scheduling, and terminal exhaustion**. Only the checked allowlist retries; the initial controlled transient boundary is `detection_dependency_unavailable`. Unknown internal and deterministic failures fail closed without retry. A failure transaction truthfully fails the attempt and either moves the logical job/comparison to `retry_wait`/`waiting_for_detection_retry` with the exact 5- or 30-second due time, or terminally records retry/claim-budget exhaustion. No replacement attempt exists while waiting. Queued work remains first, expired reclaim second, and due retry third. A due claim is inclusive, explicit, one-shot, and creates a fresh attempt, generation, token, lease, and heartbeat controller. Lease reclaim does not increment retry count; all ownership generations share the lease policy's hard cap. Generic replay remains unavailable for every job attempt. **Stage 3.5 remains in progress; the next dependencies are deployment/fault-injection validation and controlled real-filing evaluation**
 
 Explicitly deferred until after that path: document-level permissions (formerly "Phase 6"), broader authentication for generic chat/RAG, new document formats, OCR, rerankers and vector-store migration, further generic chat UI redesign, additional generic chat eval expansion, LLM-as-judge evaluation, NIST documentation expansion, and Gradio parity.
 

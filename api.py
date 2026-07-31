@@ -31,6 +31,7 @@ import comparison_review
 import comparison_store
 import config
 import detection_job_lease
+import detection_job_retry
 import detection_recovery
 from governance import review_queue
 from loaders.registry import supported_extensions
@@ -378,6 +379,7 @@ class ComparisonRecordDTO(BaseModel):
         "ready_for_detection",
         "queued_for_detection",
         "detecting",
+        "waiting_for_detection_retry",
         "detected",
         "failed",
     ]
@@ -613,7 +615,7 @@ class DetectionJobDTO(BaseModel):
     comparisonId: str
     attemptId: str | None = None
     triggerType: Literal["initial_detection"]
-    status: Literal["queued", "running", "succeeded", "failed"]
+    status: Literal["queued", "running", "retry_wait", "succeeded", "failed"]
     detectorVersion: str
     workflowVersion: str
     requestedBySubject: str
@@ -629,6 +631,14 @@ class DetectionJobDTO(BaseModel):
     leaseState: Literal["not_claimed", "active", "expired", "terminal"]
     resultHash: str | None = None
     failureCode: str | None = None
+    retryCount: int
+    maxRetryAttempts: int
+    nextAttemptAt: str | None = None
+    lastFailureCode: str | None = None
+    lastFailureClassification: str | None = None
+    retryState: Literal[
+        "not_applicable", "waiting", "due", "exhausted", "terminal"
+    ]
 
 
 class DetectionJobEventDTO(BaseModel):
@@ -646,6 +656,9 @@ class DetectionJobEventDTO(BaseModel):
         "detection_job_heartbeat",
         "detection_job_reclaimed",
         "detection_job_claim_exhausted",
+        "detection_job_retry_scheduled",
+        "detection_job_retry_claimed",
+        "detection_job_retry_exhausted",
         "detection_job_succeeded",
         "detection_job_failed",
     ]
@@ -658,6 +671,9 @@ class DetectionJobEventDTO(BaseModel):
     leaseExpiresAt: str | None = None
     resultHash: str | None = None
     failureCode: str | None = None
+    retryCount: int = 0
+    failureClassification: str | None = None
+    nextAttemptAt: str | None = None
 
 
 class DetectionRecoveryDTO(BaseModel):
@@ -759,6 +775,7 @@ class ReliabilityGaugesDTO(BaseModel):
     comparisonsReadyForDetection: int
     comparisonsQueuedForDetection: int
     comparisonsDetecting: int
+    comparisonsWaitingForDetectionRetry: int
     comparisonsDetected: int
     comparisonsFailed: int
     runningAttempts: int
@@ -767,12 +784,16 @@ class ReliabilityGaugesDTO(BaseModel):
     attemptLimitExhaustedComparisons: int
     detectionJobsQueued: int
     detectionJobsRunning: int
+    detectionJobsWaitingForRetry: int
     detectionJobsSucceeded: int
     detectionJobsFailed: int
     activeJobLeases: int
     expiredJobLeases: int
     reclaimableJobs: int
     claimExhaustedJobs: int
+    detectionJobsRetryDue: int
+    detectionJobsRetryNotDue: int
+    detectionJobsRetryExhausted: int
     unresolvedOperationalIssues: int
 
 
@@ -784,6 +805,11 @@ class ReliabilityJobCountersDTO(BaseModel):
     jobHeartbeats: int
     jobsReclaimed: int
     jobsClaimExhausted: int
+    retriesScheduled: int
+    retriesClaimed: int
+    retriesSucceeded: int
+    retriesFailed: int
+    retriesExhausted: int
 
 
 class ReliabilityJobDurationsDTO(BaseModel):
@@ -868,6 +894,9 @@ class ReliabilityFailureBreakdownDTO(BaseModel):
     timedOutAttemptsByCode: dict[str, int]
     failuresByDetectorVersion: dict[str, int]
     failuresByWorkflowVersion: dict[str, int]
+    retryableFailuresByCode: dict[str, int]
+    nonRetryableFailuresByCode: dict[str, int]
+    retryExhaustionsByOriginalCode: dict[str, int]
 
 
 class ReliabilitySummaryDTO(BaseModel):
@@ -894,6 +923,9 @@ class ReliabilitySummaryDTO(BaseModel):
     heartbeatExtensionSeconds: int
     reclaimGraceSeconds: int
     maxClaimGenerations: int
+    retryPolicyId: str
+    retryPolicyVersion: str
+    maxRetryAttempts: int
     gauges: ReliabilityGaugesDTO
     jobs: ReliabilityJobCountersDTO
     jobDurations: ReliabilityJobDurationsDTO
@@ -924,6 +956,9 @@ class ReliabilityIssueDTO(BaseModel):
         "queued_detection_job",
         "expired_detection_job_lease",
         "detection_job_claims_exhausted",
+        "detection_job_waiting_for_retry",
+        "detection_job_retry_overdue",
+        "detection_job_retries_exhausted",
     ]
     comparisonId: str
     jobId: str | None = None
@@ -955,6 +990,7 @@ class ReliabilityIssueDTO(BaseModel):
         "inspect_clock_integrity",
         "run_one_shot_detection_worker",
         "run_one_shot_worker_to_reclaim",
+        "run_one_shot_worker_to_claim_retry",
     ]
 
 
@@ -973,6 +1009,8 @@ class ReliabilityIssuesResponse(BaseModel):
     recoveryPolicyVersion: str
     leasePolicyId: str
     leasePolicyVersion: str
+    retryPolicyId: str
+    retryPolicyVersion: str
     total: int
     returned: int
     truncated: bool
@@ -1043,8 +1081,10 @@ class ComparisonDetectionJobResponse(BaseModel):
     created: bool
     comparisonId: str
     jobId: str
-    jobStatus: Literal["queued", "running"]
-    comparisonStatus: Literal["queued_for_detection", "detecting"]
+    jobStatus: Literal["queued", "running", "retry_wait"]
+    comparisonStatus: Literal[
+        "queued_for_detection", "detecting", "waiting_for_detection_retry"
+    ]
     queuedAt: str
     attemptId: str | None = None
 
@@ -1739,6 +1779,7 @@ def list_comparisons(
         "ready_for_detection",
         "queued_for_detection",
         "detecting",
+        "waiting_for_detection_retry",
         "detected",
         "failed",
     ]
@@ -1847,7 +1888,11 @@ def detect_comparison(
         comparisonStatus=(
             "queued_for_detection"
             if job["status"] == comparison_store.JOB_QUEUED
-            else "detecting"
+            else (
+                "waiting_for_detection_retry"
+                if job["status"] == comparison_store.JOB_RETRY_WAIT
+                else "detecting"
+            )
         ),
         queuedAt=job["queued_at"],
         attemptId=job["attempt_id"],
@@ -1911,6 +1956,14 @@ def _to_detection_job_dto(record: dict) -> DetectionJobDTO:
         leaseState=detection_job_lease.lease_state(record),
         resultHash=record.get("result_hash"),
         failureCode=record.get("failure_code"),
+        retryCount=record.get("retry_count", 0),
+        maxRetryAttempts=detection_job_retry.POLICY["max_retry_attempts"],
+        nextAttemptAt=record.get("next_attempt_at"),
+        lastFailureCode=record.get("last_failure_code"),
+        lastFailureClassification=record.get(
+            "last_failure_classification"
+        ),
+        retryState=detection_job_retry.retry_state(record),
     )
 
 
@@ -1930,6 +1983,9 @@ def _to_detection_job_event_dto(record: dict) -> DetectionJobEventDTO:
         leaseExpiresAt=record.get("lease_expires_at"),
         resultHash=record.get("result_hash"),
         failureCode=record.get("failure_code"),
+        retryCount=record.get("retry_count", 0),
+        failureClassification=record.get("failure_classification"),
+        nextAttemptAt=record.get("next_attempt_at"),
     )
 
 
@@ -2386,12 +2442,18 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
         heartbeatExtensionSeconds=report["heartbeat_extension_seconds"],
         reclaimGraceSeconds=report["reclaim_grace_seconds"],
         maxClaimGenerations=report["max_claim_generations"],
+        retryPolicyId=report["retry_policy_id"],
+        retryPolicyVersion=report["retry_policy_version"],
+        maxRetryAttempts=report["max_retry_attempts"],
         gauges=ReliabilityGaugesDTO(
             comparisonsReadyForDetection=gauges["comparisons_ready_for_detection"],
             comparisonsQueuedForDetection=gauges[
                 "comparisons_queued_for_detection"
             ],
             comparisonsDetecting=gauges["comparisons_detecting"],
+            comparisonsWaitingForDetectionRetry=gauges[
+                "comparisons_waiting_for_detection_retry"
+            ],
             comparisonsDetected=gauges["comparisons_detected"],
             comparisonsFailed=gauges["comparisons_failed"],
             runningAttempts=gauges["running_attempts"],
@@ -2402,12 +2464,22 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             ],
             detectionJobsQueued=gauges["detection_jobs_queued"],
             detectionJobsRunning=gauges["detection_jobs_running"],
+            detectionJobsWaitingForRetry=gauges[
+                "detection_jobs_waiting_for_retry"
+            ],
             detectionJobsSucceeded=gauges["detection_jobs_succeeded"],
             detectionJobsFailed=gauges["detection_jobs_failed"],
             activeJobLeases=gauges["active_job_leases"],
             expiredJobLeases=gauges["expired_job_leases"],
             reclaimableJobs=gauges["reclaimable_jobs"],
             claimExhaustedJobs=gauges["claim_exhausted_jobs"],
+            detectionJobsRetryDue=gauges["detection_jobs_retry_due"],
+            detectionJobsRetryNotDue=gauges[
+                "detection_jobs_retry_not_due"
+            ],
+            detectionJobsRetryExhausted=gauges[
+                "detection_jobs_retry_exhausted"
+            ],
             unresolvedOperationalIssues=gauges["unresolved_operational_issues"],
         ),
         jobs=ReliabilityJobCountersDTO(
@@ -2418,6 +2490,11 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             jobHeartbeats=jobs["job_heartbeats"],
             jobsReclaimed=jobs["jobs_reclaimed"],
             jobsClaimExhausted=jobs["jobs_claim_exhausted"],
+            retriesScheduled=jobs["retries_scheduled"],
+            retriesClaimed=jobs["retries_claimed"],
+            retriesSucceeded=jobs["retries_succeeded"],
+            retriesFailed=jobs["retries_failed"],
+            retriesExhausted=jobs["retries_exhausted"],
         ),
         jobDurations=ReliabilityJobDurationsDTO(
             queueWaitCount=job_durations["queue_wait_count"],
@@ -2486,6 +2563,15 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             timedOutAttemptsByCode=dict(breakdown["timed_out_attempts_by_code"]),
             failuresByDetectorVersion=dict(breakdown["failures_by_detector_version"]),
             failuresByWorkflowVersion=dict(breakdown["failures_by_workflow_version"]),
+            retryableFailuresByCode=dict(
+                breakdown["retryable_failures_by_code"]
+            ),
+            nonRetryableFailuresByCode=dict(
+                breakdown["non_retryable_failures_by_code"]
+            ),
+            retryExhaustionsByOriginalCode=dict(
+                breakdown["retry_exhaustions_by_original_code"]
+            ),
         ),
     )
 
@@ -2517,6 +2603,9 @@ def get_reliability_issues(
         "queued_detection_job",
         "expired_detection_job_lease",
         "detection_job_claims_exhausted",
+        "detection_job_waiting_for_retry",
+        "detection_job_retry_overdue",
+        "detection_job_retries_exhausted",
     ]
     | None = None,
     comparison_id: str | None = Query(default=None, max_length=120),
@@ -2554,6 +2643,8 @@ def get_reliability_issues(
         recoveryPolicyVersion=report["recovery_policy_version"],
         leasePolicyId=report["lease_policy_id"],
         leasePolicyVersion=report["lease_policy_version"],
+        retryPolicyId=report["retry_policy_id"],
+        retryPolicyVersion=report["retry_policy_version"],
         total=report["total"],
         returned=report["returned"],
         truncated=report["truncated"],

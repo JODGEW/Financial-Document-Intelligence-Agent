@@ -183,7 +183,7 @@ def lease_state(
 ) -> str:
     """Return ``not_claimed|active|expired|terminal`` for a coherent job."""
     status = job.get("status")
-    if status == "queued":
+    if status in {"queued", "retry_wait"}:
         return "not_claimed"
     if status in {"succeeded", "failed"}:
         return "terminal"

@@ -599,6 +599,12 @@ def test_raw_claim_token_is_never_persisted_or_returned_by_http(corpus, api_env)
         "leaseState",
         "resultHash",
         "failureCode",
+        "retryCount",
+        "maxRetryAttempts",
+        "nextAttemptAt",
+        "lastFailureCode",
+        "lastFailureClassification",
+        "retryState",
     }
 
 
@@ -804,8 +810,13 @@ def test_reliability_job_metrics_issues_and_reads_are_read_only(corpus, db):
         "jobs_failed": 0,
         "job_heartbeats": 0,
         "jobs_reclaimed": 0,
-        "jobs_claim_exhausted": 0,
-    }
+            "jobs_claim_exhausted": 0,
+            "retries_scheduled": 0,
+            "retries_claimed": 0,
+            "retries_succeeded": 0,
+            "retries_failed": 0,
+            "retries_exhausted": 0,
+        }
     assert {
         issue["issue_type"]
         for issue in comparison_reliability.issues(

@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+import detection_job_retry
 import filing_registry
 from governance.comparison_schema import (
     COMPARISON_SCHEMA_VERSION,
@@ -89,12 +90,14 @@ WORKFLOW_VERSION = "comparison_workflow.v2"
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
 STATUS_QUEUED_FOR_DETECTION = "queued_for_detection"
 STATUS_DETECTING = "detecting"
+STATUS_WAITING_FOR_DETECTION_RETRY = "waiting_for_detection_retry"
 STATUS_DETECTED = "detected"
 STATUS_FAILED = "failed"
 COMPARISON_STATUSES = (
     STATUS_READY_FOR_DETECTION,
     STATUS_QUEUED_FOR_DETECTION,
     STATUS_DETECTING,
+    STATUS_WAITING_FOR_DETECTION_RETRY,
     STATUS_DETECTED,
     STATUS_FAILED,
 )
@@ -131,15 +134,25 @@ DETECTION_EVENT_TYPES = (
 JOB_TRIGGER_INITIAL_DETECTION = "initial_detection"
 JOB_QUEUED = "queued"
 JOB_RUNNING = "running"
+JOB_RETRY_WAIT = "retry_wait"
 JOB_SUCCEEDED = "succeeded"
 JOB_FAILED = "failed"
-JOB_STATUSES = (JOB_QUEUED, JOB_RUNNING, JOB_SUCCEEDED, JOB_FAILED)
+JOB_STATUSES = (
+    JOB_QUEUED,
+    JOB_RUNNING,
+    JOB_RETRY_WAIT,
+    JOB_SUCCEEDED,
+    JOB_FAILED,
+)
 
 EVENT_JOB_QUEUED = "detection_job_queued"
 EVENT_JOB_CLAIMED = "detection_job_claimed"
 EVENT_JOB_HEARTBEAT = "detection_job_heartbeat"
 EVENT_JOB_RECLAIMED = "detection_job_reclaimed"
 EVENT_JOB_CLAIM_EXHAUSTED = "detection_job_claim_exhausted"
+EVENT_JOB_RETRY_SCHEDULED = "detection_job_retry_scheduled"
+EVENT_JOB_RETRY_CLAIMED = "detection_job_retry_claimed"
+EVENT_JOB_RETRY_EXHAUSTED = "detection_job_retry_exhausted"
 EVENT_JOB_SUCCEEDED = "detection_job_succeeded"
 EVENT_JOB_FAILED = "detection_job_failed"
 JOB_EVENT_TYPES = (
@@ -148,6 +161,9 @@ JOB_EVENT_TYPES = (
     EVENT_JOB_HEARTBEAT,
     EVENT_JOB_RECLAIMED,
     EVENT_JOB_CLAIM_EXHAUSTED,
+    EVENT_JOB_RETRY_SCHEDULED,
+    EVENT_JOB_RETRY_CLAIMED,
+    EVENT_JOB_RETRY_EXHAUSTED,
     EVENT_JOB_SUCCEEDED,
     EVENT_JOB_FAILED,
 )
@@ -192,6 +208,10 @@ ATTEMPT_MANAGED_BY_JOB_MESSAGE = (
 REASON_JOB_LEASE_EXPIRED = "detection_job_lease_expired"
 REASON_JOB_CLAIM_FENCED = "detection_job_claim_fenced"
 REASON_JOB_CLAIMS_EXHAUSTED = "detection_job_claims_exhausted"
+REASON_JOB_RETRIES_EXHAUSTED = "detection_job_retries_exhausted"
+REASON_JOB_EXECUTION_BUDGET_EXHAUSTED = (
+    "detection_job_execution_budget_exhausted"
+)
 REASON_JOB_CLOCK_INVALID = "detection_job_clock_invalid"
 REASON_RESULT_INPUTS_STALE = "comparison_inputs_stale"
 REASON_RESULT_VERSION_SUPERSEDED = "detector_version_superseded"
@@ -214,6 +234,12 @@ WORKER_LEASE_EXPIRED_SUMMARY = (
 )
 JOB_CLAIMS_EXHAUSTED_SUMMARY = (
     "the detection job exhausted its bounded worker claim generations"
+)
+JOB_RETRIES_EXHAUSTED_SUMMARY = (
+    "the detection job exhausted its bounded retry allowance"
+)
+JOB_EXECUTION_BUDGET_EXHAUSTED_SUMMARY = (
+    "the detection job has no remaining worker claim generation"
 )
 JOB_OWNERSHIP_LOST_CODES = frozenset(
     {
@@ -325,6 +351,7 @@ CREATE TABLE IF NOT EXISTS comparisons (
     status              TEXT NOT NULL
                         CHECK (status IN ('ready_for_detection',
                                           'queued_for_detection', 'detecting',
+                                          'waiting_for_detection_retry',
                                           'detected', 'failed')),
     created_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
     updated_at          TEXT NOT NULL,  -- timezone-aware UTC ISO 8601
@@ -477,7 +504,8 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
                                  CHECK (trigger_type = 'initial_detection'),
     status                       TEXT NOT NULL
                                  CHECK (status IN (
-                                     'queued', 'running', 'succeeded', 'failed'
+                                     'queued', 'running', 'retry_wait',
+                                     'succeeded', 'failed'
                                  )),
     request_hash                 TEXT NOT NULL,
     detector_version             TEXT NOT NULL,
@@ -496,6 +524,11 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
     worker_id                    TEXT,
     claim_token_hash             TEXT,
     claim_generation             INTEGER NOT NULL,
+    retry_count                  INTEGER NOT NULL,
+    next_attempt_at              TEXT,
+    last_failure_code            TEXT,
+    last_failure_classification  TEXT,
+    last_failure_at              TEXT,
     lease_started_at             TEXT,
     heartbeat_at                 TEXT,
     lease_expires_at             TEXT,
@@ -507,6 +540,19 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
     CHECK (length(trim(requested_by_token_id)) BETWEEN 1 AND 128),
     CHECK (length(trim(requested_by_policy_id)) BETWEEN 1 AND 128),
     CHECK (length(trim(requested_by_policy_version)) BETWEEN 1 AND 64),
+    CHECK (retry_count >= 0),
+    CHECK (
+        (last_failure_code IS NULL
+            AND last_failure_classification IS NULL
+            AND last_failure_at IS NULL)
+        OR (last_failure_code IS NOT NULL
+            AND last_failure_classification IN (
+                'retryable_transient', 'non_retryable_domain',
+                'non_retryable_integrity', 'non_retryable_configuration',
+                'ownership_lost', 'unknown_internal'
+            )
+            AND last_failure_at IS NOT NULL)
+    ),
     CHECK (
         (status = 'queued'
             AND attempt_id IS NULL
@@ -515,6 +561,11 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND worker_id IS NULL
             AND claim_token_hash IS NULL
             AND claim_generation = 0
+            AND retry_count = 0
+            AND next_attempt_at IS NULL
+            AND last_failure_code IS NULL
+            AND last_failure_classification IS NULL
+            AND last_failure_at IS NULL
             AND lease_started_at IS NULL
             AND heartbeat_at IS NULL
             AND lease_expires_at IS NULL
@@ -530,6 +581,7 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND claim_token_hash IS NOT NULL
             AND length(claim_token_hash) = 64
             AND claim_generation >= 1
+            AND next_attempt_at IS NULL
             AND lease_started_at IS NOT NULL
             AND heartbeat_at IS NOT NULL
             AND lease_expires_at IS NOT NULL
@@ -538,6 +590,25 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND julianday(lease_expires_at) IS NOT NULL
             AND julianday(heartbeat_at) >= julianday(lease_started_at)
             AND julianday(lease_expires_at) >= julianday(heartbeat_at)
+            AND result_hash IS NULL
+            AND failure_code IS NULL
+            AND failure_summary IS NULL)
+        OR (status = 'retry_wait'
+            AND attempt_id IS NOT NULL
+            AND claimed_at IS NOT NULL
+            AND finished_at IS NULL
+            AND worker_id IS NULL
+            AND claim_token_hash IS NULL
+            AND claim_generation >= 1
+            AND retry_count >= 1
+            AND next_attempt_at IS NOT NULL
+            AND julianday(next_attempt_at) IS NOT NULL
+            AND last_failure_code IS NOT NULL
+            AND last_failure_classification = 'retryable_transient'
+            AND last_failure_at IS NOT NULL
+            AND lease_started_at IS NULL
+            AND heartbeat_at IS NULL
+            AND lease_expires_at IS NULL
             AND result_hash IS NULL
             AND failure_code IS NULL
             AND failure_summary IS NULL)
@@ -550,6 +621,7 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND claim_token_hash IS NOT NULL
             AND length(claim_token_hash) = 64
             AND claim_generation >= 1
+            AND next_attempt_at IS NULL
             AND lease_started_at IS NOT NULL
             AND heartbeat_at IS NOT NULL
             AND lease_expires_at IS NOT NULL
@@ -563,6 +635,7 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND failure_summary IS NULL)
         OR (status = 'failed'
             AND finished_at IS NOT NULL
+            AND next_attempt_at IS NULL
             AND result_hash IS NULL
             AND failure_code IS NOT NULL
             AND failure_summary IS NOT NULL
@@ -573,6 +646,15 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
                     AND worker_id IS NULL
                     AND claim_token_hash IS NULL
                     AND claim_generation = 0
+                    AND lease_started_at IS NULL
+                    AND heartbeat_at IS NULL
+                    AND lease_expires_at IS NULL)
+                OR (attempt_id IS NOT NULL
+                    AND claimed_at IS NOT NULL
+                    AND worker_id IS NULL
+                    AND claim_token_hash IS NULL
+                    AND claim_generation >= 1
+                    AND retry_count >= 1
                     AND lease_started_at IS NULL
                     AND heartbeat_at IS NULL
                     AND lease_expires_at IS NULL)
@@ -613,12 +695,18 @@ CREATE TABLE IF NOT EXISTS comparison_detection_job_events (
                        'detection_job_queued', 'detection_job_claimed',
                        'detection_job_heartbeat', 'detection_job_reclaimed',
                        'detection_job_claim_exhausted',
+                       'detection_job_retry_scheduled',
+                       'detection_job_retry_claimed',
+                       'detection_job_retry_exhausted',
                        'detection_job_succeeded', 'detection_job_failed'
                    )),
     event_seq      INTEGER NOT NULL CHECK (event_seq >= 0),
     created_at     TEXT NOT NULL,
     worker_id      TEXT,
     claim_generation INTEGER NOT NULL,
+    retry_count    INTEGER NOT NULL,
+    failure_classification TEXT,
+    next_attempt_at TEXT,
     source_attempt_id TEXT
                       REFERENCES comparison_detection_attempts (attempt_id),
     replacement_attempt_id TEXT
@@ -675,6 +763,39 @@ CREATE TABLE IF NOT EXISTS comparison_detection_job_events (
             AND lease_expires_at IS NOT NULL
             AND result_hash IS NULL
             AND failure_code = 'detection_job_claims_exhausted')
+        OR (event_type = 'detection_job_retry_scheduled'
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NULL
+            AND claim_generation >= 1
+            AND retry_count >= 1
+            AND source_attempt_id = attempt_id
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_classification = 'retryable_transient'
+            AND next_attempt_at IS NOT NULL)
+        OR (event_type = 'detection_job_retry_claimed'
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND claim_generation >= 2
+            AND retry_count >= 1
+            AND source_attempt_id IS NOT NULL
+            AND replacement_attempt_id = attempt_id
+            AND lease_expires_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_classification = 'retryable_transient'
+            AND next_attempt_at IS NULL)
+        OR (event_type = 'detection_job_retry_exhausted'
+            AND attempt_id IS NOT NULL
+            AND claim_generation >= 1
+            AND source_attempt_id = attempt_id
+            AND replacement_attempt_id IS NULL
+            AND result_hash IS NULL
+            AND failure_code IS NOT NULL
+            AND failure_classification = 'retryable_transient'
+            AND next_attempt_at IS NULL)
         OR (event_type = 'detection_job_succeeded'
             AND attempt_id IS NOT NULL
             AND worker_id IS NOT NULL
@@ -901,11 +1022,13 @@ CREATE INDEX IF NOT EXISTS idx_detection_events_attempt
 -- comparison, regardless of how many API or worker processes race.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_active
     ON comparison_detection_jobs (comparison_id)
-    WHERE status IN ('queued', 'running');
+    WHERE status IN ('queued', 'running', 'retry_wait');
 CREATE INDEX IF NOT EXISTS idx_detection_jobs_queue
     ON comparison_detection_jobs (status, queued_at, job_id);
 CREATE INDEX IF NOT EXISTS idx_detection_jobs_expiry
     ON comparison_detection_jobs (status, lease_expires_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_detection_jobs_retry_due
+    ON comparison_detection_jobs (status, next_attempt_at, job_id);
 CREATE INDEX IF NOT EXISTS idx_detection_jobs_comparison
     ON comparison_detection_jobs (comparison_id, queued_at, job_id);
 {_DETECTION_JOB_EVENTS_DDL};
@@ -916,7 +1039,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_event_singletons
     WHERE event_type IN (
         'detection_job_queued', 'detection_job_claimed',
         'detection_job_claim_exhausted',
+        'detection_job_retry_exhausted',
         'detection_job_succeeded', 'detection_job_failed'
+    );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_retry_events
+    ON comparison_detection_job_events (job_id, event_type, retry_count)
+    WHERE event_type IN (
+        'detection_job_retry_scheduled', 'detection_job_retry_claimed'
     );
 {_DETECTION_REPLAYS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_replays_comparison
@@ -1195,6 +1324,43 @@ def _migrate_queued_for_detection_status(db_path: Path) -> None:
             raise
 
 
+def _migrate_waiting_for_detection_retry_status(db_path: Path) -> None:
+    """Add the non-terminal comparison retry-wait state idempotently."""
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparisons'"
+            ).fetchone()
+            if (
+                row is not None
+                and "'waiting_for_detection_retry'" not in (row[0] or "")
+            ):
+                conn.execute(
+                    _COMPARISONS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS comparisons",
+                        "CREATE TABLE comparisons_retry_rebuilt",
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO comparisons_retry_rebuilt SELECT * FROM comparisons"
+                )
+                conn.execute("DROP TABLE comparisons")
+                conn.execute(
+                    "ALTER TABLE comparisons_retry_rebuilt RENAME TO comparisons"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
 def _migrate_attempt_timed_out(db_path: Path) -> None:
     """Rebuild the attempt/event tables if their CHECKs predate 'timed_out'.
 
@@ -1301,7 +1467,9 @@ def _migrate_detection_job_leases(db_path: Path) -> None:
                         requested_by_token_id, requested_by_policy_id,
                         requested_by_policy_version, queued_at, claimed_at,
                         finished_at, worker_id, claim_token_hash,
-                        claim_generation, lease_started_at, heartbeat_at,
+                        claim_generation, retry_count, next_attempt_at,
+                        last_failure_code, last_failure_classification,
+                        last_failure_at, lease_started_at, heartbeat_at,
                         lease_expires_at, result_hash, failure_code,
                         failure_summary
                     )
@@ -1314,6 +1482,7 @@ def _migrate_detection_job_leases(db_path: Path) -> None:
                         requested_by_policy_version, queued_at, claimed_at,
                         finished_at, worker_id, claim_token_hash,
                         CASE WHEN attempt_id IS NULL THEN 0 ELSE 1 END,
+                        0, NULL, NULL, NULL, NULL,
                         CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
                         CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
                         CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
@@ -1348,13 +1517,14 @@ def _migrate_detection_job_leases(db_path: Path) -> None:
                     INSERT INTO comparison_detection_job_events_lease_rebuilt (
                         event_id, job_id, comparison_id, attempt_id, event_type,
                         event_seq, created_at, worker_id, claim_generation,
+                        retry_count, failure_classification, next_attempt_at,
                         source_attempt_id, replacement_attempt_id,
                         lease_expires_at, result_hash, failure_code
                     )
                     SELECT
                         e.event_id, e.job_id, e.comparison_id, e.attempt_id,
                         e.event_type, e.event_seq, e.created_at, e.worker_id,
-                        {generation}, NULL, NULL, {lease_expires},
+                        {generation}, 0, NULL, NULL, NULL, NULL, {lease_expires},
                         e.result_hash, e.failure_code
                     FROM comparison_detection_job_events e
                     JOIN comparison_detection_jobs j ON j.job_id = e.job_id
@@ -1372,6 +1542,114 @@ def _migrate_detection_job_leases(db_path: Path) -> None:
             if rebuild_events:
                 conn.execute(
                     "ALTER TABLE comparison_detection_job_events_lease_rebuilt "
+                    "RENAME TO comparison_detection_job_events"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _migrate_detection_job_retries(db_path: Path) -> None:
+    """Add retry fields/events while preserving every existing lease row."""
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparison_detection_jobs'"
+            ).fetchone()
+            event_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparison_detection_job_events'"
+            ).fetchone()
+            rebuild_jobs = (
+                job_row is not None and "retry_count" not in (job_row[0] or "")
+            )
+            rebuild_events = (
+                event_row is not None
+                and "'detection_job_retry_scheduled'" not in (event_row[0] or "")
+            )
+            if rebuild_jobs:
+                conn.execute(
+                    _DETECTION_JOBS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS comparison_detection_jobs",
+                        "CREATE TABLE comparison_detection_jobs_retry_rebuilt",
+                    )
+                )
+                conn.execute(
+                    """
+                    INSERT INTO comparison_detection_jobs_retry_rebuilt (
+                        job_id, comparison_id, attempt_id, trigger_type, status,
+                        request_hash, detector_version, workflow_version,
+                        previous_source_hash, current_source_hash,
+                        requested_by_subject, requested_by_auth_method,
+                        requested_by_token_id, requested_by_policy_id,
+                        requested_by_policy_version, queued_at, claimed_at,
+                        finished_at, worker_id, claim_token_hash,
+                        claim_generation, retry_count, next_attempt_at,
+                        last_failure_code, last_failure_classification,
+                        last_failure_at, lease_started_at, heartbeat_at,
+                        lease_expires_at, result_hash, failure_code,
+                        failure_summary
+                    )
+                    SELECT
+                        job_id, comparison_id, attempt_id, trigger_type, status,
+                        request_hash, detector_version, workflow_version,
+                        previous_source_hash, current_source_hash,
+                        requested_by_subject, requested_by_auth_method,
+                        requested_by_token_id, requested_by_policy_id,
+                        requested_by_policy_version, queued_at, claimed_at,
+                        finished_at, worker_id, claim_token_hash,
+                        claim_generation, 0, NULL, NULL, NULL, NULL,
+                        lease_started_at, heartbeat_at, lease_expires_at,
+                        result_hash, failure_code, failure_summary
+                    FROM comparison_detection_jobs
+                    """
+                )
+            if rebuild_events:
+                conn.execute(
+                    _DETECTION_JOB_EVENTS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS "
+                        "comparison_detection_job_events",
+                        "CREATE TABLE "
+                        "comparison_detection_job_events_retry_rebuilt",
+                    )
+                )
+                conn.execute(
+                    """
+                    INSERT INTO comparison_detection_job_events_retry_rebuilt (
+                        event_id, job_id, comparison_id, attempt_id, event_type,
+                        event_seq, created_at, worker_id, claim_generation,
+                        retry_count, failure_classification, next_attempt_at,
+                        source_attempt_id, replacement_attempt_id,
+                        lease_expires_at, result_hash, failure_code
+                    )
+                    SELECT
+                        event_id, job_id, comparison_id, attempt_id, event_type,
+                        event_seq, created_at, worker_id, claim_generation,
+                        0, NULL, NULL, source_attempt_id,
+                        replacement_attempt_id, lease_expires_at, result_hash,
+                        failure_code
+                    FROM comparison_detection_job_events
+                    """
+                )
+            if rebuild_events:
+                conn.execute("DROP TABLE comparison_detection_job_events")
+            if rebuild_jobs:
+                conn.execute("DROP TABLE comparison_detection_jobs")
+                conn.execute(
+                    "ALTER TABLE comparison_detection_jobs_retry_rebuilt "
+                    "RENAME TO comparison_detection_jobs"
+                )
+            if rebuild_events:
+                conn.execute(
+                    "ALTER TABLE comparison_detection_job_events_retry_rebuilt "
                     "RENAME TO comparison_detection_job_events"
                 )
             conn.execute("COMMIT")
@@ -1400,8 +1678,10 @@ def init_db(db_path: str | Path | None = None) -> None:
     _migrate_status_vocabulary(db_path)
     _migrate_detecting_status(db_path)
     _migrate_queued_for_detection_status(db_path)
+    _migrate_waiting_for_detection_retry_status(db_path)
     _migrate_attempt_timed_out(db_path)
     _migrate_detection_job_leases(db_path)
+    _migrate_detection_job_retries(db_path)
     _migrate_review_items_vocabulary(db_path)
     _migrate_actor_attribution(db_path)
     with closing(_connect(db_path)) as conn, conn:
@@ -2858,6 +3138,9 @@ def _insert_detection_job_event(
     attempt_id: str | None = None,
     worker_id: str | None = None,
     claim_generation: int = 0,
+    retry_count: int = 0,
+    failure_classification: str | None = None,
+    next_attempt_at: str | None = None,
     source_attempt_id: str | None = None,
     replacement_attempt_id: str | None = None,
     lease_expires_at: str | None = None,
@@ -2876,9 +3159,10 @@ def _insert_detection_job_event(
         INSERT INTO comparison_detection_job_events (
             event_id, job_id, comparison_id, attempt_id, event_type,
             event_seq, created_at, worker_id, claim_generation,
+            retry_count, failure_classification, next_attempt_at,
             source_attempt_id, replacement_attempt_id, lease_expires_at,
             result_hash, failure_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             _detection_job_event_id(job_id, event_type, event_seq),
@@ -2890,6 +3174,9 @@ def _insert_detection_job_event(
             now,
             worker_id,
             claim_generation,
+            retry_count,
+            failure_classification,
+            next_attempt_at,
             source_attempt_id,
             replacement_attempt_id,
             lease_expires_at,
@@ -3040,8 +3327,8 @@ def enqueue_detection_job(
 
             active = conn.execute(
                 "SELECT * FROM comparison_detection_jobs "
-                "WHERE comparison_id = ? AND status IN (?, ?)",
-                (comparison_id, JOB_QUEUED, JOB_RUNNING),
+                "WHERE comparison_id = ? AND status IN (?, ?, ?)",
+                (comparison_id, JOB_QUEUED, JOB_RUNNING, JOB_RETRY_WAIT),
             ).fetchone()
             if active is not None:
                 if active["request_hash"] == request_hash:
@@ -3089,13 +3376,15 @@ def enqueue_detection_job(
                     requested_by_token_id, requested_by_policy_id,
                     requested_by_policy_version, queued_at, claimed_at,
                     finished_at, worker_id, claim_token_hash,
-                    claim_generation, lease_started_at, heartbeat_at,
+                    claim_generation, retry_count, next_attempt_at,
+                    last_failure_code, last_failure_classification,
+                    last_failure_at, lease_started_at, heartbeat_at,
                     lease_expires_at, result_hash, failure_code,
                     failure_summary
                 ) VALUES (
                     ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL,
-                    NULL, NULL, NULL
+                    NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL, NULL, NULL
                 )
                 """,
                 (
@@ -3182,7 +3471,7 @@ def peek_claimable_detection_job(
     now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    """Read the next queued or reclaim-eligible job without mutating storage.
+    """Read queued, expired-running, then due-retry work without mutation.
 
     Queued work always wins. With none queued, expired running jobs are ordered
     by parsed lease expiry then job id. Expiry plus grace must be STRICTLY in
@@ -3200,8 +3489,8 @@ def peek_claimable_detection_job(
         if job_id is not None:
             row = conn.execute(
                 "SELECT * FROM comparison_detection_jobs "
-                "WHERE job_id = ? AND status IN (?, ?)",
-                (job_id, JOB_QUEUED, JOB_RUNNING),
+                "WHERE job_id = ? AND status IN (?, ?, ?)",
+                (job_id, JOB_QUEUED, JOB_RUNNING, JOB_RETRY_WAIT),
             ).fetchone()
             candidates = [row] if row is not None else []
         else:
@@ -3217,6 +3506,18 @@ def peek_claimable_detection_job(
                 "ORDER BY lease_expires_at, job_id",
                 (JOB_RUNNING,),
             ).fetchall()
+            due_retries = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE status = ? "
+                "ORDER BY next_attempt_at, job_id",
+                (JOB_RETRY_WAIT,),
+            ).fetchall()
+        if job_id is not None:
+            due_retries = [
+                row for row in candidates if row["status"] == JOB_RETRY_WAIT
+            ]
+            candidates = [
+                row for row in candidates if row["status"] != JOB_RETRY_WAIT
+            ]
 
     ready: list[tuple[datetime, str, sqlite3.Row]] = []
     for row in candidates:
@@ -3228,7 +3529,17 @@ def peek_claimable_detection_job(
         if moment > expires + timedelta(seconds=grace):
             ready.append((expires, row["job_id"], row))
     if not ready:
-        return None
+        due: list[tuple[datetime, str, sqlite3.Row]] = []
+        for row in due_retries:
+            next_attempt = parse_utc_timestamp(
+                row["next_attempt_at"], field="next_attempt_at"
+            )
+            if moment >= next_attempt:
+                due.append((next_attempt, row["job_id"], row))
+        if not due:
+            return None
+        due.sort(key=lambda item: (item[0], item[1]))
+        return dict(due[0][2])
     ready.sort(key=lambda item: (item[0], item[1]))
     return dict(ready[0][2])
 
@@ -3505,6 +3816,87 @@ def _fail_expired_running_job(
     return final_job, timed_out
 
 
+def _fail_retry_wait_job(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    *,
+    failure_code: str,
+    failure_summary: str,
+    now: str,
+    retry_exhausted: bool,
+) -> sqlite3.Row:
+    """Terminalize retry-wait without creating or changing an attempt."""
+    if retry_exhausted:
+        _insert_detection_job_event(
+            conn,
+            job_id=job["job_id"],
+            comparison_id=job["comparison_id"],
+            attempt_id=job["attempt_id"],
+            event_type=EVENT_JOB_RETRY_EXHAUSTED,
+            now=now,
+            claim_generation=job["claim_generation"],
+            retry_count=job["retry_count"],
+            failure_code=job["last_failure_code"],
+            failure_classification=job["last_failure_classification"],
+            source_attempt_id=job["attempt_id"],
+        )
+    cursor = conn.execute(
+        "UPDATE comparison_detection_jobs SET status = ?, finished_at = ?, "
+        "next_attempt_at = NULL, failure_code = ?, failure_summary = ? "
+        "WHERE job_id = ? AND status = ?",
+        (
+            JOB_FAILED,
+            now,
+            failure_code,
+            failure_summary[:MAX_FAILURE_SUMMARY_CHARS],
+            job["job_id"],
+            JOB_RETRY_WAIT,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise DetectionStateError(
+            REASON_JOB_CLAIM_FENCED,
+            "the retry-wait job changed before terminalization",
+            comparison_id=job["comparison_id"],
+            attempt_id=job["attempt_id"],
+        )
+    _insert_detection_job_event(
+        conn,
+        job_id=job["job_id"],
+        comparison_id=job["comparison_id"],
+        attempt_id=job["attempt_id"],
+        event_type=EVENT_JOB_FAILED,
+        now=now,
+        claim_generation=job["claim_generation"],
+        retry_count=job["retry_count"],
+        failure_code=failure_code,
+    )
+    cursor = conn.execute(
+        "UPDATE comparisons SET status = ?, failure_code = ?, "
+        "failure_summary = ?, updated_at = ? "
+        "WHERE comparison_id = ? AND status = ?",
+        (
+            STATUS_FAILED,
+            failure_code,
+            failure_summary[:MAX_FAILURE_SUMMARY_CHARS],
+            now,
+            job["comparison_id"],
+            STATUS_WAITING_FOR_DETECTION_RETRY,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise DetectionStateError(
+            REASON_TRANSITION_INVALID,
+            "the comparison could not be failed from retry wait",
+            comparison_id=job["comparison_id"],
+            attempt_id=job["attempt_id"],
+        )
+    return conn.execute(
+        "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+        (job["job_id"],),
+    ).fetchone()
+
+
 def claim_detection_job(
     *,
     worker_id: str,
@@ -3515,6 +3907,7 @@ def claim_detection_job(
     lease_duration_seconds: int,
     reclaim_grace_seconds: int,
     max_claim_generations: int,
+    max_retry_attempts: int = 0,
     job_id: str | None = None,
     now: datetime | None = None,
     db_path: str | Path | None = None,
@@ -3540,6 +3933,12 @@ def claim_detection_job(
         minimum=1,
         maximum=1_000,
     )
+    max_retries = _validated_policy_int(
+        max_retry_attempts,
+        field="max_retry_attempts",
+        minimum=0,
+        maximum=10,
+    )
     init_db(db_path)
     moment = _utc_moment(now)
     now_iso = moment.isoformat()
@@ -3554,8 +3953,8 @@ def claim_detection_job(
             if job_id is not None:
                 job = conn.execute(
                     "SELECT * FROM comparison_detection_jobs "
-                    "WHERE job_id = ? AND status IN (?, ?)",
-                    (job_id, JOB_QUEUED, JOB_RUNNING),
+                    "WHERE job_id = ? AND status IN (?, ?, ?)",
+                    (job_id, JOB_QUEUED, JOB_RUNNING, JOB_RETRY_WAIT),
                 ).fetchone()
             else:
                 job = conn.execute(
@@ -3582,6 +3981,24 @@ def claim_detection_job(
                         ),
                         None,
                     )
+                    if job is None:
+                        retry_rows = conn.execute(
+                            "SELECT * FROM comparison_detection_jobs "
+                            "WHERE status = ? ORDER BY next_attempt_at, job_id",
+                            (JOB_RETRY_WAIT,),
+                        ).fetchall()
+                        job = next(
+                            (
+                                item
+                                for item in retry_rows
+                                if moment
+                                >= parse_utc_timestamp(
+                                    item["next_attempt_at"],
+                                    field="next_attempt_at",
+                                )
+                            ),
+                            None,
+                        )
             if job is None:
                 conn.execute("COMMIT")
                 return None
@@ -3708,6 +4125,171 @@ def claim_detection_job(
                     )
                 outcome_kind = "claimed"
                 source_attempt = None
+            elif job["status"] == JOB_RETRY_WAIT:
+                due_at = parse_utc_timestamp(
+                    job["next_attempt_at"], field="next_attempt_at"
+                )
+                if moment < due_at:
+                    conn.execute("COMMIT")
+                    return None
+                if (
+                    comparison is None
+                    or comparison["status"]
+                    != STATUS_WAITING_FOR_DETECTION_RETRY
+                ):
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the retry-wait job's comparison is not waiting for retry",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=job["attempt_id"],
+                    )
+                source_attempt = conn.execute(
+                    "SELECT * FROM comparison_detection_attempts "
+                    "WHERE attempt_id = ?",
+                    (job["attempt_id"],),
+                ).fetchone()
+                if (
+                    source_attempt is None
+                    or source_attempt["status"] != ATTEMPT_FAILED
+                    or source_attempt["comparison_id"] != job["comparison_id"]
+                ):
+                    raise DetectionStateError(
+                        REASON_JOB_ATTEMPT_MISMATCH,
+                        "the retry source attempt is not the linked failed attempt",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=job["attempt_id"],
+                    )
+                running = conn.execute(
+                    "SELECT attempt_id FROM comparison_detection_attempts "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (job["comparison_id"], ATTEMPT_RUNNING),
+                ).fetchone()
+                if running is not None:
+                    raise DetectionStateError(
+                        REASON_DETECTION_IN_PROGRESS,
+                        "a detection attempt is already running for this comparison",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=running["attempt_id"],
+                    )
+                if version_changed or inputs_changed:
+                    code = (
+                        REASON_JOB_VERSION_CHANGED
+                        if version_changed
+                        else REASON_JOB_INPUTS_CHANGED
+                    )
+                    final_job = _fail_retry_wait_job(
+                        conn,
+                        job,
+                        failure_code=code,
+                        failure_summary=(
+                            "the detector or workflow version changed before retry"
+                            if version_changed
+                            else "the filing source content changed before retry"
+                        ),
+                        now=now_iso,
+                        retry_exhausted=False,
+                    )
+                    conn.execute("COMMIT")
+                    return {
+                        "kind": "failed",
+                        "job": dict(final_job),
+                        "attempt": dict(source_attempt),
+                    }
+                budget_code = None
+                if job["retry_count"] > max_retries:
+                    budget_code = REASON_JOB_RETRIES_EXHAUSTED
+                elif job["claim_generation"] >= max_generations:
+                    budget_code = REASON_JOB_EXECUTION_BUDGET_EXHAUSTED
+                if budget_code is not None:
+                    final_job = _fail_retry_wait_job(
+                        conn,
+                        job,
+                        failure_code=budget_code,
+                        failure_summary=(
+                            JOB_RETRIES_EXHAUSTED_SUMMARY
+                            if budget_code == REASON_JOB_RETRIES_EXHAUSTED
+                            else JOB_EXECUTION_BUDGET_EXHAUSTED_SUMMARY
+                        ),
+                        now=now_iso,
+                        retry_exhausted=True,
+                    )
+                    conn.execute("COMMIT")
+                    return {
+                        "kind": "retry_exhausted",
+                        "job": dict(final_job),
+                        "attempt": dict(source_attempt),
+                    }
+                attempt = _insert_running_job_attempt(conn, job, now=now_iso)
+                raw_claim_token = secrets.token_urlsafe(32)
+                token_hash = hashlib.sha256(
+                    raw_claim_token.encode("utf-8")
+                ).hexdigest()
+                generation = job["claim_generation"] + 1
+                cursor = conn.execute(
+                    "UPDATE comparison_detection_jobs SET status = ?, "
+                    "attempt_id = ?, worker_id = ?, claim_token_hash = ?, "
+                    "claim_generation = ?, next_attempt_at = NULL, "
+                    "lease_started_at = ?, heartbeat_at = ?, "
+                    "lease_expires_at = ? WHERE job_id = ? AND status = ? "
+                    "AND claim_generation = ? AND retry_count = ?",
+                    (
+                        JOB_RUNNING,
+                        attempt["attempt_id"],
+                        worker,
+                        token_hash,
+                        generation,
+                        now_iso,
+                        now_iso,
+                        lease_expires_at,
+                        job["job_id"],
+                        JOB_RETRY_WAIT,
+                        job["claim_generation"],
+                        job["retry_count"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_JOB_CLAIM_FENCED,
+                        "the due retry was claimed concurrently",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=source_attempt["attempt_id"],
+                    )
+                _insert_detection_job_event(
+                    conn,
+                    job_id=job["job_id"],
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt["attempt_id"],
+                    event_type=EVENT_JOB_RETRY_CLAIMED,
+                    now=now_iso,
+                    worker_id=worker,
+                    claim_generation=generation,
+                    retry_count=job["retry_count"],
+                    failure_code=job["last_failure_code"],
+                    failure_classification=job[
+                        "last_failure_classification"
+                    ],
+                    source_attempt_id=source_attempt["attempt_id"],
+                    replacement_attempt_id=attempt["attempt_id"],
+                    lease_expires_at=lease_expires_at,
+                )
+                cursor = conn.execute(
+                    "UPDATE comparisons SET status = ?, updated_at = ? "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (
+                        STATUS_DETECTING,
+                        now_iso,
+                        job["comparison_id"],
+                        STATUS_WAITING_FOR_DETECTION_RETRY,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the comparison could not leave retry wait",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=attempt["attempt_id"],
+                    )
+                outcome_kind = "retry"
             else:
                 expiry = parse_utc_timestamp(
                     job["lease_expires_at"], field="lease_expires_at"
@@ -4229,12 +4811,26 @@ def fail_detection_job(
     claim_token: str,
     failure_code: str,
     failure_summary: str,
+    retry_policy: dict[str, Any] | None = None,
+    max_claim_generations: int = 1,
     now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Atomically fail a claimed job and its linked running attempt."""
+    """Fail an attempt and atomically schedule or terminalize its job."""
     db_path = db_path or config.COMPARISON_DB_PATH
     code, summary = _safe_job_failure(failure_code, failure_summary)
+    policy = retry_policy or {
+        "max_retry_attempts": 0,
+        "retry_delays_seconds": [],
+        "retryable_failure_codes": [],
+    }
+    max_generations = _validated_policy_int(
+        max_claim_generations,
+        field="max_claim_generations",
+        minimum=1,
+        maximum=1_000,
+    )
+    classification = detection_job_retry.classify_failure_code(code)
     moment = _utc_moment(now)
     now_iso = moment.isoformat()
     with closing(_connect(db_path)) as conn:
@@ -4271,48 +4867,151 @@ def fail_detection_job(
                 now=now_iso,
                 failure_code=code,
             )
-            conn.execute(
-                "UPDATE comparison_detection_jobs SET status = ?, "
-                "finished_at = ?, failure_code = ?, failure_summary = ? "
-                "WHERE job_id = ? AND status = ?",
-                (
-                    JOB_FAILED,
-                    now_iso,
-                    code,
-                    summary,
-                    job_id,
-                    JOB_RUNNING,
-                ),
-            )
-            _insert_detection_job_event(
-                conn,
-                job_id=job_id,
-                comparison_id=job["comparison_id"],
-                attempt_id=attempt_id,
-                event_type=EVENT_JOB_FAILED,
-                now=now_iso,
-                worker_id=job["worker_id"],
-                claim_generation=job["claim_generation"],
-                lease_expires_at=job["lease_expires_at"],
-                failure_code=code,
-            )
-            cursor = conn.execute(
-                "UPDATE comparisons SET status = ?, failure_code = ?, "
-                "failure_summary = ?, updated_at = ? "
-                "WHERE comparison_id = ? AND status = ?",
-                (
-                    STATUS_FAILED,
-                    code,
-                    summary,
-                    now_iso,
-                    job["comparison_id"],
-                    STATUS_DETECTING,
-                ),
-            )
+            retryable = detection_job_retry.retry_allowed(code, policy)
+            retries_left = job["retry_count"] < policy["max_retry_attempts"]
+            generation_left = job["claim_generation"] < max_generations
+            if retryable and retries_left and generation_left:
+                retry_count = job["retry_count"] + 1
+                delay = detection_job_retry.retry_delay_seconds(
+                    policy, retry_count
+                )
+                next_attempt_at = (
+                    moment + timedelta(seconds=delay)
+                ).isoformat()
+                cursor = conn.execute(
+                    "UPDATE comparison_detection_jobs SET status = ?, "
+                    "retry_count = ?, next_attempt_at = ?, "
+                    "last_failure_code = ?, "
+                    "last_failure_classification = ?, last_failure_at = ?, "
+                    "worker_id = NULL, claim_token_hash = NULL, "
+                    "lease_started_at = NULL, heartbeat_at = NULL, "
+                    "lease_expires_at = NULL "
+                    "WHERE job_id = ? AND status = ? AND retry_count = ?",
+                    (
+                        JOB_RETRY_WAIT,
+                        retry_count,
+                        next_attempt_at,
+                        code,
+                        classification,
+                        now_iso,
+                        job_id,
+                        JOB_RUNNING,
+                        job["retry_count"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_JOB_CLAIM_FENCED,
+                        "the detection job changed during retry scheduling",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=attempt_id,
+                    )
+                _insert_detection_job_event(
+                    conn,
+                    job_id=job_id,
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt_id,
+                    event_type=EVENT_JOB_RETRY_SCHEDULED,
+                    now=now_iso,
+                    claim_generation=job["claim_generation"],
+                    retry_count=retry_count,
+                    failure_code=code,
+                    failure_classification=classification,
+                    next_attempt_at=next_attempt_at,
+                    source_attempt_id=attempt_id,
+                )
+                cursor = conn.execute(
+                    "UPDATE comparisons SET status = ?, failure_code = NULL, "
+                    "failure_summary = NULL, updated_at = ? "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (
+                        STATUS_WAITING_FOR_DETECTION_RETRY,
+                        now_iso,
+                        job["comparison_id"],
+                        STATUS_DETECTING,
+                    ),
+                )
+                outcome_kind = "retry_scheduled"
+            else:
+                if retryable:
+                    terminal_code = (
+                        REASON_JOB_RETRIES_EXHAUSTED
+                        if not retries_left
+                        else REASON_JOB_EXECUTION_BUDGET_EXHAUSTED
+                    )
+                    terminal_summary = (
+                        JOB_RETRIES_EXHAUSTED_SUMMARY
+                        if terminal_code == REASON_JOB_RETRIES_EXHAUSTED
+                        else JOB_EXECUTION_BUDGET_EXHAUSTED_SUMMARY
+                    )
+                    _insert_detection_job_event(
+                        conn,
+                        job_id=job_id,
+                        comparison_id=job["comparison_id"],
+                        attempt_id=attempt_id,
+                        event_type=EVENT_JOB_RETRY_EXHAUSTED,
+                        now=now_iso,
+                        worker_id=job["worker_id"],
+                        claim_generation=job["claim_generation"],
+                        retry_count=job["retry_count"],
+                        failure_code=code,
+                        failure_classification=classification,
+                        source_attempt_id=attempt_id,
+                    )
+                    outcome_kind = "retry_exhausted"
+                else:
+                    terminal_code = code
+                    terminal_summary = summary
+                    outcome_kind = "failed"
+                conn.execute(
+                    "UPDATE comparison_detection_jobs SET status = ?, "
+                    "finished_at = ?, next_attempt_at = NULL, "
+                    "last_failure_code = ?, "
+                    "last_failure_classification = ?, last_failure_at = ?, "
+                    "failure_code = ?, failure_summary = ? "
+                    "WHERE job_id = ? AND status = ?",
+                    (
+                        JOB_FAILED,
+                        now_iso,
+                        code,
+                        classification,
+                        now_iso,
+                        terminal_code,
+                        terminal_summary,
+                        job_id,
+                        JOB_RUNNING,
+                    ),
+                )
+                _insert_detection_job_event(
+                    conn,
+                    job_id=job_id,
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt_id,
+                    event_type=EVENT_JOB_FAILED,
+                    now=now_iso,
+                    worker_id=job["worker_id"],
+                    claim_generation=job["claim_generation"],
+                    retry_count=job["retry_count"],
+                    lease_expires_at=job["lease_expires_at"],
+                    failure_code=terminal_code,
+                )
+                cursor = conn.execute(
+                    "UPDATE comparisons SET status = ?, failure_code = ?, "
+                    "failure_summary = ?, updated_at = ? "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (
+                        STATUS_FAILED,
+                        terminal_code,
+                        terminal_summary,
+                        now_iso,
+                        job["comparison_id"],
+                        STATUS_DETECTING,
+                    ),
+                )
             if cursor.rowcount != 1:
                 raise DetectionStateError(
                     REASON_TRANSITION_INVALID,
-                    "the comparison could not be transitioned to 'failed'",
+                    "the comparison could not be finalized after detection failure",
                     comparison_id=job["comparison_id"],
                     attempt_id=attempt_id,
                 )
@@ -4328,7 +5027,11 @@ def fail_detection_job(
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-    return {"job": dict(final_job), "attempt": dict(final_attempt)}
+    return {
+        "kind": outcome_kind,
+        "job": dict(final_job),
+        "attempt": dict(final_attempt),
+    }
 
 
 def get_detection_job(
@@ -4351,8 +5054,12 @@ def get_detection_job_for_attempt(
     init_db(db_path)
     with closing(_connect(db_path)) as conn:
         row = conn.execute(
-            "SELECT * FROM comparison_detection_jobs WHERE attempt_id = ?",
-            (attempt_id,),
+            "SELECT DISTINCT j.* FROM comparison_detection_jobs j "
+            "LEFT JOIN comparison_detection_job_events e ON e.job_id = j.job_id "
+            "WHERE j.attempt_id = ? OR e.attempt_id = ? "
+            "OR e.source_attempt_id = ? OR e.replacement_attempt_id = ? "
+            "ORDER BY j.queued_at, j.job_id LIMIT 1",
+            (attempt_id, attempt_id, attempt_id, attempt_id),
         ).fetchone()
     return dict(row) if row else None
 
@@ -5029,6 +5736,11 @@ _RELIABILITY_JOB_COLUMNS = (
     "finished_at",
     "worker_id",
     "claim_generation",
+    "retry_count",
+    "next_attempt_at",
+    "last_failure_code",
+    "last_failure_classification",
+    "last_failure_at",
     "lease_started_at",
     "heartbeat_at",
     "lease_expires_at",
@@ -5045,6 +5757,9 @@ _RELIABILITY_JOB_EVENT_COLUMNS = (
     "created_at",
     "worker_id",
     "claim_generation",
+    "retry_count",
+    "failure_classification",
+    "next_attempt_at",
     "source_attempt_id",
     "replacement_attempt_id",
     "lease_expires_at",

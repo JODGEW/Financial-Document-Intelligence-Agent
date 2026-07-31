@@ -56,8 +56,10 @@ instead queues before reaching this module; its one-shot worker calls the same
 execution seam after an atomic claim. Killing that worker after claim leaves
 the job and attempt running until its finite lease expires and a later explicit
 one-shot worker invocation atomically reclaims it. The old worker is fenced
-from finalization. Nothing runs merely because time passes, and there is no
-automatic retry, scheduler, daemon, or external queue.
+from finalization. An explicitly classified transient failure may schedule
+bounded retry work, but nothing runs merely because time passes; a later
+one-shot invocation must claim due work. There is no scheduler, daemon, or
+external queue.
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ import comparison_reliability
 import comparison_store
 import comparison_validators
 import config
+import detection_job_retry
 import filing_registry
 from governance.comparison_schema import (
     dump_comparison,
@@ -107,6 +110,9 @@ REASON_INPUTS_STALE = "comparison_inputs_stale"
 REASON_VERSION_SUPERSEDED = "detector_version_superseded"
 REASON_DETECTOR_INTERNAL_ERROR = "detector_internal_error"
 REASON_DETECTION_IN_PROGRESS = "detection_in_progress"
+REASON_DEPENDENCY_UNAVAILABLE = (
+    detection_job_retry.FAILURE_DEPENDENCY_UNAVAILABLE
+)
 
 # Stable domain failure codes that may be persisted VERBATIM on a failed
 # attempt. A known condition keeps its own code — collapsing everything into
@@ -127,6 +133,7 @@ DOMAIN_FAILURE_CODES = frozenset(
         REASON_VERSION_SUPERSEDED,
         REASON_DETECTION_IN_PROGRESS,
         REASON_DETECTOR_INTERNAL_ERROR,
+        REASON_DEPENDENCY_UNAVAILABLE,
     }
 )
 
@@ -146,6 +153,9 @@ _FAILURE_SUMMARIES = {
     REASON_INPUTS_STALE: "the filing source content changed during detection",
     REASON_VERSION_SUPERSEDED: "a result from an older detector version exists",
     REASON_DETECTION_IN_PROGRESS: "another detection attempt was already running",
+    REASON_DEPENDENCY_UNAVAILABLE: (
+        "a detection dependency was temporarily unavailable"
+    ),
 }
 
 
@@ -221,6 +231,10 @@ class DetectionVersionSuperseded(DetectionError):
 class DetectionInternalError(DetectionError):
     """Unexpected detector fault; the comparison was transitioned to failed
     (API: 500 with correlation id)."""
+
+
+class DetectionDependencyUnavailable(DetectionError):
+    """Explicit transient dependency-boundary failure for durable jobs."""
 
 
 def _normalize(text: str) -> str:
@@ -1133,6 +1147,8 @@ def execute_attempt(
     claim_generation: int | None = None,
     claim_token: str | None = None,
     job_now: datetime | None = None,
+    retry_policy: dict[str, Any] | None = None,
+    max_claim_generations: int | None = None,
 ) -> tuple[dict[str, Any], bool, str | None]:
     """Compute and finalize ONE already-started running attempt.
 
@@ -1234,6 +1250,8 @@ def execute_attempt(
             claim_generation=claim_generation,
             claim_token=claim_token,
             job_now=job_now,
+            retry_policy=retry_policy,
+            max_claim_generations=max_claim_generations,
         )
         raise
     except Exception as exc:
@@ -1290,6 +1308,8 @@ def execute_attempt(
             claim_generation=claim_generation,
             claim_token=claim_token,
             job_now=job_now,
+            retry_policy=retry_policy,
+            max_claim_generations=max_claim_generations,
         )
         # Chained so the API layer's logger.exception also captures the real
         # fault; the DetectionInternalError message itself stays safe.
@@ -1460,6 +1480,8 @@ def _finalize_failed_attempt(
     claim_generation: int | None = None,
     claim_token: str | None = None,
     job_now: datetime | None = None,
+    retry_policy: dict[str, Any] | None = None,
+    max_claim_generations: int | None = None,
 ) -> None:
     """Mark the running attempt failed, never masking the original fault.
 
@@ -1483,6 +1505,12 @@ def _finalize_failed_attempt(
                 claim_token=claim_token,
                 failure_code=failure_code,
                 failure_summary=_safe_failure_summary(failure_code),
+                retry_policy=retry_policy or detection_job_retry.POLICY,
+                max_claim_generations=(
+                    max_claim_generations
+                    if max_claim_generations is not None
+                    else 1
+                ),
                 now=job_now,
                 db_path=db_path,
             )

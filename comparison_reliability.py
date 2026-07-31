@@ -125,10 +125,11 @@ from typing import Any
 import comparison_store
 import config
 import detection_job_lease
+import detection_job_retry
 
 logger = logging.getLogger("comparison_reliability")
 
-RELIABILITY_CONTRACT_VERSION = "comparison_reliability.v3"
+RELIABILITY_CONTRACT_VERSION = "comparison_reliability.v4"
 
 # A rate whose denominator is zero asserts nothing. It is reported as null with
 # its numerator and denominator visible — never NaN, never 0.0, never dropped.
@@ -146,6 +147,7 @@ _GAUGED_COMPARISON_STATUSES = (
     comparison_store.STATUS_READY_FOR_DETECTION,
     comparison_store.STATUS_QUEUED_FOR_DETECTION,
     comparison_store.STATUS_DETECTING,
+    comparison_store.STATUS_WAITING_FOR_DETECTION_RETRY,
     comparison_store.STATUS_DETECTED,
     comparison_store.STATUS_FAILED,
 )
@@ -161,6 +163,9 @@ ISSUE_INVALID_NEGATIVE_LEASE_DURATION = "invalid_negative_lease_duration"
 ISSUE_QUEUED_DETECTION_JOB = "queued_detection_job"
 ISSUE_EXPIRED_DETECTION_JOB_LEASE = "expired_detection_job_lease"
 ISSUE_JOB_CLAIMS_EXHAUSTED = "detection_job_claims_exhausted"
+ISSUE_JOB_WAITING_FOR_RETRY = "detection_job_waiting_for_retry"
+ISSUE_JOB_RETRY_OVERDUE = "detection_job_retry_overdue"
+ISSUE_JOB_RETRIES_EXHAUSTED = "detection_job_retries_exhausted"
 
 ISSUE_TYPES = (
     ISSUE_STALE_RUNNING_ATTEMPT,
@@ -172,6 +177,9 @@ ISSUE_TYPES = (
     ISSUE_QUEUED_DETECTION_JOB,
     ISSUE_EXPIRED_DETECTION_JOB_LEASE,
     ISSUE_JOB_CLAIMS_EXHAUSTED,
+    ISSUE_JOB_WAITING_FOR_RETRY,
+    ISSUE_JOB_RETRY_OVERDUE,
+    ISSUE_JOB_RETRIES_EXHAUSTED,
 )
 
 ACTION_INSPECT_AND_REPLAY = "inspect_and_replay_if_valid"
@@ -181,6 +189,7 @@ ACTION_NO_REPLAY_AVAILABLE = "no_replay_available"
 ACTION_INSPECT_CLOCK = "inspect_clock_integrity"
 ACTION_RUN_WORKER = "run_one_shot_detection_worker"
 ACTION_RECLAIM_EXPIRED_JOB = "run_one_shot_worker_to_reclaim"
+ACTION_CLAIM_DUE_RETRY = "run_one_shot_worker_to_claim_retry"
 
 RECOMMENDED_ACTION_CODES = (
     ACTION_INSPECT_AND_REPLAY,
@@ -190,6 +199,7 @@ RECOMMENDED_ACTION_CODES = (
     ACTION_INSPECT_CLOCK,
     ACTION_RUN_WORKER,
     ACTION_RECLAIM_EXPIRED_JOB,
+    ACTION_CLAIM_DUE_RETRY,
 )
 
 # Triage order. A skewed clock comes first because it makes the duration
@@ -200,13 +210,18 @@ _ISSUE_SEVERITY = {
     ISSUE_INVALID_NEGATIVE_DURATION: 0,
     ISSUE_INVALID_NEGATIVE_LEASE_DURATION: 1,
     ISSUE_JOB_CLAIMS_EXHAUSTED: 2,
-    ISSUE_ATTEMPT_LIMIT_EXHAUSTED: 3,
-    ISSUE_EXPIRED_DETECTION_JOB_LEASE: 4,
-    ISSUE_STALE_RUNNING_ATTEMPT: 5,
-    ISSUE_REPLACEMENT_ATTEMPT_FAILED: 6,
-    ISSUE_COMPARISON_FAILED: 7,
-    ISSUE_QUEUED_DETECTION_JOB: 8,
+    ISSUE_JOB_RETRIES_EXHAUSTED: 3,
+    ISSUE_ATTEMPT_LIMIT_EXHAUSTED: 4,
+    ISSUE_JOB_RETRY_OVERDUE: 5,
+    ISSUE_EXPIRED_DETECTION_JOB_LEASE: 6,
+    ISSUE_STALE_RUNNING_ATTEMPT: 7,
+    ISSUE_REPLACEMENT_ATTEMPT_FAILED: 8,
+    ISSUE_COMPARISON_FAILED: 9,
+    ISSUE_QUEUED_DETECTION_JOB: 10,
+    ISSUE_JOB_WAITING_FOR_RETRY: 11,
 }
+
+RETRY_OVERDUE_SECONDS = 60
 
 # The complete issue field allowlist. No evidence, no result JSON, no filing
 # content, no reviewer or operator notes, no filesystem paths, no SQL, no raw
@@ -386,6 +401,9 @@ EVENT_JOB_CLAIMED = comparison_store.EVENT_JOB_CLAIMED
 EVENT_JOB_HEARTBEAT = comparison_store.EVENT_JOB_HEARTBEAT
 EVENT_JOB_RECLAIMED = comparison_store.EVENT_JOB_RECLAIMED
 EVENT_JOB_CLAIM_EXHAUSTED = comparison_store.EVENT_JOB_CLAIM_EXHAUSTED
+EVENT_JOB_RETRY_SCHEDULED = comparison_store.EVENT_JOB_RETRY_SCHEDULED
+EVENT_JOB_RETRY_CLAIMED = comparison_store.EVENT_JOB_RETRY_CLAIMED
+EVENT_JOB_RETRY_EXHAUSTED = comparison_store.EVENT_JOB_RETRY_EXHAUSTED
 EVENT_JOB_SUCCEEDED = comparison_store.EVENT_JOB_SUCCEEDED
 EVENT_JOB_FAILED = comparison_store.EVENT_JOB_FAILED
 EVENT_JOB_FINALIZE_REJECTED = "detection_job_finalize_rejected"
@@ -395,6 +413,9 @@ JOB_LOG_EVENTS = (
     EVENT_JOB_HEARTBEAT,
     EVENT_JOB_RECLAIMED,
     EVENT_JOB_CLAIM_EXHAUSTED,
+    EVENT_JOB_RETRY_SCHEDULED,
+    EVENT_JOB_RETRY_CLAIMED,
+    EVENT_JOB_RETRY_EXHAUSTED,
     EVENT_JOB_SUCCEEDED,
     EVENT_JOB_FAILED,
     EVENT_JOB_FINALIZE_REJECTED,
@@ -463,6 +484,7 @@ JOB_LOG_FIELDS = (
     "replacement_attempt_id",
     "worker_id",
     "claim_generation",
+    "retry_count",
     "job_status",
     "attempt_status",
     "lease_expires_at",
@@ -472,6 +494,8 @@ JOB_LOG_FIELDS = (
     "actor_auth_method",
     "required_permission",
     "failure_code",
+    "failure_classification",
+    "next_attempt_at",
     "result_hash",
     "queue_wait_ms",
     "execution_elapsed_ms",
@@ -611,6 +635,7 @@ def log_detection_job_event(
             "replacement_attempt_id": replacement_attempt_id,
             "worker_id": job.get("worker_id"),
             "claim_generation": job.get("claim_generation"),
+            "retry_count": job.get("retry_count"),
             "job_status": job.get("status"),
             "attempt_status": attempt.get("status"),
             "lease_expires_at": job.get("lease_expires_at"),
@@ -630,6 +655,10 @@ def log_detection_job_event(
                 if failure_code is not None
                 else job.get("failure_code")
             ),
+            "failure_classification": job.get(
+                "last_failure_classification"
+            ),
+            "next_attempt_at": job.get("next_attempt_at"),
             "result_hash": job.get("result_hash"),
             "queue_wait_ms": _elapsed_between_ms(
                 job.get("queued_at"), job.get("claimed_at")
@@ -834,6 +863,10 @@ def _lease_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
     return policy or detection_job_lease.POLICY
 
 
+def _retry_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    return policy or detection_job_retry.POLICY
+
+
 def _parsed(value: Any, field: str, owner: str, problems: list[tuple[str, str]]):
     """Parse a stored timestamp, recording a structural problem on failure."""
     try:
@@ -913,6 +946,11 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
             problems.append((DATA_JOB_COMPARISON_MISSING, job_id))
         if job["attempt_id"] is not None and job["attempt_id"] not in attempt_ids:
             problems.append((DATA_JOB_MISSING_ATTEMPT, job_id))
+        retry_count_valid = (
+            isinstance(job["retry_count"], int)
+            and not isinstance(job["retry_count"], bool)
+            and job["retry_count"] >= 0
+        )
         if status == comparison_store.JOB_QUEUED:
             coherent = (
                 job["attempt_id"] is None
@@ -925,6 +963,8 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
                 and job["lease_expires_at"] is None
                 and job["result_hash"] is None
                 and job["failure_code"] is None
+                and job["retry_count"] == 0
+                and job["next_attempt_at"] is None
             )
         elif status == comparison_store.JOB_RUNNING:
             coherent = (
@@ -939,6 +979,28 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
                 and job["lease_started_at"] is not None
                 and job["heartbeat_at"] is not None
                 and job["lease_expires_at"] is not None
+                and job["result_hash"] is None
+                and job["failure_code"] is None
+                and retry_count_valid
+                and job["next_attempt_at"] is None
+            )
+        elif status == comparison_store.JOB_RETRY_WAIT:
+            coherent = (
+                job["attempt_id"] is not None
+                and job["claimed_at"] is not None
+                and job["finished_at"] is None
+                and job["worker_id"] is None
+                and job["claim_generation"] >= 1
+                and retry_count_valid
+                and job["retry_count"] >= 1
+                and job["next_attempt_at"] is not None
+                and job["last_failure_code"] is not None
+                and job["last_failure_classification"]
+                == detection_job_retry.RETRYABLE_TRANSIENT
+                and job["last_failure_at"] is not None
+                and job["lease_started_at"] is None
+                and job["heartbeat_at"] is None
+                and job["lease_expires_at"] is None
                 and job["result_hash"] is None
                 and job["failure_code"] is None
             )
@@ -970,16 +1032,29 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
                     )
                     or (
                         claimed_terminal
-                        and isinstance(job["worker_id"], str)
-                        and bool(job["worker_id"].strip())
                         and isinstance(job["claim_generation"], int)
                         and not isinstance(job["claim_generation"], bool)
                         and job["claim_generation"] >= 1
-                        and job["lease_started_at"] is not None
-                        and job["heartbeat_at"] is not None
-                        and job["lease_expires_at"] is not None
+                        and (
+                            (
+                                isinstance(job["worker_id"], str)
+                                and bool(job["worker_id"].strip())
+                                and job["lease_started_at"] is not None
+                                and job["heartbeat_at"] is not None
+                                and job["lease_expires_at"] is not None
+                            )
+                            or (
+                                job["worker_id"] is None
+                                and job["retry_count"] >= 1
+                                and job["lease_started_at"] is None
+                                and job["heartbeat_at"] is None
+                                and job["lease_expires_at"] is None
+                            )
+                        )
                     )
                 )
+                and retry_count_valid
+                and job["next_attempt_at"] is None
             )
         if not coherent:
             problems.append((DATA_JOB_STATE_INVALID, job_id))
@@ -1021,6 +1096,26 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
             if job["lease_expires_at"] is not None
             else None
         )
+        job["next_attempt_dt"] = (
+            _parsed(
+                job["next_attempt_at"],
+                "next_attempt_at",
+                job_id,
+                problems,
+            )
+            if job["next_attempt_at"] is not None
+            else None
+        )
+        job["last_failure_dt"] = (
+            _parsed(
+                job["last_failure_at"],
+                "last_failure_at",
+                job_id,
+                problems,
+            )
+            if job["last_failure_at"] is not None
+            else None
+        )
         job["negative_lease_duration"] = bool(
             job["lease_started_dt"] is not None
             and job["heartbeat_dt"] is not None
@@ -1051,6 +1146,12 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
             or event["claim_generation"] < 0
         ):
             problems.append((DATA_JOB_EVENT_STATE_INVALID, event_id))
+        if (
+            isinstance(event["retry_count"], bool)
+            or not isinstance(event["retry_count"], int)
+            or event["retry_count"] < 0
+        ):
+            problems.append((DATA_JOB_EVENT_STATE_INVALID, event_id))
         event["created_dt"] = _parsed(
             event["created_at"], "created_at", event_id, problems
         )
@@ -1062,6 +1163,16 @@ def _load(db_path: str | Path | None) -> dict[str, Any]:
                 problems,
             )
             if event["lease_expires_at"] is not None
+            else None
+        )
+        event["next_attempt_dt"] = (
+            _parsed(
+                event["next_attempt_at"],
+                "next_attempt_at",
+                event_id,
+                problems,
+            )
+            if event["next_attempt_at"] is not None
             else None
         )
 
@@ -1392,6 +1503,7 @@ def _generate_issues(
     moment: datetime,
     policy: dict[str, Any],
     lease_policy: dict[str, Any],
+    retry_policy: dict[str, Any],
     registry_path: str | Path | None,
 ) -> list[dict[str, Any]]:
     """Derive every operational issue from source records. READ-ONLY.
@@ -1421,6 +1533,55 @@ def _generate_issues(
                     recommended_action_code=ACTION_RUN_WORKER,
                     status=job["status"],
                     job=job,
+                )
+            )
+        if job["status"] == comparison_store.JOB_RETRY_WAIT:
+            overdue = (
+                moment
+                >= job["next_attempt_dt"]
+                + timedelta(seconds=RETRY_OVERDUE_SECONDS)
+            )
+            issues.append(
+                _issue(
+                    (
+                        ISSUE_JOB_RETRY_OVERDUE
+                        if overdue
+                        else ISSUE_JOB_WAITING_FOR_RETRY
+                    ),
+                    comparison_id=comparison_id,
+                    detected_at=moment,
+                    created_dt=job["last_failure_dt"],
+                    attempts_used=counts.get(comparison_id, 0),
+                    max_attempts=retry_policy["max_retry_attempts"],
+                    recommended_action_code=ACTION_CLAIM_DUE_RETRY,
+                    status=job["status"],
+                    job=job,
+                    attempt=snapshot["attempts_by_id"].get(job["attempt_id"]),
+                    failure_code=job["last_failure_code"],
+                    stale_at=job["next_attempt_at"],
+                )
+            )
+        if (
+            job["status"] == comparison_store.JOB_FAILED
+            and job["failure_code"]
+            in {
+                comparison_store.REASON_JOB_RETRIES_EXHAUSTED,
+                comparison_store.REASON_JOB_EXECUTION_BUDGET_EXHAUSTED,
+            }
+        ):
+            issues.append(
+                _issue(
+                    ISSUE_JOB_RETRIES_EXHAUSTED,
+                    comparison_id=comparison_id,
+                    detected_at=moment,
+                    created_dt=job["finished_dt"],
+                    attempts_used=counts.get(comparison_id, 0),
+                    max_attempts=retry_policy["max_retry_attempts"],
+                    recommended_action_code=ACTION_INSPECT_FAILURE,
+                    status=job["status"],
+                    job=job,
+                    attempt=snapshot["attempts_by_id"].get(job["attempt_id"]),
+                    failure_code=job["failure_code"],
                 )
             )
         elif job["status"] == comparison_store.JOB_RUNNING:
@@ -1637,6 +1798,7 @@ def summary(
     registry_path: str | Path | None = None,
     policy: dict[str, Any] | None = None,
     lease_policy: dict[str, Any] | None = None,
+    retry_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The structured reliability aggregate. Mutates nothing.
 
@@ -1649,6 +1811,7 @@ def summary(
     moment = _now(now)
     policy = _recovery_policy(policy)
     lease_policy = _lease_policy(lease_policy)
+    retry_policy = _retry_policy(retry_policy)
     snapshot = _load(db_path)
 
     windowed = [
@@ -1670,6 +1833,7 @@ def summary(
         moment=moment,
         policy=policy,
         lease_policy=lease_policy,
+        retry_policy=retry_policy,
         registry_path=registry_path,
     )
 
@@ -1696,12 +1860,16 @@ def summary(
         ],
         "reclaim_grace_seconds": lease_policy["reclaim_grace_seconds"],
         "max_claim_generations": lease_policy["max_claim_generations"],
+        "retry_policy_id": retry_policy["policy_id"],
+        "retry_policy_version": retry_policy["policy_version"],
+        "max_retry_attempts": retry_policy["max_retry_attempts"],
         "gauges": _gauges(
             snapshot,
             issues=issues,
             moment=moment,
             policy=policy,
             lease_policy=lease_policy,
+            retry_policy=retry_policy,
             registry_path=registry_path,
         ),
         "attempts": {
@@ -1720,7 +1888,7 @@ def summary(
         **_job_metrics(snapshot, parsed_since, parsed_until),
         **_replay_metrics(snapshot, parsed_since, parsed_until),
         "durations": _durations(windowed),
-        "failure_breakdown": _failure_breakdown(windowed),
+        "failure_breakdown": _failure_breakdown(windowed, snapshot),
     }
 
 
@@ -1731,6 +1899,7 @@ def _gauges(
     moment: datetime,
     policy: dict[str, Any],
     lease_policy: dict[str, Any],
+    retry_policy: dict[str, Any],
     registry_path: str | Path | None,
 ) -> dict[str, Any]:
     """Current state at query time. Never restricted by the historical window.
@@ -1823,6 +1992,21 @@ def _gauges(
         and job["failure_code"] == comparison_store.REASON_JOB_CLAIMS_EXHAUSTED
         for job in snapshot["jobs"]
     )
+    retry_wait = [
+        job
+        for job in snapshot["jobs"]
+        if job["status"] == comparison_store.JOB_RETRY_WAIT
+    ]
+    retry_due = sum(moment >= job["next_attempt_dt"] for job in retry_wait)
+    retry_exhausted = sum(
+        job["status"] == comparison_store.JOB_FAILED
+        and job["failure_code"]
+        in {
+            comparison_store.REASON_JOB_RETRIES_EXHAUSTED,
+            comparison_store.REASON_JOB_EXECUTION_BUDGET_EXHAUSTED,
+        }
+        for job in snapshot["jobs"]
+    )
     return {
         "comparisons_ready_for_detection": status_counts[
             comparison_store.STATUS_READY_FOR_DETECTION
@@ -1831,6 +2015,9 @@ def _gauges(
             comparison_store.STATUS_QUEUED_FOR_DETECTION
         ],
         "comparisons_detecting": status_counts[comparison_store.STATUS_DETECTING],
+        "comparisons_waiting_for_detection_retry": status_counts[
+            comparison_store.STATUS_WAITING_FOR_DETECTION_RETRY
+        ],
         "comparisons_detected": status_counts[comparison_store.STATUS_DETECTED],
         "comparisons_failed": status_counts[comparison_store.STATUS_FAILED],
         "running_attempts": len(running),
@@ -1839,6 +2026,9 @@ def _gauges(
         "attempt_limit_exhausted_comparisons": exhausted,
         "detection_jobs_queued": job_status_counts[comparison_store.JOB_QUEUED],
         "detection_jobs_running": job_status_counts[comparison_store.JOB_RUNNING],
+        "detection_jobs_waiting_for_retry": job_status_counts[
+            comparison_store.JOB_RETRY_WAIT
+        ],
         "detection_jobs_succeeded": job_status_counts[
             comparison_store.JOB_SUCCEEDED
         ],
@@ -1847,6 +2037,9 @@ def _gauges(
         "expired_job_leases": expired_leases,
         "reclaimable_jobs": reclaimable,
         "claim_exhausted_jobs": claim_exhausted,
+        "detection_jobs_retry_due": retry_due,
+        "detection_jobs_retry_not_due": len(retry_wait) - retry_due,
+        "detection_jobs_retry_exhausted": retry_exhausted,
         "unresolved_operational_issues": len(issues),
     }
 
@@ -1962,6 +2155,28 @@ def _job_metrics(
                 == comparison_store.EVENT_JOB_CLAIM_EXHAUSTED
                 for event in windowed_events
             ),
+            "retries_scheduled": sum(
+                event["event_type"] == comparison_store.EVENT_JOB_RETRY_SCHEDULED
+                for event in windowed_events
+            ),
+            "retries_claimed": sum(
+                event["event_type"] == comparison_store.EVENT_JOB_RETRY_CLAIMED
+                for event in windowed_events
+            ),
+            "retries_succeeded": sum(
+                event["event_type"] == comparison_store.EVENT_JOB_SUCCEEDED
+                and snapshot["jobs_by_id"][event["job_id"]]["retry_count"] > 0
+                for event in windowed_events
+            ),
+            "retries_failed": sum(
+                event["event_type"] == comparison_store.EVENT_JOB_FAILED
+                and snapshot["jobs_by_id"][event["job_id"]]["retry_count"] > 0
+                for event in windowed_events
+            ),
+            "retries_exhausted": sum(
+                event["event_type"] == comparison_store.EVENT_JOB_RETRY_EXHAUSTED
+                for event in windowed_events
+            ),
         },
         "job_durations": {
             **_duration_statistics(queue_waits, "queue_wait"),
@@ -2012,7 +2227,9 @@ def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 6)
 
 
-def _failure_breakdown(windowed: list[dict[str, Any]]) -> dict[str, Any]:
+def _failure_breakdown(
+    windowed: list[dict[str, Any]], snapshot: dict[str, Any]
+) -> dict[str, Any]:
     """Counts by stable failure code and by producing version.
 
     "Failures" for the version breakdowns means attempts whose status is
@@ -2023,6 +2240,9 @@ def _failure_breakdown(windowed: list[dict[str, Any]]) -> dict[str, Any]:
     timed_out_by_code: dict[str, int] = {}
     by_detector: dict[str, int] = {}
     by_workflow: dict[str, int] = {}
+    retryable_by_code: dict[str, int] = {}
+    non_retryable_by_code: dict[str, int] = {}
+    exhaustion_by_original: dict[str, int] = {}
     for attempt in windowed:
         status = attempt["status"]
         if status not in (
@@ -2043,11 +2263,35 @@ def _failure_breakdown(windowed: list[dict[str, Any]]) -> dict[str, Any]:
         by_workflow[attempt["workflow_version"]] = (
             by_workflow.get(attempt["workflow_version"], 0) + 1
         )
+        if (
+            status == comparison_store.ATTEMPT_FAILED
+            and detection_job_retry.classify_failure_code(code)
+            != detection_job_retry.RETRYABLE_TRANSIENT
+        ):
+            non_retryable_by_code[code] = non_retryable_by_code.get(code, 0) + 1
+    for event in snapshot["job_events"]:
+        code = event["failure_code"]
+        if event["event_type"] in {
+            comparison_store.EVENT_JOB_RETRY_SCHEDULED,
+            comparison_store.EVENT_JOB_RETRY_EXHAUSTED,
+        } and code:
+            retryable_by_code[code] = retryable_by_code.get(code, 0) + 1
+        if event["event_type"] == comparison_store.EVENT_JOB_RETRY_EXHAUSTED and code:
+            exhaustion_by_original[code] = (
+                exhaustion_by_original.get(code, 0) + 1
+            )
     return {
         "failed_attempts_by_code": dict(sorted(failed_by_code.items())),
         "timed_out_attempts_by_code": dict(sorted(timed_out_by_code.items())),
         "failures_by_detector_version": dict(sorted(by_detector.items())),
         "failures_by_workflow_version": dict(sorted(by_workflow.items())),
+        "retryable_failures_by_code": dict(sorted(retryable_by_code.items())),
+        "non_retryable_failures_by_code": dict(
+            sorted(non_retryable_by_code.items())
+        ),
+        "retry_exhaustions_by_original_code": dict(
+            sorted(exhaustion_by_original.items())
+        ),
     }
 
 
@@ -2061,6 +2305,7 @@ def issues(
     registry_path: str | Path | None = None,
     policy: dict[str, Any] | None = None,
     lease_policy: dict[str, Any] | None = None,
+    retry_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Currently unresolved operational issues, deterministically ordered.
 
@@ -2082,6 +2327,7 @@ def issues(
     moment = _now(now)
     policy = _recovery_policy(policy)
     lease_policy = _lease_policy(lease_policy)
+    retry_policy = _retry_policy(retry_policy)
     snapshot = _load(db_path)
 
     records = _generate_issues(
@@ -2089,6 +2335,7 @@ def issues(
         moment=moment,
         policy=policy,
         lease_policy=lease_policy,
+        retry_policy=retry_policy,
         registry_path=registry_path,
     )
     if issue_type is not None:
@@ -2102,6 +2349,8 @@ def issues(
         "recovery_policy_version": policy["policy_version"],
         "lease_policy_id": lease_policy["policy_id"],
         "lease_policy_version": lease_policy["policy_version"],
+        "retry_policy_id": retry_policy["policy_id"],
+        "retry_policy_version": retry_policy["policy_version"],
         "total": len(records),
         "returned": min(len(records), bound),
         "truncated": len(records) > bound,

@@ -65,6 +65,7 @@ jobs:
             tests/test_comparison_detection_attempts.py \
             tests/test_comparison_detection_jobs.py \
             tests/test_comparison_detection_job_leases.py \
+            tests/test_comparison_detection_job_retries.py \
             tests/test_detection_recovery.py \
             tests/test_comparison_reliability.py \
             tests/test_access_control.py \

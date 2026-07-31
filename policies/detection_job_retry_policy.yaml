@@ -1,0 +1,13 @@
+# Bounded deterministic detection-job retry policy.
+#
+# This file classifies no arbitrary exception text and causes no work by
+# itself. A retry is executable only after its due time and only when a later
+# explicit one-shot worker invocation claims it.
+policy_id: detection_job_retry_v1
+policy_version: "1"
+max_retry_attempts: 2
+retry_delays_seconds:
+  - 5
+  - 30
+retryable_failure_codes:
+  - detection_dependency_unavailable
