@@ -3202,6 +3202,11 @@ _REQUIRED_CI_SUITES = (
     "tests/test_access_control.py",
     # Stage 3.5 process-level fault injection and restart/recovery validation
     "tests/test_runtime_fault_injection.py",
+    # Stage 3.5 real-filing benchmark INFRASTRUCTURE (offline; the required
+    # check never acquires a filing and never contacts SEC EDGAR).
+    "tests/test_real_filing_benchmark_schema.py",
+    "tests/test_real_filing_benchmark_tools.py",
+    "tests/test_real_filing_benchmark_evaluator.py",
     # offline API
     "tests/test_api.py",
     "tests/test_api_errors.py",

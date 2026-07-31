@@ -77,6 +77,25 @@ COMPARISON_DB_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "comparisons", "comparisons.db"),
 )
 
+# Controlled real-public-filing benchmark (Stage 3.5 step 9). The manifest is
+# the frozen, committed pre-registration of what will be measured; the corpus
+# directory holds downloaded filings, extracted sections, per-pair indexes,
+# review packets, completed annotations, and run outputs — all gitignored
+# runtime state, like chroma_db/ and the filing registry.
+#
+# SEC_USER_AGENT has NO default on purpose. Acquisition reaches an external
+# public service that asks requesters to identify themselves; a baked-in
+# default would be an anonymous request wearing someone else's name.
+REAL_FILING_BENCHMARK_MANIFEST = os.getenv(
+    "REAL_FILING_BENCHMARK_MANIFEST",
+    os.path.join(os.path.dirname(__file__), "benchmarks", "real_filing_v1", "manifest.json"),
+)
+REAL_FILING_BENCHMARK_DIR = os.getenv(
+    "REAL_FILING_BENCHMARK_DIR",
+    os.path.join(os.path.dirname(__file__), "benchmark_data", "real_filings_v1"),
+)
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT") or None
+
 # Document ingestion. Two-tier PII redaction dispatch:
 # - PII_REDACT_AT_INGEST (global, default off) forces redaction on every format.
 # - PII_REDACT_TABULAR_AT_INGEST (default on) redacts CSV / XLSX only.

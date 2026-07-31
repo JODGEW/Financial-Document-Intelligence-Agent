@@ -38,6 +38,14 @@ docs-internal/
 
 assets/docs/
 
+# Real-public-filing benchmark corpus. Downloaded filings, normalized text,
+# extracted Item 1A sections, per-pair indexes and workflow databases, review
+# packets, completed annotations, and local run outputs. Complete filing
+# documents and large section excerpts are never committed; only the frozen
+# manifest, schemas, annotation instructions, evaluation code, and bounded
+# aggregate reports under benchmarks/ are.
+benchmark_data/
+
 # Local single-node reference runtime: the filled-in env file holds a real
 # secret, and the state directory holds the runtime SQLite database, filing
 # registry, and vector store. Only .env.reference.example is committed.

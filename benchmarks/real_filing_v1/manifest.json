@@ -1,0 +1,104 @@
+{
+  "schema_version": "real-filing-benchmark.manifest.v1",
+  "benchmark_id": "real_filing_v1",
+  "benchmark_version": 1,
+  "frozen_at": "2026-07-31T00:00:00+00:00",
+  "selection_protocol_version": "real-filing-selection.v1",
+  "status": "proposed",
+  "form": "10-K",
+  "target_pair_count": 10,
+  "description": "Frozen v1 issuer slate for the controlled real-public-filing benchmark: ten consecutive-annual 10-K pairs (twenty filings), one issuer per pair, spanning ten sector labels. STATUS IS 'proposed'. The slate below is the pre-registration and is frozen; it was decided before any filing was fetched and before any detector output was observed. Every remaining field is remote metadata that must be resolved from official SEC endpoints during an approved acquisition run: CIK, accession numbers, official filing dates, official reporting periods, primary-document names, and SHA-256 digests are deliberately ABSENT rather than recalled or approximated, because a wrong identifier in a frozen manifest is a fabricated fact. Run scripts/fetch_real_filing_benchmark.py --resolve --allow-network to produce a local proposed-pairs block for human review, then freeze it into 'pairs' in a reviewed commit. No accuracy claim about real filings exists until this corpus is source-verified, built, human-annotated, and evaluated.",
+  "proposed_issuers": [
+    {
+      "slate_id": "communication-services-01",
+      "issuer_name": "Verizon Communications Inc.",
+      "sector_label": "Communication Services",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "consumer-discretionary-01",
+      "issuer_name": "The Home Depot, Inc.",
+      "sector_label": "Consumer Discretionary",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "consumer-staples-01",
+      "issuer_name": "The Procter & Gamble Company",
+      "sector_label": "Consumer Staples",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "energy-01",
+      "issuer_name": "Exxon Mobil Corporation",
+      "sector_label": "Energy",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "financials-01",
+      "issuer_name": "JPMorgan Chase & Co.",
+      "sector_label": "Financials",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "health-care-01",
+      "issuer_name": "Johnson & Johnson",
+      "sector_label": "Health Care",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "industrials-01",
+      "issuer_name": "Caterpillar Inc.",
+      "sector_label": "Industrials",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "information-technology-01",
+      "issuer_name": "Apple Inc.",
+      "sector_label": "Information Technology",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "information-technology-02",
+      "issuer_name": "Microsoft Corporation",
+      "sector_label": "Information Technology",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    },
+    {
+      "slate_id": "utilities-01",
+      "issuer_name": "NextEra Energy, Inc.",
+      "sector_label": "Utilities",
+      "cik": null,
+      "target_previous_fiscal_year": 2022,
+      "target_current_fiscal_year": 2023,
+      "resolution_status": "pending_official_lookup"
+    }
+  ],
+  "pairs": []
+}

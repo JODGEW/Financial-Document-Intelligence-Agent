@@ -1,0 +1,16 @@
+{
+  "config_version": "real-filing-benchmark.evaluation.v1",
+  "benchmark_id": "real_filing_v1",
+  "metric_definitions_version": "real-filing-benchmark-metrics.v1",
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "declared_detector_version": "item1a_detector.v2",
+  "declared_workflow_version": "comparison_workflow.v2",
+  "declared_section_key": "item_1a_risk_factors",
+  "gold_status_required": "human_verified",
+  "pass_fail_thresholds": null,
+  "notes": [
+    "The declared versions pin the workflow an evaluation run describes. If the live detector or workflow version differs, the evaluator REFUSES rather than silently reporting metrics under a version the config does not describe. Creating a new run under a new version is explicit (--new-run) and updates this file in a reviewed commit.",
+    "pass_fail_thresholds is null on purpose. No gate exists for real-filing metrics and none may be introduced until an initial human-verified baseline exists and has been explicitly approved. The synthetic comparison-regression suite remains the merge-blocking deterministic gate.",
+    "Only pairs whose annotation file is human_verified enter gold numerators and denominators. Machine-proposed labels are never mixed in."
+  ]
+}
