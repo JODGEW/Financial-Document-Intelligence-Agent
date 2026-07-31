@@ -371,12 +371,16 @@ ReAct-RAG/
 ├── eval_runner.py   # deterministic evaluation metrics and report
 ├── cli.py           # CLI (single query + interactive mode)
 ├── app.py           # Gradio fallback chat UI
-├── api.py           # FastAPI backend for the React UI
+├── api.py           # FastAPI backend for the React UI (+ /api/health, /api/ready)
+├── runtime_fault_hooks.py  # test-only process-interruption checkpoints (no-op in production)
+├── runtime_readiness.py    # read-only API/worker readiness checks (creates nothing)
+├── OPERATIONS.md    # 12 operator runbooks for the single-node reference runtime
 ├── eval/            # sample questions, expectations, and frozen baseline.json for drift checks
 ├── frontend/        # React + TypeScript + Tailwind UI (chat + review workspaces)
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
-├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py)
+├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py,
+│                   #   check_runtime_readiness.py, backup_workflow_db.py, run_reference_api.sh, run_reference_worker.sh)
 ├── chroma_db/       # persistent vector store
 ├── governance/      # governance layer (report, grounding, risk, context policy, impact, review queue)
 │   ├── governance_report.py  # per-answer report assembly
@@ -385,7 +389,9 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 928 tests (including leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
+├── tests/           # 957 tests (including process-level fault injection, leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
+│   ├── helpers/           # test-only process harness, fault actions, and child entry points
+│   ├── test_runtime_fault_injection.py
 │   ├── test_ingest.py
 │   ├── test_tools.py
 │   ├── test_agent.py
@@ -404,7 +410,8 @@ ReAct-RAG/
 │   ├── test_pii_redaction.py
 │   └── test_loader_{docx,excel,html,csv,pptx,email,json}.py
 ├── requirements.txt # dependencies
-└── .env.example     # template for environment variables
+├── .env.example     # template for environment variables
+└── .env.reference.example  # template for the local single-node reference runtime (no secrets)
 ```
 
 ---
@@ -543,7 +550,7 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-928 tests are collected; the offline credential-free required-check suites pass locally.
+957 tests are collected; the offline credential-free required-check suites pass locally. The 29 process-level fault-injection tests start, kill, pause, and race real operating-system processes over temporary state; they are credential-free and bounded (~80 s).
 The access-control and comparison-regression suites use deterministic local
 fixtures and a test-only signing secret; they require no real AWS credentials,
 repository secret, or network. Live external-service execution is a separate,
@@ -639,7 +646,7 @@ Ten metrics are reported with explicit numerators and denominators: change preci
 
 **Strict CI gates protect deterministic behavior.** Because the fixtures are controlled and the workflow is fully deterministic, every gate is exact (1.0, or 0.0 for the false-positive rate) and lives in the `GATES` constant in the runner. The suite also asserts the end-to-end workflow invariants: detection and governance idempotency, exactly one pending review per held result, pending and rejected held results refusing release, an approved held result releasing its final reviewed snapshot, detector/governance/review rows unchanged after export, and `PRAGMA integrity_check`.
 
-`.github/workflows/comparison-regression.yml` runs it on every pull request and every push to `main` under the branch-protection check name **`comparison-regression`**, with no path filters (comparison behavior can change from the detector, validators, schemas, filing registry, ingestion section metadata, comparison store, governance policy, review logic, export logic, labels, fixtures, or the evaluator itself, so the job always runs), no repository secrets, and no AWS credentials. The only uploaded artifact is the compact metric report: metrics, denominators, gate results, and version/fixture hashes — no filing text, evidence excerpts, reviewer notes, database files, or filesystem paths.
+`.github/workflows/comparison-regression.yml` runs it on every pull request and every push to `main` under the branch-protection check name **`comparison-regression`**, with no path filters (comparison behavior can change from the detector, validators, schemas, filing registry, ingestion section metadata, comparison store, governance policy, review logic, export logic, labels, fixtures, or the evaluator itself, so the job always runs), no repository secrets, and no AWS credentials. The only uploaded artifact is the compact metric report: metrics, denominators, gate results, and version/fixture hashes — no filing text, evidence excerpts, reviewer notes, database files, or filesystem paths. The same required job also runs the offline comparison suites and the process-level fault-injection suite, so a regression in restart, reclaim, fencing, retry, race, or lock-contention behavior blocks a merge too. There is no separate manually runnable extended matrix: the process suite is deterministic and bounded (~80 s locally), and splitting it would leave the merge-blocking core unable to catch exactly what it exists to catch.
 
 A compact baseline lives at [eval/comparison_regression_baseline.json](eval/comparison_regression_baseline.json) — versions, per-metric values with denominators, gate configuration, and each fixture's stable detector result hash, not an opaque output snapshot. A normal run never rewrites it; it prints a human-readable diff instead. Regeneration requires `--write-baseline`, which **refuses to run in CI**, so blessing a behavior change is always an explicit human commit whose label, threshold, and metric edits appear as ordinary reviewed Git diffs. A detector or workflow version change is visible in the baseline's version block and does not automatically bless changed metrics.
 
@@ -870,6 +877,150 @@ storage**: anyone with file access can alter them.
 
 ---
 
+## Local reference runtime and process-fault validation
+
+**What this validates, and how far it goes.** Every other suite proves the
+detection state machine inside a single Python test process. This step proves
+the same invariants across **actual operating-system process boundaries**:
+processes are started, `SIGKILL`-ed, paused, raced against each other, and
+starved of the SQLite write lock, and the durable state that survives is then
+read back from a different process. It is validation of the existing
+architecture, not a redesign of it — no lifecycle state, retry classification,
+delay, or policy changed.
+
+The packaging is a **single-node reference runtime for local evaluation**, not
+a production deployment. There is still no scheduler, daemon, job-processing
+loop, background poller, external queue, distributed lease, multi-node
+coordination, high-availability posture, or exactly-once guarantee.
+
+### Reference runtime
+
+```bash
+cp .env.reference.example .env.reference   # set FDIA_STATE_DIR; holds no secret
+export FDIA_AUTH_SECRET=...                # supplied externally, never committed
+
+scripts/run_reference_api.sh               # one long-running API process
+scripts/run_reference_worker.sh            # one manually invoked one-shot worker
+```
+
+Both scripts derive `COMPARISON_DB_PATH`, `FILING_REGISTRY_PATH`, and
+`CHROMA_PERSIST_DIR` from the same `FDIA_STATE_DIR`, so the API and the worker
+always point at the **same persistent state**. The API requires
+`FDIA_AUTH_SECRET` and refuses to start without it; the worker explicitly
+`unset`s it, because the worker is credential-free and needs no token, AWS
+credential, or network access.
+
+**The worker stays one-shot and manually invoked.** It claims at most one
+eligible job, executes it, and exits. Neither script backgrounds a process,
+loops, sleeps, or implies a restart policy, and a test parses both scripts to
+keep it that way. Running the worker is the *only* thing that moves queued
+work, reclaims an expired lease, or claims a due retry — **nothing executes
+because time passed.**
+
+Container packaging is deliberately **not** part of this commit. Docker is
+present on the development machine but its daemon is not running, so an image
+build could not be verified; shipping an unbuilt `Dockerfile` and
+`compose.reference.yml` would be a claim rather than a validated artifact. The
+two scripts and the environment template are the runtime that was actually
+exercised.
+
+### Readiness, and why it is not initialization
+
+`GET /api/health` is liveness: it inspects nothing and answers `ok` for any
+running process. `GET /api/ready` and
+[scripts/check_runtime_readiness.py](scripts/check_runtime_readiness.py)
+(`--role api|worker`) are readiness, and they are **strictly read-only** —
+[runtime_readiness.py](runtime_readiness.py) opens SQLite `mode=ro`, reads
+`sqlite_master` for the required workflow tables, stats the registry and vector
+directory, and revalidates the checked policies. It **creates no database, no
+table, no migration, no registry, and no Chroma content**, and runs no
+detector. A test asserts the database bytes and mtime are unchanged after
+repeated probes and that a missing database is still missing afterwards.
+
+Checks are scoped by role: the API checks the auth policy and secret validity
+(never the value), workflow policies, database, and registry; the worker checks
+workflow policies, database, registry, and vector store, and deliberately does
+**not** check authentication. Readiness **fails closed** — an unobservable
+dependency is `failed`, never `ok` — and returns `503` with a stable
+`runtime_not_ready` code plus a correlation `error_id`. Responses carry check
+names and stable codes only: no secret, path, SQL, schema text, or exception
+text. Initialization stays a separate, explicit operator action, documented in
+[OPERATIONS.md](OPERATIONS.md).
+
+### The process fault matrix
+
+A test-only seam makes deterministic interruption possible.
+[runtime_fault_hooks.py](runtime_fault_hooks.py) holds one hook slot and ten
+named checkpoints; `checkpoint()` is a no-op returning `None` whenever no hook
+is installed, which is **every production invocation**. All fault semantics —
+blocking, `os._exit`, raising the one allowlisted transient failure, ending the
+heartbeat thread — live test-side in `tests/helpers/`, so the application never
+learns what a fault is.
+
+**It cannot be switched on by a runtime caller.** There is no environment
+variable, HTTP header, query parameter, request body field, config file, policy
+key, or CLI flag that installs a hook; installation is an in-process Python
+call made only by the test-only child entry points under `tests/helpers/`. This
+is pinned three ways: an AST audit proving no production module calls
+`install`, a test driving the shipped worker CLI with a fault plan offered
+through argv (rejected) and four environment variables (ignored), and a test
+posting to the real API with fault-shaped headers, query parameters, and body
+fields. In every case the work completes normally and the rendezvous directory
+stays empty.
+
+[tests/test_runtime_fault_injection.py](tests/test_runtime_fault_injection.py)
+(29 tests, ~80 s) proves, across real processes:
+
+| Fault | Proven outcome |
+| --- | --- |
+| API `SIGKILL`-ed after the enqueue commit, before the response | Exactly one durable job, one `queued` event, comparison `queued_for_detection`, **no attempt and no detector execution in the API process**; a restarted API answers the repeated request idempotently with the same `jobId` |
+| Worker killed after its claim commit | Job/attempt `running`, comparison `detecting`, generation 1, lease fields and `claimed` + `detection_started` events present, no result and no terminal event |
+| Reclaim before expiry | Refused; another process reports no eligible work and the snapshot is byte-identical |
+| Reclaim after expiry plus grace | A later explicit one-shot process reclaims once: old attempt `timed_out`, replacement created, generation 2, executed exactly once |
+| Paused worker whose heartbeat is suppressed | Worker B reclaims; released Worker A **cannot heartbeat** (no generation-1 heartbeat event ever recorded), **cannot commit success**, and **cannot fail the replacement**; exactly one result, and job/attempt/comparison hashes and states agree |
+| Terminal success commit, output lost | Job/attempt `succeeded`, comparison `detected`, result readable; a second invocation finds no work, reruns no detector, and adds no attempt, event, or result |
+| Terminal domain failure, output lost | Same guarantee for a durably persisted failure |
+| `retry_wait` scheduled, then the process dies | `retry_count`, `next_attempt_at`, and the failure classification survive; no replacement attempt exists while waiting |
+| Worker restarted **before** `next_attempt_at` | No new attempt, no mutation, no eligible work |
+| Worker restarted **at** `next_attempt_at` | One replacement attempt, generation increments, lease and heartbeat start, execution proceeds through the existing fenced path |
+| Concurrent enqueue / claim / reclaim / due-retry claim across processes | Exactly one winner each, no duplicate jobs, attempts, generations, or results; losers get deterministic safe outcomes; `integrity_check` and `foreign_key_check` pass |
+| Deliberate SQLite lock contention on all seven write operations | No operation partially applies; a timed-out acquisition surfaces as a stable `comparison_storage_error` 500 (API) or `worker_infrastructure_error` exit 1 (CLI) with no SQL, path, or SQLite text; the explicit retry after release reaches a valid state |
+
+The existing `busy_timeout = 5000` was **not** changed to make tests pass —
+inspection confirmed it is deliberate and documented, so the lock cases hold
+the write lock for longer than it instead. Timing is bounded rather than slow:
+lease expiry is crossed with a checked short policy or an injected clock, never
+a real sleep, and the seven lock cases run in parallel over isolated databases.
+Every child process is terminated and reaped in a `finally`, including one
+deliberately abandoned while blocked at a checkpoint.
+
+### Runbooks and backup scope
+
+[OPERATIONS.md](OPERATIONS.md) carries twelve operator runbooks — API restart
+after a lost response, a queued job not being processed, an expired lease, a
+fenced old worker, retry waiting and due retry, retry exhaustion,
+claim-generation exhaustion, SQLite lock contention, auth-secret rotation,
+workflow-database backup and restore, an unavailable registry or vector store,
+and collecting a reliability report. Each states its observable state, a safe
+diagnostic command, the permitted action, the actions that must **not** be
+taken, and the single-node limitation that applies. None of them tells an
+operator to edit SQLite rows by hand.
+
+[scripts/backup_workflow_db.py](scripts/backup_workflow_db.py) is deliberately
+named a **workflow-database** backup. It copies the comparison SQLite database
+through SQLite's own online backup API, runs `integrity_check` and
+`foreign_key_check` on the copy before reporting success, refuses to overwrite
+without `--force`, verifies a restored copy independently (`--verify`), never
+modifies the source (proven byte-for-byte), and prints counts and stable codes
+with no absolute path, secret, or token. **It does not cover the filing
+registry or the vector store, and a SQLite-only backup is therefore not a
+complete filing-workflow backup** — a restored database can reference filings
+the registry and index no longer describe. Real recovery is a coordinated
+restore of all three artifacts from a consistent point, which the runbook says
+plainly.
+
+---
+
 ## Design decisions
 
 ### Why RAG instead of fine-tuning
@@ -970,6 +1121,9 @@ Known limitations:
 * Replay through the protected API requires `recovery.replay`, and every API-created replay stores the verified Principal subject with `local_hs256` attribution; an optional deprecated `operatorId` is accepted only when it exactly matches that subject. Direct library calls and historical rows stay marked `legacy_self_asserted`. Replay records and detection transition events are append-only **application records** in a local SQLite file, not tamper-proof storage
 * Detection attempts and their transition events are append-only **application records** in a local SQLite file — not tamper-proof storage. Anyone with file access can alter them
 * Reliability visibility is **read-only and exposes state only**: it never repairs, heartbeats, retries, reclaims, replays, deletes, or mutates a workflow record. Its API routes require `reliability.read`; the local report CLI remains available to an operator with filesystem access. There is still no dashboard, frontend, alerting, notification, external monitoring integration, scheduler, daemon loop, or external queue. Lifecycle fields travel through stdlib logging but are not guaranteed JSON. Replay eligibility still depends on the filing registry and fails closed when it cannot be evaluated. Local SQLite records and process logs remain application records, not tamper-proof storage
+* Process-fault validation now crosses **actual operating-system process boundaries** — an API killed after its enqueue commit, a worker killed after its claim, a paused worker fenced by a reclaiming successor, terminal commits whose output was never delivered, `retry_wait` surviving restart, concurrent processes racing every transition, and deliberate SQLite lock contention on all seven write operations. What that establishes is that the **existing** durable workflow behaves correctly under real termination; it establishes nothing about scale, multi-node behavior, or accuracy. There is still no exactly-once guarantee, distributed lease, or high-availability claim. The fault-injection seam is test-only, disabled in every production process, and unreachable from any header, query parameter, body field, environment variable, config file, or CLI flag
+* Local packaging is a **single-node reference runtime for evaluation** ([scripts/run_reference_api.sh](scripts/run_reference_api.sh), [scripts/run_reference_worker.sh](scripts/run_reference_worker.sh), [.env.reference.example](.env.reference.example)), not a production deployment: one API process, one manually invoked one-shot worker, one shared local state directory. Container packaging is deliberately absent — the Docker daemon was unavailable in this environment, so an image build could not be verified and shipping an unbuilt `Dockerfile` would be an unvalidated claim. Readiness ([runtime_readiness.py](runtime_readiness.py), `GET /api/ready`, [scripts/check_runtime_readiness.py](scripts/check_runtime_readiness.py)) is strictly read-only and fails closed; it never creates, migrates, or initializes storage, and initialization stays a separate explicit operator action
+* [scripts/backup_workflow_db.py](scripts/backup_workflow_db.py) backs up the **comparison workflow database only**. It does not cover the filing registry or the vector store, so **a SQLite-only backup is not a complete filing-workflow backup** — a restored database can reference filings the registry and index no longer describe. Real recovery requires a coordinated restore of all three artifacts from a consistent point. There is no point-in-time recovery, WAL archiving, or automated schedule
 
 ---
 
@@ -989,7 +1143,7 @@ and export artifacts are local files and SQLite, not immutable or tamper-proof
 storage. This is not enterprise-ready, not compliance-grade, and carries no
 production security posture.
 
-**Stage 3.5 work is in progress and not complete.** Seven bounded steps have
+**Stage 3.5 work is in progress and not complete.** Eight bounded steps have
 landed (roadmap step 12): durable detection attempts and lifecycle events;
 explicit bounded stale replay; read-only reliability metrics and correlated
 structured logs; and now signed local access tokens, policy-derived route
@@ -998,7 +1152,10 @@ review actions; durable authenticated initial-detection jobs and a
 credential-free one-shot worker; and finite job leases, heartbeat, fenced
 generations, and explicit expired-claim reclaim; plus deterministic
 allowlisted failure classification, bounded retry scheduling, and terminal
-retry exhaustion.
+retry exhaustion; and now process-level fault injection, restart/recovery
+validation across real operating-system process boundaries, a local
+single-node reference runtime, read-only readiness, operator runbooks, and
+workflow-database backup.
 The authentication step proves callers inside one local shared-secret trust
 boundary; possession of that secret permits token issuance, revocation is not
 implemented, and rotation invalidates every outstanding token. It does not
@@ -1012,12 +1169,24 @@ heartbeats and is recoverable only after the last lease expiry, and only when a
 later explicit invocation performs the fenced reclaim. Only explicitly
 allowlisted transient codes schedule deterministic bounded delays; unknown and
 deterministic failures fail closed, and a due retry still requires a later
-explicit invocation. What still does not exist is deployment/fault-injection
-validation, controlled real-filing evaluation, any scheduler, job-processing
-daemon loop, automatic background invocation, external queue, or multi-node
-coordination. Maturity therefore remains **Stage 3**. Stage 3.5 remains in
-progress; the next dependencies are **deployment/fault-injection validation
-and controlled real-filing evaluation**.
+explicit invocation.
+
+Those guarantees are now validated across **actual operating-system process
+boundaries**, not only inside a Python test process: an API restart does not
+lose a queued job, claimed work relies on leases, heartbeats, fencing, and a
+later explicit worker reclaim, `retry_wait` survives process restart, and a
+terminal commit survives loss of the worker's output. Local packaging is a
+**single-node reference runtime**, not a production deployment. Workers remain
+manually invoked one-shot processes; **no scheduler or daemon exists, and no
+execution occurs when time passes**. A SQLite-only backup is not a complete
+filing-workflow backup. There is no distributed, high-availability, or
+exactly-once claim.
+
+What still does not exist is controlled real-filing evaluation, any scheduler,
+job-processing daemon loop, automatic background invocation, external queue,
+container/cloud deployment infrastructure, or multi-node coordination. Maturity
+therefore remains **Stage 3**. Stage 3.5 remains in progress; the next
+dependency is **controlled real-public-filing evaluation**.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 
@@ -1046,7 +1215,9 @@ The next implementation phase is a governed two-filing change review for one com
 
     The sixth bounded Stage-3.5 step is now done: **finite detection-job leases, worker-owned heartbeat, fenced generations, and safe explicit reclaim**. Initial claims start at generation 1. During its single detector execution, the one-shot worker maintains only that claim at a bounded policy-derived cadence and stops its controller after terminal finalization or ownership loss. Heartbeat and authoritative finalization accept the exact expiry instant and reject later calls; reclaim requires expiry plus grace to be strictly past. A reclaim retires the old attempt as timed out and creates its replacement atomically. Old generations cannot heartbeat, succeed, or fail the replacement. Reaching the policy's maximum generation terminally exhausts the job without creating another attempt. Job-owned attempts cannot also consume generic operator-replay replacements; one attempt maps to each claim generation. Expiry alone triggers nothing: only a later explicit one-shot worker invocation reclaims. There is still no scheduler, job-processing daemon, external queue, distributed lease, or exactly-once guarantee
 
-    The seventh bounded Stage-3.5 step is now done: **closed failure classification, deterministic bounded retry scheduling, and terminal exhaustion**. Only the checked allowlist retries; the initial controlled transient boundary is `detection_dependency_unavailable`. Unknown internal and deterministic failures fail closed without retry. A failure transaction truthfully fails the attempt and either moves the logical job/comparison to `retry_wait`/`waiting_for_detection_retry` with the exact 5- or 30-second due time, or terminally records retry/claim-budget exhaustion. No replacement attempt exists while waiting. Queued work remains first, expired reclaim second, and due retry third. A due claim is inclusive, explicit, one-shot, and creates a fresh attempt, generation, token, lease, and heartbeat controller. Lease reclaim does not increment retry count; all ownership generations share the lease policy's hard cap. Generic replay remains unavailable for every job attempt. **Stage 3.5 remains in progress; the next dependencies are deployment/fault-injection validation and controlled real-filing evaluation**
+    The seventh bounded Stage-3.5 step is now done: **closed failure classification, deterministic bounded retry scheduling, and terminal exhaustion**. Only the checked allowlist retries; the initial controlled transient boundary is `detection_dependency_unavailable`. Unknown internal and deterministic failures fail closed without retry. A failure transaction truthfully fails the attempt and either moves the logical job/comparison to `retry_wait`/`waiting_for_detection_retry` with the exact 5- or 30-second due time, or terminally records retry/claim-budget exhaustion. No replacement attempt exists while waiting. Queued work remains first, expired reclaim second, and due retry third. A due claim is inclusive, explicit, one-shot, and creates a fresh attempt, generation, token, lease, and heartbeat controller. Lease reclaim does not increment retry count; all ownership generations share the lease policy's hard cap. Generic replay remains unavailable for every job attempt
+
+    The eighth bounded Stage-3.5 step is now done: **single-node reference runtime packaging, process-level fault injection, and restart/recovery validation** ([runtime_fault_hooks.py](runtime_fault_hooks.py), [runtime_readiness.py](runtime_readiness.py), [tests/test_runtime_fault_injection.py](tests/test_runtime_fault_injection.py), runbooks in [OPERATIONS.md](OPERATIONS.md), full contract in [Local reference runtime and process-fault validation](#local-reference-runtime-and-process-fault-validation)). Real processes are started, `SIGKILL`-ed, paused, raced, and starved of the SQLite write lock, and the surviving durable state is read back from a different process. The fault seam is test-only, disabled in every production process, and unreachable from any header, query parameter, body field, environment variable, config file, or CLI flag. No lifecycle state, retry classification, delay, or policy changed: this commit validates the existing architecture rather than redesigning it. Readiness is strictly read-only and fails closed, initialization remains a separate explicit action, the worker remains a manually invoked one-shot process, and the backup utility is honestly scoped to the workflow database alone. **Stage 3.5 remains in progress; the next dependency is controlled real-public-filing evaluation**
 
 Explicitly deferred until after that path: document-level permissions (formerly "Phase 6"), broader authentication for generic chat/RAG, new document formats, OCR, rerankers and vector-store migration, further generic chat UI redesign, additional generic chat eval expansion, LLM-as-judge evaluation, NIST documentation expansion, and Gradio parity.
 

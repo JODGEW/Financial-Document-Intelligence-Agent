@@ -5789,6 +5789,45 @@ def _missing_reliability_tables(conn: sqlite3.Connection) -> list[str]:
     return [name for name in RELIABILITY_REQUIRED_TABLES if name not in present]
 
 
+def probe_readonly_schema(db_path: str | Path | None = None) -> list[str]:
+    """Return the required workflow tables absent from an existing database.
+
+    A readiness probe, deliberately narrower than
+    :func:`read_reliability_snapshot`: it opens the same ``mode=ro`` connection
+    and reads only ``sqlite_master``, so it loads no workflow rows and cannot
+    become an accidental data-exposure surface.
+
+    Creates nothing, initializes nothing, migrates nothing, writes nothing. An
+    empty list means every required table is present — including for a valid,
+    correctly initialized database holding zero rows.
+
+    Raises ReliabilityStorageUnavailable when the file is missing or cannot be
+    opened read-only, so "cannot be observed" is never reported as "ready".
+    """
+    path = Path(db_path or config.COMPARISON_DB_PATH)
+    if not path.exists():
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_ABSENT,
+            f"comparison database does not exist: {path}. It is NOT created by "
+            "a readiness probe.",
+        )
+    try:
+        conn = _connect_readonly(path)
+    except (sqlite3.Error, OSError) as exc:
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_UNREADABLE,
+            f"comparison database at {path} could not be opened read-only: {exc!r}",
+        ) from exc
+    try:
+        with closing(conn):
+            return _missing_reliability_tables(conn)
+    except (sqlite3.Error, OSError) as exc:
+        raise ReliabilityStorageUnavailable(
+            RELIABILITY_STORAGE_UNREADABLE,
+            f"comparison database at {path} could not be read: {exc!r}",
+        ) from exc
+
+
 def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, Any]:
     """One read-only snapshot of every record the reliability report needs.
 

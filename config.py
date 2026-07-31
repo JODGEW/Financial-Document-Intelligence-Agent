@@ -8,8 +8,13 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 CHAT_MODEL_ID = os.getenv("CHAT_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
 EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
 
-# Vector store
-CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
+# Vector store. The persist directory is env-overridable like the other runtime
+# paths so the local reference runtime can point the API, the worker, and
+# ingestion at one persistent directory. The default is unchanged.
+CHROMA_PERSIST_DIR = os.getenv(
+    "CHROMA_PERSIST_DIR",
+    os.path.join(os.path.dirname(__file__), "chroma_db"),
+)
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "documents")
 
 # Document corpus
