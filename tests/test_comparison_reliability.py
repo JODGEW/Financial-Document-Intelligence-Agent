@@ -237,6 +237,7 @@ def test_empty_database_reports_explicit_zero_denominators(db):
         "comparisons_ready_for_detection": 0,
         "comparisons_queued_for_detection": 0,
         "comparisons_detecting": 0,
+        "comparisons_waiting_for_detection_retry": 0,
         "comparisons_detected": 0,
         "comparisons_failed": 0,
         "running_attempts": 0,
@@ -245,12 +246,16 @@ def test_empty_database_reports_explicit_zero_denominators(db):
         "attempt_limit_exhausted_comparisons": 0,
         "detection_jobs_queued": 0,
         "detection_jobs_running": 0,
+        "detection_jobs_waiting_for_retry": 0,
         "detection_jobs_succeeded": 0,
         "detection_jobs_failed": 0,
         "active_job_leases": 0,
         "expired_job_leases": 0,
         "reclaimable_jobs": 0,
         "claim_exhausted_jobs": 0,
+        "detection_jobs_retry_due": 0,
+        "detection_jobs_retry_not_due": 0,
+        "detection_jobs_retry_exhausted": 0,
         "unresolved_operational_issues": 0,
     }
     assert report["attempts"]["terminal_attempts"] == 0
@@ -1510,7 +1515,9 @@ def _partial_reliability_db(path):
             "detector_version TEXT, workflow_version TEXT, queued_at TEXT, "
             "claimed_at TEXT, finished_at TEXT, worker_id TEXT, result_hash TEXT, "
             "failure_code TEXT, claim_generation INTEGER, lease_started_at TEXT, "
-            "heartbeat_at TEXT, lease_expires_at TEXT)"
+            "heartbeat_at TEXT, lease_expires_at TEXT, retry_count INTEGER, "
+            "next_attempt_at TEXT, last_failure_code TEXT, "
+            "last_failure_classification TEXT, last_failure_at TEXT)"
         )
         conn.execute(
             "CREATE TABLE comparison_detection_job_events ("
@@ -1518,7 +1525,8 @@ def _partial_reliability_db(path):
             "attempt_id TEXT, event_type TEXT, event_seq INTEGER, created_at TEXT, "
             "worker_id TEXT, claim_generation INTEGER, source_attempt_id TEXT, "
             "replacement_attempt_id TEXT, lease_expires_at TEXT, result_hash TEXT, "
-            "failure_code TEXT)"
+            "failure_code TEXT, retry_count INTEGER, "
+            "failure_classification TEXT, next_attempt_at TEXT)"
         )
         conn.execute(
             "CREATE TABLE comparison_detection_replays (replay_id TEXT PRIMARY "
@@ -2157,13 +2165,17 @@ def test_api_summary_dto_is_allowlisted(api_db):
         "durations", "failureBreakdown", "leasePolicyId", "leasePolicyVersion",
         "leaseDurationSeconds", "heartbeatExtensionSeconds",
         "reclaimGraceSeconds", "maxClaimGenerations",
+        "retryPolicyId", "retryPolicyVersion", "maxRetryAttempts",
     }
     assert set(body["gauges"]) == {
         "comparisonsReadyForDetection", "comparisonsQueuedForDetection",
         "comparisonsDetecting", "comparisonsDetected", "comparisonsFailed",
+        "comparisonsWaitingForDetectionRetry",
         "runningAttempts", "staleRunningAttempts", "replayEligibleAttempts",
         "attemptLimitExhaustedComparisons", "detectionJobsQueued",
         "detectionJobsRunning", "detectionJobsSucceeded", "detectionJobsFailed",
+        "detectionJobsWaitingForRetry", "detectionJobsRetryDue",
+        "detectionJobsRetryNotDue", "detectionJobsRetryExhausted",
         "activeJobLeases", "expiredJobLeases", "reclaimableJobs",
         "claimExhaustedJobs",
         "unresolvedOperationalIssues",
@@ -2171,6 +2183,8 @@ def test_api_summary_dto_is_allowlisted(api_db):
     assert set(body["jobs"]) == {
         "jobsQueued", "jobsClaimed", "jobsSucceeded", "jobsFailed",
         "jobHeartbeats", "jobsReclaimed", "jobsClaimExhausted",
+        "retriesScheduled", "retriesClaimed", "retriesSucceeded",
+        "retriesFailed", "retriesExhausted",
     }
     assert set(body["jobDurations"]) == {
         "queueWaitCount", "queueWaitSecondsMin", "queueWaitSecondsMax",
@@ -2202,6 +2216,8 @@ def test_api_summary_dto_is_allowlisted(api_db):
     assert set(body["failureBreakdown"]) == {
         "failedAttemptsByCode", "timedOutAttemptsByCode", "failuresByDetectorVersion",
         "failuresByWorkflowVersion",
+        "retryableFailuresByCode", "nonRetryableFailuresByCode",
+        "retryExhaustionsByOriginalCode",
     }
     assert body["attempts"]["terminalAttempts"] == 4
     assert body["gauges"]["runningAttempts"] == 1
@@ -2225,6 +2241,7 @@ def test_api_issue_and_failure_dtos_expose_nothing_sensitive(api_db):
     assert set(issues.json()) == {
         "contractVersion", "generatedAt", "recoveryPolicyId", "recoveryPolicyVersion",
         "leasePolicyId", "leasePolicyVersion", "total", "returned", "truncated",
+        "retryPolicyId", "retryPolicyVersion",
         "issues",
     }
     assert issues.json()["total"] >= 1
@@ -3083,13 +3100,19 @@ def test_reliability_service_only_calls_read_only_store_functions():
         # vocabulary constants
         "ATTEMPT_STATUSES", "ATTEMPT_RUNNING", "ATTEMPT_SUCCEEDED",
         "ATTEMPT_FAILED", "ATTEMPT_TIMED_OUT", "STATUS_READY_FOR_DETECTION",
-        "STATUS_QUEUED_FOR_DETECTION", "STATUS_DETECTING", "STATUS_DETECTED",
+            "STATUS_QUEUED_FOR_DETECTION", "STATUS_DETECTING", "STATUS_DETECTED",
+            "STATUS_WAITING_FOR_DETECTION_RETRY",
         "STATUS_FAILED", "JOB_STATUSES", "JOB_QUEUED", "JOB_RUNNING",
-        "JOB_SUCCEEDED", "JOB_FAILED",
+            "JOB_SUCCEEDED", "JOB_FAILED",
+            "JOB_RETRY_WAIT",
         "EVENT_JOB_QUEUED", "EVENT_JOB_CLAIMED", "EVENT_JOB_SUCCEEDED",
         "EVENT_JOB_FAILED", "EVENT_JOB_HEARTBEAT", "EVENT_JOB_RECLAIMED",
-        "EVENT_JOB_CLAIM_EXHAUSTED", "JOB_EVENT_TYPES",
-        "REASON_JOB_CLAIMS_EXHAUSTED",
+            "EVENT_JOB_CLAIM_EXHAUSTED", "JOB_EVENT_TYPES",
+            "EVENT_JOB_RETRY_SCHEDULED", "EVENT_JOB_RETRY_CLAIMED",
+            "EVENT_JOB_RETRY_EXHAUSTED",
+            "REASON_JOB_CLAIMS_EXHAUSTED",
+            "REASON_JOB_RETRIES_EXHAUSTED",
+            "REASON_JOB_EXECUTION_BUDGET_EXHAUSTED",
         # exception types only: one classifies a registry answer, two carry the
         # store's read-path storage/schema verdicts. None of them writes.
         "ComparisonPairError",
@@ -3143,6 +3166,8 @@ def test_log_and_issue_vocabularies_are_closed():
         "detection_job_heartbeat", "detection_job_reclaimed",
         "detection_job_claim_exhausted", "detection_job_finalize_rejected",
         "detection_job_succeeded", "detection_job_failed",
+        "detection_job_retry_scheduled", "detection_job_retry_claimed",
+        "detection_job_retry_exhausted",
     }
     for forbidden in ("operator_id", "operator_note", "reviewer_id", "reviewer_note",
                       "reason_code", "excerpt", "evidence", "result_json"):
@@ -3169,6 +3194,7 @@ _REQUIRED_CI_SUITES = (
     # Stage 3.5 reliability
     "tests/test_comparison_detection_jobs.py",
     "tests/test_comparison_detection_job_leases.py",
+    "tests/test_comparison_detection_job_retries.py",
     "tests/test_comparison_detection_attempts.py",
     "tests/test_detection_recovery.py",
     "tests/test_comparison_reliability.py",

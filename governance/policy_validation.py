@@ -26,6 +26,31 @@ class GovernancePolicyConfigError(Exception):
     """A governance policy file is present but invalid (operator error)."""
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that refuses duplicate mapping keys."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found duplicate key",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
 def load_policy_mapping(path: Path, policy_name: str) -> dict[str, Any] | None:
     """Read a policy YAML file into its root mapping.
 
@@ -46,7 +71,7 @@ def load_policy_mapping(path: Path, policy_name: str) -> dict[str, Any] | None:
         ) from exc
 
     try:
-        raw = yaml.safe_load(text)
+        raw = yaml.load(text, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         location = f" near line {mark.line + 1}" if mark is not None else ""

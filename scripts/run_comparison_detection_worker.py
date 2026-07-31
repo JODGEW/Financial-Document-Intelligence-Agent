@@ -3,7 +3,7 @@
 
 Credential-free: this command does not import the API/authentication boundary
 and does not require FDIA_AUTH_SECRET, AWS credentials, or network access.
-There is no polling loop, sleep, detector retry, scheduler, or daemon.
+There is no polling loop, sleep-until-due, scheduler, or daemon.
 """
 
 from __future__ import annotations
@@ -58,7 +58,14 @@ def _wire(outcome: dict) -> dict:
         "attemptId": outcome["attempt_id"],
         "jobStatus": outcome["job_status"],
         "attemptStatus": outcome["attempt_status"],
+        "claimType": outcome.get("claim_type"),
         "claimGeneration": outcome["claim_generation"],
+        "retryCount": outcome.get("retry_count", 0),
+        "nextAttemptAt": outcome.get("next_attempt_at"),
+        "lastFailureCode": outcome.get("last_failure_code"),
+        "lastFailureClassification": outcome.get(
+            "last_failure_classification"
+        ),
         "leaseExpiresAt": outcome["lease_expires_at"],
         "resultHash": outcome["result_hash"],
         "failureCode": outcome["failure_code"],
@@ -78,7 +85,10 @@ def _print_plain(payload: dict) -> None:
         ("attemptId", payload["attemptId"] or "none"),
         ("jobStatus", payload["jobStatus"]),
         ("attemptStatus", payload["attemptStatus"] or "none"),
+        ("claimType", payload["claimType"] or "none"),
         ("claimGeneration", payload["claimGeneration"]),
+        ("retryCount", payload["retryCount"]),
+        ("nextAttemptAt", payload["nextAttemptAt"] or "none"),
         ("leaseExpiresAt", payload["leaseExpiresAt"] or "none"),
         ("resultHash", payload["resultHash"] or "none"),
         ("failureCode", payload["failureCode"] or "none"),

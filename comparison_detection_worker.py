@@ -11,8 +11,10 @@ finite leases and monotonically increasing generations. A later explicit
 one-shot invocation may reclaim expired work; no wall-clock transition happens
 by itself. While detector computation is active, one bounded in-process
 controller heartbeats only that claim. It never selects jobs or retries
-detection. There is no detector retry, scheduler, job-processing daemon loop,
-sleep, external queue, or multi-node coordination.
+detection itself. Allowlisted transient failures may schedule bounded,
+deterministic retry work, but only a later explicit invocation can claim it.
+There is no scheduler, job-processing daemon loop, wait-until-due sleep,
+external queue, or multi-node coordination.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import comparison_reliability
 import comparison_store
 import config
 import detection_job_lease
+import detection_job_retry
 
 logger = logging.getLogger("comparison_detection_worker")
 
@@ -223,6 +226,7 @@ def run_one_job(
     registry_path: str | Path | None = None,
     chroma_client=None,
     policy: dict[str, Any] | None = None,
+    retry_policy: dict[str, Any] | None = None,
     now: datetime | None = None,
     heartbeat_controller_factory: Callable[..., DetectionJobHeartbeatController]
     | None = None,
@@ -237,6 +241,7 @@ def run_one_job(
     db_path = db_path or config.COMPARISON_DB_PATH
     registry_path = registry_path or config.FILING_REGISTRY_PATH
     policy = policy or detection_job_lease.POLICY
+    retry_policy = retry_policy or detection_job_retry.POLICY
     worker = comparison_store.validate_worker_id(worker_id)
     comparison_store.init_db(db_path)
 
@@ -271,6 +276,7 @@ def run_one_job(
             lease_duration_seconds=policy["lease_duration_seconds"],
             reclaim_grace_seconds=policy["reclaim_grace_seconds"],
             max_claim_generations=policy["max_claim_generations"],
+            max_retry_attempts=retry_policy["max_retry_attempts"],
             now=now,
             db_path=db_path,
         )
@@ -302,12 +308,13 @@ def run_one_job(
         lease_duration_seconds=policy["lease_duration_seconds"],
         reclaim_grace_seconds=policy["reclaim_grace_seconds"],
         max_claim_generations=policy["max_claim_generations"],
+        max_retry_attempts=retry_policy["max_retry_attempts"],
         now=now,
         db_path=db_path,
     )
     if claimed is None:
         return {"no_job_available": True}
-    if claimed["kind"] in {"failed", "exhausted"}:
+    if claimed["kind"] in {"failed", "exhausted", "retry_exhausted"}:
         terminal_attempt = claimed.get("attempt")
         if terminal_attempt is not None:
             comparison_reliability.log_lifecycle_event(
@@ -328,6 +335,17 @@ def run_one_job(
                     else None
                 ),
             )
+        if claimed["kind"] == "retry_exhausted":
+            comparison_reliability.log_detection_job_event(
+                comparison_reliability.EVENT_JOB_RETRY_EXHAUSTED,
+                job=claimed["job"],
+                attempt=terminal_attempt,
+                source_attempt_id=(
+                    terminal_attempt.get("attempt_id")
+                    if terminal_attempt
+                    else None
+                ),
+            )
         comparison_reliability.log_detection_job_event(
             comparison_reliability.EVENT_JOB_FAILED,
             job=claimed["job"],
@@ -338,6 +356,11 @@ def run_one_job(
     job = claimed["job"]
     attempt = claimed["attempt"]
     claim_token = claimed["claim_token"]
+    claim_type = {
+        "claimed": "initial",
+        "reclaimed": "reclaim",
+        "retry": "retry",
+    }[claimed["kind"]]
     if claimed["kind"] == "reclaimed":
         source_attempt = claimed["source_attempt"]
         comparison_reliability.log_lifecycle_event(
@@ -353,18 +376,26 @@ def run_one_job(
         (
             comparison_reliability.EVENT_JOB_RECLAIMED
             if claimed["kind"] == "reclaimed"
-            else comparison_reliability.EVENT_JOB_CLAIMED
+            else (
+                comparison_reliability.EVENT_JOB_RETRY_CLAIMED
+                if claimed["kind"] == "retry"
+                else comparison_reliability.EVENT_JOB_CLAIMED
+            )
         ),
         job=job,
         attempt=attempt,
         source_attempt_id=(
             claimed["source_attempt"]["attempt_id"]
             if claimed["kind"] == "reclaimed"
-            else None
+            else (
+                claimed["source_attempt"]["attempt_id"]
+                if claimed["kind"] == "retry"
+                else None
+            )
         ),
         replacement_attempt_id=(
             attempt["attempt_id"]
-            if claimed["kind"] == "reclaimed"
+            if claimed["kind"] in {"reclaimed", "retry"}
             else None
         ),
     )
@@ -399,6 +430,8 @@ def run_one_job(
                 claim_generation=job["claim_generation"],
                 claim_token=claim_token,
                 job_now=now,
+                retry_policy=retry_policy,
+                max_claim_generations=policy["max_claim_generations"],
             )
         finally:
             heartbeat_controller.stop()
@@ -417,6 +450,7 @@ def run_one_job(
             failure_code=exc.code,
             ownership_lost=True,
             attempted_attempt_id=attempt["attempt_id"],
+            claim_type=claim_type,
         )
     except comparison_detector.DetectionError:
         terminal_job = comparison_store.get_detection_job(
@@ -427,7 +461,11 @@ def run_one_job(
         )
         if (
             terminal_job is None
-            or terminal_job["status"] != comparison_store.JOB_FAILED
+            or terminal_job["status"]
+            not in {
+                comparison_store.JOB_FAILED,
+                comparison_store.JOB_RETRY_WAIT,
+            }
             or terminal_attempt is None
             or terminal_attempt["status"] != comparison_store.ATTEMPT_FAILED
         ):
@@ -435,11 +473,26 @@ def run_one_job(
                 "detector failure did not reach a durable terminal job state"
             )
         comparison_reliability.log_detection_job_event(
-            comparison_reliability.EVENT_JOB_FAILED,
+            (
+                comparison_reliability.EVENT_JOB_RETRY_SCHEDULED
+                if terminal_job["status"] == comparison_store.JOB_RETRY_WAIT
+                else (
+                    comparison_reliability.EVENT_JOB_RETRY_EXHAUSTED
+                    if terminal_job.get("failure_code")
+                    in {
+                        comparison_store.REASON_JOB_RETRIES_EXHAUSTED,
+                        comparison_store.REASON_JOB_EXECUTION_BUDGET_EXHAUSTED,
+                    }
+                    else comparison_reliability.EVENT_JOB_FAILED
+                )
+            ),
             job=terminal_job,
             attempt=terminal_attempt,
+            source_attempt_id=terminal_attempt["attempt_id"],
         )
-        return _worker_outcome(terminal_job, terminal_attempt)
+        return _worker_outcome(
+            terminal_job, terminal_attempt, claim_type=claim_type
+        )
 
     terminal_job = comparison_store.get_detection_job(
         job["job_id"], db_path=db_path
@@ -459,7 +512,9 @@ def run_one_job(
         job=terminal_job,
         attempt=terminal_attempt,
     )
-    return _worker_outcome(terminal_job, terminal_attempt)
+    return _worker_outcome(
+        terminal_job, terminal_attempt, claim_type=claim_type
+    )
 
 
 def _worker_outcome(
@@ -469,6 +524,7 @@ def _worker_outcome(
     failure_code: str | None = None,
     ownership_lost: bool = False,
     attempted_attempt_id: str | None = None,
+    claim_type: str | None = None,
 ) -> dict[str, Any]:
     """Narrow process/API-neutral outcome; never includes claim material."""
     return {
@@ -481,11 +537,22 @@ def _worker_outcome(
         "lease_expires_at": job.get("lease_expires_at"),
         "result_hash": job.get("result_hash"),
         "failure_code": failure_code or job.get("failure_code"),
+        "claim_type": claim_type,
+        "retry_count": job.get("retry_count", 0),
+        "next_attempt_at": job.get("next_attempt_at"),
+        "last_failure_code": job.get("last_failure_code"),
+        "last_failure_classification": job.get(
+            "last_failure_classification"
+        ),
         "ownership_lost": ownership_lost,
         "worker_completed_responsibility": (
             not ownership_lost
             and job["status"]
-            in {comparison_store.JOB_SUCCEEDED, comparison_store.JOB_FAILED}
+            in {
+                comparison_store.JOB_RETRY_WAIT,
+                comparison_store.JOB_SUCCEEDED,
+                comparison_store.JOB_FAILED,
+            }
         ),
     }
 

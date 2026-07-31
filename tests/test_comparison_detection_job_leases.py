@@ -1279,10 +1279,9 @@ def test_integrity_foreign_keys_and_no_background_mechanism(tmp_path):
         "celery",
         "rabbitmq",
         "kafka",
-        "boto3",
-        "redis",
-        "next_attempt_at",
-    ):
+            "boto3",
+            "redis",
+        ):
         assert forbidden not in source.lower()
 
 

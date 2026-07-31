@@ -1315,7 +1315,7 @@ def test_no_automatic_retry_scheduler_or_daemon_was_introduced():
     forbidden = {
         "sleep", "Timer", "timer", "create_task", "run_forever", "getmtime",
         "st_mtime", "crontab", "apscheduler", "celery", "sched",
-        "max_retries", "retry_count", "retries", "backoff", "dead_letter",
+        "backoff", "dead_letter",
         "dlq", "worker_thread", "background_task", "BackgroundTasks",
     }
     for name in (
