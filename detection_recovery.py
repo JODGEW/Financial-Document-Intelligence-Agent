@@ -13,10 +13,11 @@ cron entry, dead-letter queue, or exponential backoff. The separate
 initial-detection worker is one-shot and never handles replay. Crossing the
 configured stale threshold changes NOTHING on its own: an eligible
 direct/replay attempt remains ``running`` until a human explicitly POSTs a
-replay request. A worker-owned job attempt is not eligible in this commit
-because no lease, heartbeat, fencing, or safe reclaim exists. Reading the
-recovery endpoint is side-effect free — observing an old attempt never retires
-it. "Stale" is a statement about eligibility, not an action.
+replay request. A worker-owned job attempt is not operator-replay eligible:
+its finite lease and claim generation are handled only by a later explicit
+one-shot worker invocation. Reading the recovery endpoint is side-effect free
+— observing an old attempt never retires it. "Stale" is a statement about
+eligibility, not an action.
 
 Failed attempts are also NOT replayable here. Replay exists for one narrow
 condition: a ``running`` attempt whose process is gone. General retry of a
@@ -28,13 +29,15 @@ The protected API supplies a verified Principal subject plus narrow
 ``local_hs256`` token/policy provenance. Replay records and transition events
 are append-only application records, NOT tamper-proof storage.
 
-Boundedness
------------
-``max_attempts_per_comparison`` caps how many attempts one comparison may ever
-accumulate, counting every status. The limit is enforced inside the replay
-transaction, so it holds under concurrent requests. Once reached, the
-comparison is done: a genuinely fresh run means a new comparison, which is what
-a workflow-version bump already produces.
+Boundedness and ownership
+-------------------------
+``max_attempts_per_comparison`` caps direct synchronous execution plus its
+operator-replay replacements. A job-owned execution has a separate,
+non-combinable budget: one attempt per claim generation, bounded by the checked
+detection-job lease policy. The active job attempt is never operator-replay
+eligible, so the two mechanisms cannot be combined to create extra attempts.
+Both limits are enforced inside their respective ``BEGIN IMMEDIATE``
+transactions.
 """
 
 from __future__ import annotations
@@ -90,8 +93,8 @@ BLOCK_ALREADY_REPLAYED = comparison_store.REASON_REPLAY_ALREADY_EXISTS
 BLOCK_INPUTS_CHANGED = comparison_store.REASON_REPLAY_INPUTS_CHANGED
 BLOCK_VERSION_CHANGED = comparison_store.REASON_REPLAY_VERSION_CHANGED
 BLOCK_LIFECYCLE_INVALID = comparison_store.REASON_TRANSITION_INVALID
-BLOCK_JOB_RECLAIM_NOT_SUPPORTED = (
-    comparison_store.REASON_JOB_RECLAIM_NOT_SUPPORTED
+BLOCK_ATTEMPT_MANAGED_BY_JOB = (
+    comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
 )
 
 
@@ -402,11 +405,8 @@ def _blocking_reason_from_records(
     """
     if existing_replay is not None:
         return BLOCK_ALREADY_REPLAYED
-    if (
-        active_detection_job is not None
-        and active_detection_job.get("status") == comparison_store.JOB_RUNNING
-    ):
-        return BLOCK_JOB_RECLAIM_NOT_SUPPORTED
+    if active_detection_job is not None:
+        return BLOCK_ATTEMPT_MANAGED_BY_JOB
     if comparison is None or comparison["status"] != comparison_store.STATUS_DETECTING:
         return BLOCK_LIFECYCLE_INVALID
     if source_attempt["status"] != comparison_store.ATTEMPT_RUNNING:
@@ -491,6 +491,18 @@ def replay_attempt(
     if attempt is None:
         raise ReplayAttemptNotFound(attempt_id)
     comparison_id = attempt["comparison_id"]
+    if comparison_store.get_detection_job_for_attempt(
+        attempt_id, db_path=db_path
+    ) is not None:
+        # Fast, read-only ownership refusal before registry resolution. The
+        # replay transaction repeats this check under BEGIN IMMEDIATE because
+        # this preflight alone cannot settle a replay-vs-reclaim race.
+        raise comparison_store.DetectionStateError(
+            comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB,
+            comparison_store.ATTEMPT_MANAGED_BY_JOB_MESSAGE,
+            comparison_id=comparison_id,
+            attempt_id=attempt_id,
+        )
 
     # Registry truth, resolved OUTSIDE the transaction (it reads JSONL) and
     # revalidated inside it against what the stale attempt captured at start.

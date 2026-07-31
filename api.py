@@ -30,6 +30,7 @@ import comparison_reliability
 import comparison_review
 import comparison_store
 import config
+import detection_job_lease
 import detection_recovery
 from governance import review_queue
 from loaders.registry import supported_extensions
@@ -621,6 +622,11 @@ class DetectionJobDTO(BaseModel):
     claimedAt: str | None = None
     finishedAt: str | None = None
     workerId: str | None = None
+    claimGeneration: int
+    leaseStartedAt: str | None = None
+    heartbeatAt: str | None = None
+    leaseExpiresAt: str | None = None
+    leaseState: Literal["not_claimed", "active", "expired", "terminal"]
     resultHash: str | None = None
     failureCode: str | None = None
 
@@ -637,12 +643,19 @@ class DetectionJobEventDTO(BaseModel):
     eventType: Literal[
         "detection_job_queued",
         "detection_job_claimed",
+        "detection_job_heartbeat",
+        "detection_job_reclaimed",
+        "detection_job_claim_exhausted",
         "detection_job_succeeded",
         "detection_job_failed",
     ]
     eventSeq: int
     createdAt: str
     workerId: str | None = None
+    claimGeneration: int
+    sourceAttemptId: str | None = None
+    replacementAttemptId: str | None = None
+    leaseExpiresAt: str | None = None
     resultHash: str | None = None
     failureCode: str | None = None
 
@@ -756,6 +769,10 @@ class ReliabilityGaugesDTO(BaseModel):
     detectionJobsRunning: int
     detectionJobsSucceeded: int
     detectionJobsFailed: int
+    activeJobLeases: int
+    expiredJobLeases: int
+    reclaimableJobs: int
+    claimExhaustedJobs: int
     unresolvedOperationalIssues: int
 
 
@@ -764,6 +781,9 @@ class ReliabilityJobCountersDTO(BaseModel):
     jobsClaimed: int
     jobsSucceeded: int
     jobsFailed: int
+    jobHeartbeats: int
+    jobsReclaimed: int
+    jobsClaimExhausted: int
 
 
 class ReliabilityJobDurationsDTO(BaseModel):
@@ -781,6 +801,7 @@ class ReliabilityJobDurationsDTO(BaseModel):
     executionSecondsP95: float | None = None
     negativeQueueWaitJobs: int
     negativeExecutionJobs: int
+    negativeLeaseDurationJobs: int
     percentileMethod: str
 
 
@@ -867,6 +888,12 @@ class ReliabilitySummaryDTO(BaseModel):
     recoveryPolicyVersion: str
     staleAfterSeconds: int
     maxAttemptsPerComparison: int
+    leasePolicyId: str
+    leasePolicyVersion: str
+    leaseDurationSeconds: int
+    heartbeatExtensionSeconds: int
+    reclaimGraceSeconds: int
+    maxClaimGenerations: int
     gauges: ReliabilityGaugesDTO
     jobs: ReliabilityJobCountersDTO
     jobDurations: ReliabilityJobDurationsDTO
@@ -893,8 +920,10 @@ class ReliabilityIssueDTO(BaseModel):
         "comparison_failed",
         "replacement_attempt_failed",
         "invalid_negative_duration",
+        "invalid_negative_lease_duration",
         "queued_detection_job",
-        "running_detection_job_without_lease",
+        "expired_detection_job_lease",
+        "detection_job_claims_exhausted",
     ]
     comparisonId: str
     jobId: str | None = None
@@ -905,6 +934,11 @@ class ReliabilityIssueDTO(BaseModel):
     startedAt: str | None = None
     queuedAt: str | None = None
     claimedAt: str | None = None
+    claimGeneration: int | None = None
+    leaseStartedAt: str | None = None
+    heartbeatAt: str | None = None
+    leaseExpiresAt: str | None = None
+    leaseState: Literal["not_claimed", "active", "expired", "terminal"] | None = None
     createdAt: str | None = None
     detectedAt: str
     ageSeconds: float | None = None
@@ -920,7 +954,7 @@ class ReliabilityIssueDTO(BaseModel):
         "no_replay_available",
         "inspect_clock_integrity",
         "run_one_shot_detection_worker",
-        "inspect_running_job_no_automatic_recovery",
+        "run_one_shot_worker_to_reclaim",
     ]
 
 
@@ -937,6 +971,8 @@ class ReliabilityIssuesResponse(BaseModel):
     generatedAt: str
     recoveryPolicyId: str
     recoveryPolicyVersion: str
+    leasePolicyId: str
+    leasePolicyVersion: str
     total: int
     returned: int
     truncated: bool
@@ -1868,6 +1904,11 @@ def _to_detection_job_dto(record: dict) -> DetectionJobDTO:
         claimedAt=record.get("claimed_at"),
         finishedAt=record.get("finished_at"),
         workerId=record.get("worker_id"),
+        claimGeneration=record.get("claim_generation", 0),
+        leaseStartedAt=record.get("lease_started_at"),
+        heartbeatAt=record.get("heartbeat_at"),
+        leaseExpiresAt=record.get("lease_expires_at"),
+        leaseState=detection_job_lease.lease_state(record),
         resultHash=record.get("result_hash"),
         failureCode=record.get("failure_code"),
     )
@@ -1883,6 +1924,10 @@ def _to_detection_job_event_dto(record: dict) -> DetectionJobEventDTO:
         eventSeq=record.get("event_seq", 0),
         createdAt=record.get("created_at", ""),
         workerId=record.get("worker_id"),
+        claimGeneration=record.get("claim_generation", 0),
+        sourceAttemptId=record.get("source_attempt_id"),
+        replacementAttemptId=record.get("replacement_attempt_id"),
+        leaseExpiresAt=record.get("lease_expires_at"),
         resultHash=record.get("result_hash"),
         failureCode=record.get("failure_code"),
     )
@@ -2080,10 +2125,10 @@ def replay_detection_attempt(
     replay (the stored replay and the replacement's current terminal outcome,
     with no second execution); 404 unknown attempt or comparison; 409 with a
     stable code when the persisted state does not permit replay (not stale,
-    already replayed by a different request, wrong lifecycle, attempt limit
-    reached, changed inputs or versions); 422 invalid operator fields or reason
-    code; safe 500 with a correlation id for unexpected storage or detector
-    faults.
+    managed by an active detection job, already replayed by a different
+    request, wrong lifecycle, attempt limit reached, changed inputs or
+    versions); 422 invalid operator fields or reason code; safe 500 with a
+    correlation id for unexpected storage or detector faults.
     """
     operator_id = _authenticated_actor(
         request.model_dump()["operatorId"], principal, field_name="operatorId"
@@ -2335,6 +2380,12 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
         recoveryPolicyVersion=report["recovery_policy_version"],
         staleAfterSeconds=report["stale_after_seconds"],
         maxAttemptsPerComparison=report["max_attempts_per_comparison"],
+        leasePolicyId=report["lease_policy_id"],
+        leasePolicyVersion=report["lease_policy_version"],
+        leaseDurationSeconds=report["lease_duration_seconds"],
+        heartbeatExtensionSeconds=report["heartbeat_extension_seconds"],
+        reclaimGraceSeconds=report["reclaim_grace_seconds"],
+        maxClaimGenerations=report["max_claim_generations"],
         gauges=ReliabilityGaugesDTO(
             comparisonsReadyForDetection=gauges["comparisons_ready_for_detection"],
             comparisonsQueuedForDetection=gauges[
@@ -2353,6 +2404,10 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             detectionJobsRunning=gauges["detection_jobs_running"],
             detectionJobsSucceeded=gauges["detection_jobs_succeeded"],
             detectionJobsFailed=gauges["detection_jobs_failed"],
+            activeJobLeases=gauges["active_job_leases"],
+            expiredJobLeases=gauges["expired_job_leases"],
+            reclaimableJobs=gauges["reclaimable_jobs"],
+            claimExhaustedJobs=gauges["claim_exhausted_jobs"],
             unresolvedOperationalIssues=gauges["unresolved_operational_issues"],
         ),
         jobs=ReliabilityJobCountersDTO(
@@ -2360,6 +2415,9 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             jobsClaimed=jobs["jobs_claimed"],
             jobsSucceeded=jobs["jobs_succeeded"],
             jobsFailed=jobs["jobs_failed"],
+            jobHeartbeats=jobs["job_heartbeats"],
+            jobsReclaimed=jobs["jobs_reclaimed"],
+            jobsClaimExhausted=jobs["jobs_claim_exhausted"],
         ),
         jobDurations=ReliabilityJobDurationsDTO(
             queueWaitCount=job_durations["queue_wait_count"],
@@ -2376,6 +2434,9 @@ def _to_reliability_summary_dto(report: dict) -> ReliabilitySummaryDTO:
             executionSecondsP95=job_durations["execution_seconds_p95"],
             negativeQueueWaitJobs=job_durations["negative_queue_wait_jobs"],
             negativeExecutionJobs=job_durations["negative_execution_jobs"],
+            negativeLeaseDurationJobs=job_durations[
+                "negative_lease_duration_jobs"
+            ],
             percentileMethod=job_durations["percentile_method"],
         ),
         attempts=ReliabilityAttemptCountersDTO(
@@ -2452,6 +2513,10 @@ def get_reliability_issues(
         "comparison_failed",
         "replacement_attempt_failed",
         "invalid_negative_duration",
+        "invalid_negative_lease_duration",
+        "queued_detection_job",
+        "expired_detection_job_lease",
+        "detection_job_claims_exhausted",
     ]
     | None = None,
     comparison_id: str | None = Query(default=None, max_length=120),
@@ -2487,6 +2552,8 @@ def get_reliability_issues(
         generatedAt=report["generated_at"],
         recoveryPolicyId=report["recovery_policy_id"],
         recoveryPolicyVersion=report["recovery_policy_version"],
+        leasePolicyId=report["lease_policy_id"],
+        leasePolicyVersion=report["lease_policy_version"],
         total=report["total"],
         returned=report["returned"],
         truncated=report["truncated"],
@@ -2507,6 +2574,11 @@ def _to_reliability_issue_dto(issue: dict) -> ReliabilityIssueDTO:
         startedAt=issue["started_at"],
         queuedAt=issue["queued_at"],
         claimedAt=issue["claimed_at"],
+        claimGeneration=issue["claim_generation"],
+        leaseStartedAt=issue["lease_started_at"],
+        heartbeatAt=issue["heartbeat_at"],
+        leaseExpiresAt=issue["lease_expires_at"],
+        leaseState=issue["lease_state"],
         createdAt=issue["created_at"],
         detectedAt=issue["detected_at"],
         ageSeconds=issue["age_seconds"],

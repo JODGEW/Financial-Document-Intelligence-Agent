@@ -25,8 +25,10 @@ from langchain_core.embeddings import Embeddings
 
 import api
 import comparison_detector
+import comparison_reliability
 import comparison_store
 import config
+import detection_job_lease
 import detection_recovery
 import filing_registry
 import ingest
@@ -131,6 +133,50 @@ def _interrupted(corpus, db, *, started_at=None):
     return comparison_id, attempt["attempt_id"]
 
 
+def _job_interrupted(corpus, db, *, comparison_id_suffix="job"):
+    """One active job-owned attempt with generation 1 and a finite lease."""
+    record, _ = comparison_store.create_comparison(
+        PREV_ID, CURR_ID, db_path=db, registry_path=corpus.registry
+    )
+    comparison_id = record["comparison_id"]
+    previous_hash, current_hash = _hashes(corpus)
+    job = comparison_store.enqueue_detection_job(
+        comparison_id,
+        detector_version=DETECTOR_VERSION,
+        workflow_version=WORKFLOW_VERSION,
+        previous_filing_id=PREV_ID,
+        current_filing_id=CURR_ID,
+        previous_source_hash=previous_hash,
+        current_source_hash=current_hash,
+        requested_by_subject=f"{comparison_id_suffix}@example.local",
+        requested_by_auth_method=comparison_store.ACTOR_AUTH_LOCAL_HS256,
+        requested_by_token_id=f"jti-{comparison_id_suffix}",
+        requested_by_policy_id="comparison_access_control_v1",
+        requested_by_policy_version="1",
+        db_path=db,
+    )["job"]
+    claimed = comparison_store.claim_detection_job(
+        job_id=job["job_id"],
+        worker_id="worker-one",
+        detector_version=DETECTOR_VERSION,
+        workflow_version=WORKFLOW_VERSION,
+        previous_source_hash=previous_hash,
+        current_source_hash=current_hash,
+        lease_duration_seconds=(
+            detection_job_lease.POLICY["lease_duration_seconds"]
+        ),
+        reclaim_grace_seconds=(
+            detection_job_lease.POLICY["reclaim_grace_seconds"]
+        ),
+        max_claim_generations=(
+            detection_job_lease.POLICY["max_claim_generations"]
+        ),
+        now=T0,
+        db_path=db,
+    )
+    return comparison_id, claimed, previous_hash, current_hash
+
+
 def _sql(db, statement, params=()):
     with closing(sqlite3.connect(str(db))) as conn, conn:
         conn.execute(statement, params)
@@ -176,6 +222,8 @@ def _snapshot(db):
             "comparison_detection_attempts",
             "comparison_detection_events",
             "comparison_detection_replays",
+            "comparison_detection_jobs",
+            "comparison_detection_job_events",
         ):
             rows[table] = [
                 tuple(row)
@@ -1144,6 +1192,273 @@ def test_recovery_and_replay_routes(api_env, corpus):
             f"/api/detection-attempts/{source_id}/replay", json=body
         )
         assert response.status_code == 422, body
+
+
+def test_job_owned_attempt_uses_lease_reclaim_not_operator_replay(
+    api_env, corpus
+):
+    comparison_id, claimed, previous_hash, current_hash = _job_interrupted(
+        corpus, api_env.db, comparison_id_suffix="api-job"
+    )
+    attempt_id = claimed["attempt"]["attempt_id"]
+    recovery = client.get(
+        f"/api/detection-attempts/{attempt_id}/recovery"
+    )
+    assert recovery.status_code == 200
+    body = recovery.json()
+    assert body["comparisonId"] == comparison_id
+    assert body["status"] == comparison_store.ATTEMPT_RUNNING
+    assert body["isStale"] is True
+    assert body["attemptsUsed"] == 1
+    assert body["replayEligible"] is False
+    assert body["blockingReason"] == (
+        comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
+    )
+
+    before = _snapshot(api_env.db)
+    before_bytes = api_env.db.read_bytes()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            comparison_detector,
+            "resolve_detection_inputs",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError(
+                    "job-managed replay must refuse before registry resolution"
+                )
+            ),
+        )
+        replayed = client.post(
+            f"/api/detection-attempts/{attempt_id}/replay",
+            json={"reasonCode": REASON, "operatorNote": NOTE},
+        )
+    assert replayed.status_code == 409
+    assert replayed.json()["detail"] == {
+        "code": comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB,
+        "message": (
+            "this detection attempt is managed by a worker job and must "
+            "recover through fenced lease reclaim"
+        ),
+    }
+    assert _snapshot(api_env.db) == before
+    assert api_env.db.read_bytes() == before_bytes
+    assert comparison_store.get_detection_replay_for_source(
+        attempt_id, db_path=api_env.db
+    ) is None
+
+    issue_rows = comparison_reliability.issues(
+        now=WELL_STALE,
+        db_path=api_env.db,
+        registry_path=corpus.registry,
+    )["issues"]
+    expired = [
+        issue
+        for issue in issue_rows
+        if issue["issue_type"]
+        == comparison_reliability.ISSUE_EXPIRED_DETECTION_JOB_LEASE
+    ]
+    assert len(expired) == 1
+    assert expired[0]["attempt_id"] == attempt_id
+    assert expired[0]["recommended_action_code"] == (
+        comparison_reliability.ACTION_RECLAIM_EXPIRED_JOB
+    )
+    assert not any(
+        issue["issue_type"]
+        == comparison_reliability.ISSUE_STALE_RUNNING_ATTEMPT
+        and issue["attempt_id"] == attempt_id
+        for issue in issue_rows
+    )
+
+    reclaimed = comparison_store.claim_detection_job(
+        job_id=claimed["job"]["job_id"],
+        worker_id="worker-two",
+        detector_version=DETECTOR_VERSION,
+        workflow_version=WORKFLOW_VERSION,
+        previous_source_hash=previous_hash,
+        current_source_hash=current_hash,
+        lease_duration_seconds=(
+            detection_job_lease.POLICY["lease_duration_seconds"]
+        ),
+        reclaim_grace_seconds=(
+            detection_job_lease.POLICY["reclaim_grace_seconds"]
+        ),
+        max_claim_generations=(
+            detection_job_lease.POLICY["max_claim_generations"]
+        ),
+        now=WELL_STALE,
+        db_path=api_env.db,
+    )
+    assert reclaimed["kind"] == "reclaimed"
+    assert reclaimed["job"]["claim_generation"] == 2
+    assert comparison_store.get_detection_replay_for_source(
+        attempt_id, db_path=api_env.db
+    ) is None
+    retired_view = detection_recovery.recovery_view(
+        attempt_id,
+        now=WELL_STALE + timedelta(seconds=1),
+        db_path=api_env.db,
+        registry_path=corpus.registry,
+    )
+    assert retired_view["status"] == comparison_store.ATTEMPT_TIMED_OUT
+    assert retired_view["replay_eligible"] is False
+    assert retired_view["blocking_reason"] == (
+        comparison_store.REASON_ATTEMPT_NOT_RUNNING
+    )
+
+    terminal = comparison_store.fail_detection_job(
+        reclaimed["job"]["job_id"],
+        reclaimed["attempt"]["attempt_id"],
+        worker_id="worker-two",
+        claim_generation=2,
+        claim_token=reclaimed["claim_token"],
+        failure_code="controlled_detector_failure",
+        failure_summary="controlled safe failure",
+        now=WELL_STALE + timedelta(seconds=1),
+        db_path=api_env.db,
+    )
+    assert terminal["job"]["status"] == comparison_store.JOB_FAILED
+    terminal_view = detection_recovery.recovery_view(
+        terminal["attempt"]["attempt_id"],
+        now=WELL_STALE + timedelta(seconds=2),
+        db_path=api_env.db,
+        registry_path=corpus.registry,
+    )
+    assert terminal_view["replay_eligible"] is False
+    assert terminal_view["blocking_reason"] == (
+        comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
+    )
+
+
+def test_concurrent_operator_replay_and_job_reclaim_share_one_attempt_budget(
+    corpus, db
+):
+    comparison_id, claimed, previous_hash, current_hash = _job_interrupted(
+        corpus, db, comparison_id_suffix="race-job"
+    )
+    source_attempt_id = claimed["attempt"]["attempt_id"]
+
+    def replay():
+        try:
+            _replay(corpus, db, source_attempt_id, now=WELL_STALE)
+        except comparison_store.DetectionStateError as exc:
+            return ("replay_refused", exc.code)
+        return ("replay_created", None)
+
+    def reclaim():
+        outcome = comparison_store.claim_detection_job(
+            job_id=claimed["job"]["job_id"],
+            worker_id="worker-two",
+            detector_version=DETECTOR_VERSION,
+            workflow_version=WORKFLOW_VERSION,
+            previous_source_hash=previous_hash,
+            current_source_hash=current_hash,
+            lease_duration_seconds=(
+                detection_job_lease.POLICY["lease_duration_seconds"]
+            ),
+            reclaim_grace_seconds=(
+                detection_job_lease.POLICY["reclaim_grace_seconds"]
+            ),
+            max_claim_generations=(
+                detection_job_lease.POLICY["max_claim_generations"]
+            ),
+            now=WELL_STALE,
+            db_path=db,
+        )
+        return ("reclaimed", outcome)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = (pool.submit(replay), pool.submit(reclaim))
+        results = [future.result() for future in futures]
+    replay_result = next(
+        result for result in results if result[0].startswith("replay")
+    )
+    reclaim_result = next(
+        result for result in results if result[0] == "reclaimed"
+    )
+    assert replay_result[0] == "replay_refused"
+    assert replay_result[1] in {
+        comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB,
+        comparison_store.REASON_ATTEMPT_NOT_RUNNING,
+    }
+    reclaimed = reclaim_result[1]
+    assert reclaimed["kind"] == "reclaimed"
+    assert reclaimed["job"]["claim_generation"] == 2
+    assert comparison_store.count_detection_attempts(
+        comparison_id, db_path=db
+    ) == 2
+    assert comparison_store.list_detection_replays(
+        comparison_id, db_path=db
+    ) == []
+
+    replacement_id = reclaimed["attempt"]["attempt_id"]
+    replacement_view = detection_recovery.recovery_view(
+        replacement_id,
+        now=WELL_STALE + timedelta(seconds=1),
+        db_path=db,
+        registry_path=corpus.registry,
+    )
+    assert replacement_view["replay_eligible"] is False
+    assert replacement_view["blocking_reason"] == (
+        comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
+    )
+    assert replacement_view["attempts_used"] == 2
+
+    step = timedelta(
+        seconds=detection_job_lease.POLICY["lease_duration_seconds"]
+        + detection_job_lease.POLICY["reclaim_grace_seconds"]
+        + 1
+    )
+    generation_three_at = WELL_STALE + step
+    generation_three = comparison_store.claim_detection_job(
+        job_id=claimed["job"]["job_id"],
+        worker_id="worker-three",
+        detector_version=DETECTOR_VERSION,
+        workflow_version=WORKFLOW_VERSION,
+        previous_source_hash=previous_hash,
+        current_source_hash=current_hash,
+        lease_duration_seconds=(
+            detection_job_lease.POLICY["lease_duration_seconds"]
+        ),
+        reclaim_grace_seconds=(
+            detection_job_lease.POLICY["reclaim_grace_seconds"]
+        ),
+        max_claim_generations=(
+            detection_job_lease.POLICY["max_claim_generations"]
+        ),
+        now=generation_three_at,
+        db_path=db,
+    )
+    assert generation_three["kind"] == "reclaimed"
+    assert generation_three["job"]["claim_generation"] == 3
+    assert comparison_store.count_detection_attempts(
+        comparison_id, db_path=db
+    ) == 3
+
+    exhausted = comparison_store.claim_detection_job(
+        job_id=claimed["job"]["job_id"],
+        worker_id="worker-four",
+        detector_version=DETECTOR_VERSION,
+        workflow_version=WORKFLOW_VERSION,
+        previous_source_hash=previous_hash,
+        current_source_hash=current_hash,
+        lease_duration_seconds=(
+            detection_job_lease.POLICY["lease_duration_seconds"]
+        ),
+        reclaim_grace_seconds=(
+            detection_job_lease.POLICY["reclaim_grace_seconds"]
+        ),
+        max_claim_generations=(
+            detection_job_lease.POLICY["max_claim_generations"]
+        ),
+        now=generation_three_at + step,
+        db_path=db,
+    )
+    assert exhausted["kind"] == "exhausted"
+    assert comparison_store.count_detection_attempts(
+        comparison_id, db_path=db
+    ) == 3
+    assert comparison_store.list_detection_replays(
+        comparison_id, db_path=db
+    ) == []
 
 
 def test_api_responses_carry_no_paths_sql_or_evidence(api_env, corpus):

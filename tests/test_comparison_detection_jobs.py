@@ -30,6 +30,7 @@ import comparison_detector
 import comparison_reliability
 import comparison_store
 import config
+import detection_job_lease
 import detection_recovery
 import filing_registry
 import ingest
@@ -147,6 +148,15 @@ def _claim(corpus, db, job_id, worker_id="worker-test"):
         workflow_version=comparison_store.WORKFLOW_VERSION,
         previous_source_hash=inputs["previous_hash"],
         current_source_hash=inputs["current_hash"],
+        lease_duration_seconds=detection_job_lease.POLICY[
+            "lease_duration_seconds"
+        ],
+        reclaim_grace_seconds=detection_job_lease.POLICY[
+            "reclaim_grace_seconds"
+        ],
+        max_claim_generations=detection_job_lease.POLICY[
+            "max_claim_generations"
+        ],
         db_path=db,
     )
 
@@ -418,6 +428,15 @@ def test_worker_domain_failure_atomically_fails_job_attempt_and_comparison(
                 previous_hash or drift_job["previous_source_hash"]
             ),
             current_source_hash=drift_job["current_source_hash"],
+            lease_duration_seconds=detection_job_lease.POLICY[
+                "lease_duration_seconds"
+            ],
+            reclaim_grace_seconds=detection_job_lease.POLICY[
+                "reclaim_grace_seconds"
+            ],
+            max_claim_generations=detection_job_lease.POLICY[
+                "max_claim_generations"
+            ],
             db_path=drift_db,
         )
         assert drift["kind"] == "failed"
@@ -449,6 +468,7 @@ def test_claim_ownership_and_terminal_invariants_reject_invalid_finalization(
         json.dumps({"value": 1}, sort_keys=True).encode()
     ).hexdigest()
     kwargs = dict(
+        claim_generation=claimed["job"]["claim_generation"],
         result_json=result_json,
         result_hash=result_hash,
         detector_version=comparison_detector.DETECTOR_VERSION,
@@ -572,6 +592,11 @@ def test_raw_claim_token_is_never_persisted_or_returned_by_http(corpus, api_env)
         "claimedAt",
         "finishedAt",
         "workerId",
+        "claimGeneration",
+        "leaseStartedAt",
+        "heartbeatAt",
+        "leaseExpiresAt",
+        "leaseState",
         "resultHash",
         "failureCode",
     }
@@ -691,7 +716,7 @@ def test_process_interruption_boundaries_survive_reopen(corpus, tmp_path, api_en
     assert view["replay_eligible"] is False
     assert (
         view["blocking_reason"]
-        == comparison_store.REASON_JOB_RECLAIM_NOT_SUPPORTED
+        == comparison_store.REASON_ATTEMPT_MANAGED_BY_JOB
     )
 
     terminal_db = tmp_path / "terminal.db"
@@ -777,6 +802,9 @@ def test_reliability_job_metrics_issues_and_reads_are_read_only(corpus, db):
         "jobs_claimed": 0,
         "jobs_succeeded": 0,
         "jobs_failed": 0,
+        "job_heartbeats": 0,
+        "jobs_reclaimed": 0,
+        "jobs_claim_exhausted": 0,
     }
     assert {
         issue["issue_type"]
@@ -790,9 +818,17 @@ def test_reliability_job_metrics_issues_and_reads_are_read_only(corpus, db):
     old = datetime.now(timezone.utc) - timedelta(hours=1)
     with closing(sqlite3.connect(db)) as conn, conn:
         conn.execute(
-            "UPDATE comparison_detection_jobs SET queued_at = ?, claimed_at = ? "
+            "UPDATE comparison_detection_jobs SET queued_at = ?, claimed_at = ?, "
+            "lease_started_at = ?, heartbeat_at = ?, lease_expires_at = ? "
             "WHERE job_id = ?",
-            ((old - timedelta(seconds=5)).isoformat(), old.isoformat(), job["job_id"]),
+            (
+                (old - timedelta(seconds=5)).isoformat(),
+                old.isoformat(),
+                old.isoformat(),
+                old.isoformat(),
+                (old + timedelta(seconds=120)).isoformat(),
+                job["job_id"],
+            ),
         )
         conn.execute(
             "UPDATE comparison_detection_attempts SET started_at = ? "
@@ -814,7 +850,7 @@ def test_reliability_job_metrics_issues_and_reads_are_read_only(corpus, db):
             registry_path=corpus.registry,
         )["issues"]
     }
-    assert "running_detection_job_without_lease" in types
+    assert "expired_detection_job_lease" in types
 
 
 def test_job_structured_logs_are_allowlisted_and_post_commit(
