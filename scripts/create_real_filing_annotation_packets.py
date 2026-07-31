@@ -137,6 +137,21 @@ def build_packet(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return (packet, machine_proposed_annotation) for one built pair."""
     record = builder.load_build_record(pair_id, layout)
+    if not rfb.build_is_evaluable(record):
+        # A pair whose Item 1A did not extract has no section hash and no risk
+        # units, so there is nothing for a human to review and no annotation
+        # that could ever become gold. Refusing here reports the real cause;
+        # letting it fall through produces the same zero packets but blames a
+        # downstream hash-format rule, which reads like a schema bug rather
+        # than the extraction outcome it actually is.
+        raise rfb.BenchmarkError(
+            "pair_not_annotatable",
+            f"{pair_id}: Item 1A did not extract for both sides "
+            f"(previous={record['previous']['extraction_outcome']}, "
+            f"current={record['current']['extraction_outcome']}), so this pair "
+            "has no reviewable risk units. It stays in the corpus and is "
+            "reported as blocked; it is never replaced.",
+        )
     result = builder.load_detection_result(pair_id, layout)
 
     previous_units = _units_for_alignment(record, "previous")

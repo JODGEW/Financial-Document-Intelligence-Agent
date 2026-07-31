@@ -1,0 +1,429 @@
+{
+  "benchmark_id": "real_filing_v1",
+  "commit_sha": "21228103b2519e618e543e3a7a5c2b5ec621b0e7",
+  "determinism_check": "build run twice on identical inputs; build_hash and every bounded field identical across runs",
+  "deterministic": true,
+  "filing_extraction_outcomes": {
+    "missing": 20
+  },
+  "manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0",
+  "notes": [
+    "Item 1A extraction records 'missing' for all 20 sides. Real EDGAR 10-K HTML carries no <h1>-<h6> elements; Item 1A headings are styled <div>/<span>, and the existing HTML section path derives section_key from splitter-produced headings only.",
+    "This is the documented, pre-registered failure mode (BENCHMARK.md, 'Known coverage limitations'), recorded as the honest result. The extraction algorithm, heading recognition, alignment, validators, and governance thresholds were NOT modified.",
+    "No pair was removed or replaced. A difficult pair stays in the corpus.",
+    "Extracted section text is written only under gitignored benchmark_data/."
+  ],
+  "pairs": [
+    {
+      "build_hash": "a66b5f1ea56ab45843326b41d7481203b26ee7e754abc51e8470dd61dc891d2a",
+      "cik": "0000732712",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "verizon-communications-incorporated:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1046,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "ee8b1d39223f1533a7333a5d75a15550d469db14e52f99f7319aa6850edaec90",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Verizon Communications Inc.",
+      "pair_id": "communication-services-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "verizon-communications-incorporated:10-k:2022-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1090,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "dc652a88b1defef180e3d61a778c22520375c939466c2b5417f7b2f62152c4c4",
+        "unit_count": 0
+      },
+      "sector_label": "Communication Services",
+      "slate_id": "communication-services-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "f530d506778ae87db020dafbf80aa4aa7cad11477f3c58a2c41f933ca401f6a2",
+      "cik": "0000354950",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "the-home-depot-incorporated:10-k:2024-01-28",
+        "heading_detected": null,
+        "indexed_chunk_count": 616,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "019dc812e89c7d23f364c1ec964ef8760d1b200dc30a289d0ff094251ad7f95a",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "The Home Depot, Inc.",
+      "pair_id": "consumer-discretionary-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "the-home-depot-incorporated:10-k:2023-01-29",
+        "heading_detected": null,
+        "indexed_chunk_count": 600,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "99bd8d886fd8185b5b14106058abe5ec343fd532ec553b426092956d9af943dd",
+        "unit_count": 0
+      },
+      "sector_label": "Consumer Discretionary",
+      "slate_id": "consumer-discretionary-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "a0c96c8fe10360b3375b6b67255a17260fd7f0633c9cf1ca9be58df74cfc31eb",
+      "cik": "0000080424",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "the-procter-gamble-company:10-k:2023-06-30",
+        "heading_detected": null,
+        "indexed_chunk_count": 626,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "22efb76f101ba62401ca2f5bc1570dd0a41d1072cc06b177006fe0afceed3f89",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "The Procter & Gamble Company",
+      "pair_id": "consumer-staples-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "the-procter-gamble-company:10-k:2022-06-30",
+        "heading_detected": null,
+        "indexed_chunk_count": 675,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "9420c54d1c60fa42f16738d1befccd78606e39fba165ee00bff87e45d2deddb8",
+        "unit_count": 0
+      },
+      "sector_label": "Consumer Staples",
+      "slate_id": "consumer-staples-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "bb0ded2b7c52d7ebc87349d573c88c2f14e9481897c5c3f840535417037e036c",
+      "cik": "0000034088",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "exxon-mobil-corporation:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1076,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "29d225db9f83e060b863b7ce5872feea7ece7ae6a8cf040085c03268fb170e40",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Exxon Mobil Corporation",
+      "pair_id": "energy-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "exxon-mobil-corporation:10-k:2022-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1053,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "cc3b4e39f4a59435150748e52adbd4cc28e7e2df8262e96b284612bffb674e52",
+        "unit_count": 0
+      },
+      "sector_label": "Energy",
+      "slate_id": "energy-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "16acb27932da007ab75d763aec99f47801cbf33d7a4bd90eeeeb8ead62453aeb",
+      "cik": "0000019617",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "jpmorgan-chase-co:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 2986,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "f7d48a9bfd108eb0a5abc9b7d95781f8ff03dd3b3b373e20823a6602c215b2d4",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "JPMorgan Chase & Co.",
+      "pair_id": "financials-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "jpmorgan-chase-co:10-k:2022-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 2808,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "be0daadf5cb327a7d78c373896f3e8eb236a25e7c0056783c13cf058a1468953",
+        "unit_count": 0
+      },
+      "sector_label": "Financials",
+      "slate_id": "financials-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "fde32c60795305b74f84b290eb5658b4371ea959decf54cff01da4fbe21f8e7e",
+      "cik": "0000200406",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "johnson-johnson:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 983,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "83359d3ca5566ed9e7bb4721667778e86b52f380148ef6336270c1fdef3e7251",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Johnson & Johnson",
+      "pair_id": "health-care-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "johnson-johnson:10-k:2023-01-01",
+        "heading_detected": null,
+        "indexed_chunk_count": 1062,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "2eb8ddc284750ad8531f01a44019d6b8646ed0eea9f2f39c135730443e74aa21",
+        "unit_count": 0
+      },
+      "sector_label": "Health Care",
+      "slate_id": "health-care-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "567acf6d03124241eb973ada0385d4e67a26157cf8248e30b8fa102f466cd927",
+      "cik": "0000018230",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "caterpillar-incorporated:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1159,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "6234e660810ce6ac07a3574668a3223492164efc9019ff6c05178b0f782ea3d7",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Caterpillar Inc.",
+      "pair_id": "industrials-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "caterpillar-incorporated:10-k:2022-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1139,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "779a0af213e496cf178df5089e528d4b6ab0afafa4ec812db660c5b230857fe0",
+        "unit_count": 0
+      },
+      "sector_label": "Industrials",
+      "slate_id": "industrials-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "af0c1fc85151f5db6ab74cf3b04f82d755c9d703b390310cf96ed586e0e6f5b9",
+      "cik": "0000320193",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "apple-incorporated:10-k:2023-09-30",
+        "heading_detected": null,
+        "indexed_chunk_count": 427,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "bda1f34435199672c16ecdf2034c650872d2cac8399ed0d179fc25450b080b90",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Apple Inc.",
+      "pair_id": "information-technology-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "apple-incorporated:10-k:2022-09-24",
+        "heading_detected": null,
+        "indexed_chunk_count": 461,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "783e4588c24217cd55f0af0c11f15d94271e0c6b756478b862701951ecb49258",
+        "unit_count": 0
+      },
+      "sector_label": "Information Technology",
+      "slate_id": "information-technology-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "48e93f3aabee6e22295101be8c724ecb4a992667a3adbac2237c9a417a8f43ef",
+      "cik": "0000789019",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "microsoft-corporation:10-k:2023-06-30",
+        "heading_detected": null,
+        "indexed_chunk_count": 719,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "6506060f3f928e31abcbcfe46792ff4e0ae5c60bd9ad40964933c37ac854a9ea",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "Microsoft Corporation",
+      "pair_id": "information-technology-02",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "microsoft-corporation:10-k:2022-06-30",
+        "heading_detected": null,
+        "indexed_chunk_count": 771,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "d8c69513cd820ecdfa3b22decf2672591ced88996188c218d3ffa1439b6b528f",
+        "unit_count": 0
+      },
+      "sector_label": "Information Technology",
+      "slate_id": "information-technology-02",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "build_hash": "34a14b040dc5f1d33f49c4b8f83b091eb423c6c8799b3f0b08145d08bea30f45",
+      "cik": "0000753308",
+      "current": {
+        "extraction_outcome": "missing",
+        "filing_id": "nextera-energy-incorporated:10-k:2023-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1183,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "a5a5d0a9545c20d324255f37591cff93cc43bb6a66d82cafa08e3e8e246ac192",
+        "unit_count": 0
+      },
+      "evaluable": false,
+      "execution": {
+        "executed": false,
+        "skipped_reason": "at least one side did not produce an extracted Item 1A section, so the comparison workflow was not run"
+      },
+      "issuer_name": "NextEra Energy, Inc.",
+      "pair_id": "utilities-01",
+      "previous": {
+        "extraction_outcome": "missing",
+        "filing_id": "nextera-energy-incorporated:10-k:2022-12-31",
+        "heading_detected": null,
+        "indexed_chunk_count": 1201,
+        "parse_status": "parsed",
+        "section_char_count": 0,
+        "section_chunk_count": 0,
+        "section_hash": null,
+        "section_paragraph_count": 0,
+        "source_sha256": "6213dff78c422184b73d0d31e8f0057ba3d16c7bfcd7c1ead50785e13d3eb6a3",
+        "unit_count": 0
+      },
+      "sector_label": "Utilities",
+      "slate_id": "utilities-01",
+      "source_manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    }
+  ],
+  "pairs_built": 10,
+  "pairs_evaluable": 0,
+  "pairs_requested": 10,
+  "parser_versions": {
+    "builder": "real_filing_benchmark_builder.v1",
+    "detector": "item1a_detector.v2",
+    "section_key": "item_1a_risk_factors",
+    "workflow": "comparison_workflow.v2"
+  },
+  "regenerated_by": "python scripts/build_real_filing_benchmark.py",
+  "report_version": "real-filing-benchmark.corpus-build.v1"
+}

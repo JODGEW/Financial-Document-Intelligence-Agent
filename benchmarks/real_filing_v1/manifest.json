@@ -1,104 +1,355 @@
 {
-  "schema_version": "real-filing-benchmark.manifest.v1",
   "benchmark_id": "real_filing_v1",
   "benchmark_version": 1,
-  "frozen_at": "2026-07-31T00:00:00+00:00",
-  "selection_protocol_version": "real-filing-selection.v1",
-  "status": "proposed",
+  "description": "Source-verified v1 corpus for the controlled real-public-filing benchmark: ten consecutive-annual 10-K pairs (twenty filings), one issuer per pair, nine sector labels across ten issuers. STATUS IS 'source_verified': every pair below was resolved from official SEC endpoints (data.sec.gov submissions metadata for filing identity, including paged history, and the filer's own XBRL fiscal-year designation to pick the target years rather than inferring a fiscal year from a period end date), and all twenty primary documents were downloaded from www.sec.gov and SHA-256 verified. The issuer slate itself is unchanged from the frozen pre-registration; only each entry's deliberately-absent CIK was filled in from an official lookup. Digests are over the DECODED filing bytes, so they are reproducible across gzip-encoded transfers. Acquisition provenance and per-pair build, execution, and annotation-packet inventories are committed as bounded reports under benchmarks/real_filing_v1/. NO ACCURACY CLAIM EXISTS: zero pairs are human_verified, machine-proposed labels are not gold, and the evaluator refuses to score gold metrics until explicit human verification is recorded.",
   "form": "10-K",
-  "target_pair_count": 10,
-  "description": "Frozen v1 issuer slate for the controlled real-public-filing benchmark: ten consecutive-annual 10-K pairs (twenty filings), one issuer per pair, spanning ten sector labels. STATUS IS 'proposed'. The slate below is the pre-registration and is frozen; it was decided before any filing was fetched and before any detector output was observed. Every remaining field is remote metadata that must be resolved from official SEC endpoints during an approved acquisition run: CIK, accession numbers, official filing dates, official reporting periods, primary-document names, and SHA-256 digests are deliberately ABSENT rather than recalled or approximated, because a wrong identifier in a frozen manifest is a fabricated fact. Run scripts/fetch_real_filing_benchmark.py --resolve --allow-network to produce a local proposed-pairs block for human review, then freeze it into 'pairs' in a reviewed commit. No accuracy claim about real filings exists until this corpus is source-verified, built, human-annotated, and evaluated.",
-  "proposed_issuers": [
+  "frozen_at": "2026-07-31T00:00:00+00:00",
+  "pairs": [
     {
-      "slate_id": "communication-services-01",
+      "cik": "0000732712",
+      "current": {
+        "accession_number": "0000732712-24-000010",
+        "expected_sha256": "ee8b1d39223f1533a7333a5d75a15550d469db14e52f99f7319aa6850edaec90",
+        "filing_date": "2024-02-09",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/732712/000073271224000010/vz-20231231.htm",
+        "primary_document": "vz-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "Verizon Communications Inc.",
+      "pair_id": "communication-services-01",
+      "previous": {
+        "accession_number": "0000732712-23-000012",
+        "expected_sha256": "dc652a88b1defef180e3d61a778c22520375c939466c2b5417f7b2f62152c4c4",
+        "filing_date": "2023-02-10",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/732712/000073271223000012/vz-20221231.htm",
+        "primary_document": "vz-20221231.htm",
+        "reporting_period": "2022-12-31"
+      },
       "sector_label": "Communication Services",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "communication-services-01"
     },
     {
-      "slate_id": "consumer-discretionary-01",
+      "cik": "0000354950",
+      "current": {
+        "accession_number": "0000354950-24-000062",
+        "expected_sha256": "019dc812e89c7d23f364c1ec964ef8760d1b200dc30a289d0ff094251ad7f95a",
+        "filing_date": "2024-03-13",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/354950/000035495024000062/hd-20240128.htm",
+        "primary_document": "hd-20240128.htm",
+        "reporting_period": "2024-01-28"
+      },
       "issuer_name": "The Home Depot, Inc.",
+      "pair_id": "consumer-discretionary-01",
+      "previous": {
+        "accession_number": "0000354950-23-000059",
+        "expected_sha256": "99bd8d886fd8185b5b14106058abe5ec343fd532ec553b426092956d9af943dd",
+        "filing_date": "2023-03-15",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/354950/000035495023000059/hd-20230129.htm",
+        "primary_document": "hd-20230129.htm",
+        "reporting_period": "2023-01-29"
+      },
       "sector_label": "Consumer Discretionary",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "consumer-discretionary-01"
     },
     {
-      "slate_id": "consumer-staples-01",
+      "cik": "0000080424",
+      "current": {
+        "accession_number": "0000080424-23-000073",
+        "expected_sha256": "22efb76f101ba62401ca2f5bc1570dd0a41d1072cc06b177006fe0afceed3f89",
+        "filing_date": "2023-08-04",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/80424/000008042423000073/pg-20230630.htm",
+        "primary_document": "pg-20230630.htm",
+        "reporting_period": "2023-06-30"
+      },
       "issuer_name": "The Procter & Gamble Company",
+      "pair_id": "consumer-staples-01",
+      "previous": {
+        "accession_number": "0000080424-22-000064",
+        "expected_sha256": "9420c54d1c60fa42f16738d1befccd78606e39fba165ee00bff87e45d2deddb8",
+        "filing_date": "2022-08-05",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/80424/000008042422000064/pg-20220630.htm",
+        "primary_document": "pg-20220630.htm",
+        "reporting_period": "2022-06-30"
+      },
       "sector_label": "Consumer Staples",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "consumer-staples-01"
     },
     {
-      "slate_id": "energy-01",
+      "cik": "0000034088",
+      "current": {
+        "accession_number": "0000034088-24-000018",
+        "expected_sha256": "29d225db9f83e060b863b7ce5872feea7ece7ae6a8cf040085c03268fb170e40",
+        "filing_date": "2024-02-28",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/34088/000003408824000018/xom-20231231.htm",
+        "primary_document": "xom-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "Exxon Mobil Corporation",
+      "pair_id": "energy-01",
+      "previous": {
+        "accession_number": "0000034088-23-000020",
+        "expected_sha256": "cc3b4e39f4a59435150748e52adbd4cc28e7e2df8262e96b284612bffb674e52",
+        "filing_date": "2023-02-22",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/34088/000003408823000020/xom-20221231.htm",
+        "primary_document": "xom-20221231.htm",
+        "reporting_period": "2022-12-31"
+      },
       "sector_label": "Energy",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "energy-01"
     },
     {
-      "slate_id": "financials-01",
+      "cik": "0000019617",
+      "current": {
+        "accession_number": "0000019617-24-000225",
+        "expected_sha256": "f7d48a9bfd108eb0a5abc9b7d95781f8ff03dd3b3b373e20823a6602c215b2d4",
+        "filing_date": "2024-02-16",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/19617/000001961724000225/jpm-20231231.htm",
+        "primary_document": "jpm-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "JPMorgan Chase & Co.",
+      "pair_id": "financials-01",
+      "previous": {
+        "accession_number": "0000019617-23-000231",
+        "expected_sha256": "be0daadf5cb327a7d78c373896f3e8eb236a25e7c0056783c13cf058a1468953",
+        "filing_date": "2023-02-21",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/19617/000001961723000231/jpm-20221231.htm",
+        "primary_document": "jpm-20221231.htm",
+        "reporting_period": "2022-12-31"
+      },
       "sector_label": "Financials",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "financials-01"
     },
     {
-      "slate_id": "health-care-01",
+      "cik": "0000200406",
+      "current": {
+        "accession_number": "0000200406-24-000013",
+        "expected_sha256": "83359d3ca5566ed9e7bb4721667778e86b52f380148ef6336270c1fdef3e7251",
+        "filing_date": "2024-02-16",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/200406/000020040624000013/jnj-20231231.htm",
+        "primary_document": "jnj-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "Johnson & Johnson",
+      "pair_id": "health-care-01",
+      "previous": {
+        "accession_number": "0000200406-23-000016",
+        "expected_sha256": "2eb8ddc284750ad8531f01a44019d6b8646ed0eea9f2f39c135730443e74aa21",
+        "filing_date": "2023-02-16",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/200406/000020040623000016/jnj-20230101.htm",
+        "primary_document": "jnj-20230101.htm",
+        "reporting_period": "2023-01-01"
+      },
       "sector_label": "Health Care",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "health-care-01"
     },
     {
-      "slate_id": "industrials-01",
+      "cik": "0000018230",
+      "current": {
+        "accession_number": "0000018230-24-000009",
+        "expected_sha256": "6234e660810ce6ac07a3574668a3223492164efc9019ff6c05178b0f782ea3d7",
+        "filing_date": "2024-02-16",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/18230/000001823024000009/cat-20231231.htm",
+        "primary_document": "cat-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "Caterpillar Inc.",
+      "pair_id": "industrials-01",
+      "previous": {
+        "accession_number": "0000018230-23-000011",
+        "expected_sha256": "779a0af213e496cf178df5089e528d4b6ab0afafa4ec812db660c5b230857fe0",
+        "filing_date": "2023-02-15",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/18230/000001823023000011/cat-20221231.htm",
+        "primary_document": "cat-20221231.htm",
+        "reporting_period": "2022-12-31"
+      },
       "sector_label": "Industrials",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "industrials-01"
     },
     {
-      "slate_id": "information-technology-01",
+      "cik": "0000320193",
+      "current": {
+        "accession_number": "0000320193-23-000106",
+        "expected_sha256": "bda1f34435199672c16ecdf2034c650872d2cac8399ed0d179fc25450b080b90",
+        "filing_date": "2023-11-03",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm",
+        "primary_document": "aapl-20230930.htm",
+        "reporting_period": "2023-09-30"
+      },
       "issuer_name": "Apple Inc.",
+      "pair_id": "information-technology-01",
+      "previous": {
+        "accession_number": "0000320193-22-000108",
+        "expected_sha256": "783e4588c24217cd55f0af0c11f15d94271e0c6b756478b862701951ecb49258",
+        "filing_date": "2022-10-28",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019322000108/aapl-20220924.htm",
+        "primary_document": "aapl-20220924.htm",
+        "reporting_period": "2022-09-24"
+      },
       "sector_label": "Information Technology",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "information-technology-01"
     },
     {
-      "slate_id": "information-technology-02",
+      "cik": "0000789019",
+      "current": {
+        "accession_number": "0000950170-23-035122",
+        "expected_sha256": "6506060f3f928e31abcbcfe46792ff4e0ae5c60bd9ad40964933c37ac854a9ea",
+        "filing_date": "2023-07-27",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/789019/000095017023035122/msft-20230630.htm",
+        "primary_document": "msft-20230630.htm",
+        "reporting_period": "2023-06-30"
+      },
       "issuer_name": "Microsoft Corporation",
+      "pair_id": "information-technology-02",
+      "previous": {
+        "accession_number": "0001564590-22-026876",
+        "expected_sha256": "d8c69513cd820ecdfa3b22decf2672591ced88996188c218d3ffa1439b6b528f",
+        "filing_date": "2022-07-28",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/789019/000156459022026876/msft-10k_20220630.htm",
+        "primary_document": "msft-10k_20220630.htm",
+        "reporting_period": "2022-06-30"
+      },
       "sector_label": "Information Technology",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "information-technology-02"
     },
     {
-      "slate_id": "utilities-01",
+      "cik": "0000753308",
+      "current": {
+        "accession_number": "0000753308-24-000008",
+        "expected_sha256": "a5a5d0a9545c20d324255f37591cff93cc43bb6a66d82cafa08e3e8e246ac192",
+        "filing_date": "2024-02-16",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/753308/000075330824000008/nee-20231231.htm",
+        "primary_document": "nee-20231231.htm",
+        "reporting_period": "2023-12-31"
+      },
       "issuer_name": "NextEra Energy, Inc.",
+      "pair_id": "utilities-01",
+      "previous": {
+        "accession_number": "0000753308-23-000019",
+        "expected_sha256": "6213dff78c422184b73d0d31e8f0057ba3d16c7bfcd7c1ead50785e13d3eb6a3",
+        "filing_date": "2023-02-17",
+        "form": "10-K",
+        "official_source_url": "https://www.sec.gov/Archives/edgar/data/753308/000075330823000019/nee-20221231.htm",
+        "primary_document": "nee-20221231.htm",
+        "reporting_period": "2022-12-31"
+      },
       "sector_label": "Utilities",
-      "cik": null,
-      "target_previous_fiscal_year": 2022,
-      "target_current_fiscal_year": 2023,
-      "resolution_status": "pending_official_lookup"
+      "slate_id": "utilities-01"
     }
   ],
-  "pairs": []
+  "proposed_issuers": [
+    {
+      "cik": "0000732712",
+      "issuer_name": "Verizon Communications Inc.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Communication Services",
+      "slate_id": "communication-services-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000354950",
+      "issuer_name": "The Home Depot, Inc.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Consumer Discretionary",
+      "slate_id": "consumer-discretionary-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000080424",
+      "issuer_name": "The Procter & Gamble Company",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Consumer Staples",
+      "slate_id": "consumer-staples-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000034088",
+      "issuer_name": "Exxon Mobil Corporation",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Energy",
+      "slate_id": "energy-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000019617",
+      "issuer_name": "JPMorgan Chase & Co.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Financials",
+      "slate_id": "financials-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000200406",
+      "issuer_name": "Johnson & Johnson",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Health Care",
+      "slate_id": "health-care-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000018230",
+      "issuer_name": "Caterpillar Inc.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Industrials",
+      "slate_id": "industrials-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000320193",
+      "issuer_name": "Apple Inc.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Information Technology",
+      "slate_id": "information-technology-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000789019",
+      "issuer_name": "Microsoft Corporation",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Information Technology",
+      "slate_id": "information-technology-02",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    },
+    {
+      "cik": "0000753308",
+      "issuer_name": "NextEra Energy, Inc.",
+      "resolution_status": "resolved_from_official_source",
+      "sector_label": "Utilities",
+      "slate_id": "utilities-01",
+      "target_current_fiscal_year": 2023,
+      "target_previous_fiscal_year": 2022
+    }
+  ],
+  "schema_version": "real-filing-benchmark.manifest.v1",
+  "selection_protocol_version": "real-filing-selection.v1",
+  "status": "source_verified",
+  "target_pair_count": 10
 }

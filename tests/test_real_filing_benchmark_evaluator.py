@@ -605,9 +605,30 @@ def test_cli_output_contains_no_absolute_paths_or_filing_content(corpus, capsys)
         assert secret not in output
 
 
-def test_cli_refuses_an_unresolved_manifest(capsys):
-    assert evaluator.main([]) == 2
-    assert "no resolved pairs" in capsys.readouterr().err
+def test_cli_refuses_gold_on_the_committed_corpus(capsys):
+    """Against the real committed manifest the evaluator must refuse gold.
+
+    Whichever stage the corpus is at, a nonzero exit and no accuracy metric is
+    the only acceptable outcome until labels are human_verified: an unresolved
+    manifest is a configuration refusal (2), and a resolved one with no
+    verified labels is an evaluation refusal (1).
+    """
+    code = evaluator.main([])
+    assert code in (1, 2)
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    if code == 2:
+        assert "no resolved pairs" in captured.err
+    else:
+        assert "GOLD EVALUATION REFUSED" in captured.out
+    # No accuracy metric may appear on any refusal path.
+    for forbidden in (
+        "change_precision",
+        "change_recall",
+        "change_type_accuracy",
+        "pair_exact_match_rate",
+    ):
+        assert forbidden not in combined
 
 
 def test_cli_rejects_unknown_pair_ids(corpus, capsys):
