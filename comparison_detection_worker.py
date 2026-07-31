@@ -32,6 +32,7 @@ import comparison_store
 import config
 import detection_job_lease
 import detection_job_retry
+import runtime_fault_hooks
 
 logger = logging.getLogger("comparison_detection_worker")
 
@@ -133,6 +134,15 @@ class DetectionJobHeartbeatController:
         while not self._wait(self._stop, self._interval_seconds):
             if self._stop.is_set():
                 return
+            # Disabled in production. Under process-fault tests this is where a
+            # paused worker's lease is allowed to lapse without it dying, which
+            # is what makes cross-process fencing observable.
+            runtime_fault_hooks.checkpoint(
+                runtime_fault_hooks.HEARTBEAT_BEFORE_EXTEND,
+                job_id=self._job_id,
+                worker_id=self._worker_id,
+                claim_generation=self._claim_generation,
+            )
             try:
                 heartbeat_job(
                     job_id=self._job_id,
@@ -194,6 +204,10 @@ def enqueue_initial_detection(
         db_path=db_path,
         registry_path=registry_path,
     )
+    runtime_fault_hooks.checkpoint(
+        runtime_fault_hooks.API_BEFORE_ENQUEUE,
+        comparison_id=comparison_id,
+    )
     outcome = comparison_store.enqueue_detection_job(
         comparison_id,
         detector_version=comparison_detector.DETECTOR_VERSION,
@@ -215,6 +229,16 @@ def enqueue_initial_detection(
             job=outcome["job"],
             actor_context=actor_context,
         )
+    # Disabled in production. The queue transaction is already durable here, so
+    # a test that kills the API process at this point reproduces a request whose
+    # work was committed but whose response the client never saw.
+    runtime_fault_hooks.checkpoint(
+        runtime_fault_hooks.API_AFTER_ENQUEUE_COMMIT_BEFORE_RESPONSE,
+        comparison_id=comparison_id,
+        job_id=(
+            outcome["job"]["job_id"] if outcome["kind"] == "job" else None
+        ),
+    )
     return outcome
 
 
@@ -400,6 +424,23 @@ def run_one_job(
         ),
     )
 
+    # Disabled in production. The claim, its generation, its lease, and the
+    # running attempt are all durable at this point and no detector work has
+    # started, so a test that kills the process here reproduces a worker that
+    # died owning work.
+    runtime_fault_hooks.checkpoint(
+        {
+            "initial": runtime_fault_hooks.WORKER_AFTER_CLAIM_COMMIT,
+            "reclaim": runtime_fault_hooks.WORKER_AFTER_RECLAIM_COMMIT,
+            "retry": runtime_fault_hooks.WORKER_AFTER_RETRY_CLAIM_COMMIT,
+        }[claim_type],
+        comparison_id=job["comparison_id"],
+        job_id=job["job_id"],
+        attempt_id=attempt["attempt_id"],
+        worker_id=worker,
+        claim_generation=job["claim_generation"],
+    )
+
     controller_factory = (
         heartbeat_controller_factory or DetectionJobHeartbeatController
     )
@@ -490,6 +531,21 @@ def run_one_job(
             attempt=terminal_attempt,
             source_attempt_id=terminal_attempt["attempt_id"],
         )
+        # Disabled in production. Retry scheduling and terminal domain failure
+        # are both durable here; killing the process proves neither depends on
+        # the worker surviving long enough to report it.
+        runtime_fault_hooks.checkpoint(
+            runtime_fault_hooks.WORKER_AFTER_RETRY_SCHEDULE_COMMIT
+            if terminal_job["status"] == comparison_store.JOB_RETRY_WAIT
+            else runtime_fault_hooks.WORKER_AFTER_TERMINAL_COMMIT_BEFORE_OUTPUT,
+            comparison_id=terminal_job["comparison_id"],
+            job_id=terminal_job["job_id"],
+            attempt_id=terminal_attempt["attempt_id"],
+            worker_id=worker,
+            claim_generation=terminal_job.get("claim_generation"),
+            job_status=terminal_job["status"],
+            retry_count=terminal_job.get("retry_count"),
+        )
         return _worker_outcome(
             terminal_job, terminal_attempt, claim_type=claim_type
         )
@@ -511,6 +567,19 @@ def run_one_job(
         comparison_reliability.EVENT_JOB_SUCCEEDED,
         job=terminal_job,
         attempt=terminal_attempt,
+    )
+    # Disabled in production. The success transaction — job, attempt, events,
+    # comparison, and canonical result — is already committed, so killing the
+    # process here loses only the CLI's own output.
+    runtime_fault_hooks.checkpoint(
+        runtime_fault_hooks.WORKER_AFTER_TERMINAL_COMMIT_BEFORE_OUTPUT,
+        comparison_id=terminal_job["comparison_id"],
+        job_id=terminal_job["job_id"],
+        attempt_id=terminal_attempt["attempt_id"],
+        worker_id=worker,
+        claim_generation=terminal_job.get("claim_generation"),
+        job_status=terminal_job["status"],
+        result_hash=terminal_job.get("result_hash"),
     )
     return _worker_outcome(
         terminal_job, terminal_attempt, claim_type=claim_type

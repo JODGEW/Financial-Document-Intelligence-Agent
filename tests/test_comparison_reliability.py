@@ -3200,6 +3200,8 @@ _REQUIRED_CI_SUITES = (
     "tests/test_comparison_reliability.py",
     # Stage 3.5 local authentication and permission authorization
     "tests/test_access_control.py",
+    # Stage 3.5 process-level fault injection and restart/recovery validation
+    "tests/test_runtime_fault_injection.py",
     # offline API
     "tests/test_api.py",
     "tests/test_api_errors.py",

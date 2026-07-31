@@ -33,6 +33,7 @@ import config
 import detection_job_lease
 import detection_job_retry
 import detection_recovery
+import runtime_readiness
 from governance import review_queue
 from loaders.registry import supported_extensions
 
@@ -1457,8 +1458,56 @@ def _resolve_doc_path(document_path: str) -> Path:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    """Health check for local development."""
+    """Liveness check: this process is running and can serve a request.
+
+    Deliberately simpler than readiness — it inspects no dependency, so a live
+    process with unavailable storage still answers ``ok`` here and ``not_ready``
+    at /api/ready.
+    """
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+def ready(response: Response) -> dict:
+    """Read-only readiness for the API role of the local reference runtime.
+
+    Creates nothing and migrates nothing: storage initialization is a separate
+    explicit operator action (see OPERATIONS.md). Fails closed — a dependency
+    that cannot be observed is reported failed, never ready — and returns 503
+    with a stable code plus a correlation id when it does.
+
+    The body carries stable check names and codes only: no filesystem path, no
+    secret, no SQL, no schema text, and no exception text.
+    """
+    report = runtime_readiness.evaluate(runtime_readiness.ROLE_API)
+    body = {
+        "status": report["status"],
+        "role": report["role"],
+        "checks": [
+            {
+                "name": check["name"],
+                "status": check["status"],
+                "code": check["code"],
+            }
+            for check in report["checks"]
+        ],
+    }
+    if report["status"] != runtime_readiness.STATUS_READY:
+        error_id = _new_error_id()
+        logger.warning(
+            "Runtime readiness refused (error_id=%s, failed=%s)",
+            error_id,
+            [
+                check["name"]
+                for check in report["checks"]
+                if check["status"] != runtime_readiness.CHECK_OK
+            ],
+        )
+        response.status_code = 503
+        body["code"] = runtime_readiness.NOT_READY_CODE
+        body["message"] = runtime_readiness.NOT_READY_MESSAGE
+        body["error_id"] = error_id
+    return body
 
 
 @app.get("/api/documents", response_model=list[CorpusDocument])

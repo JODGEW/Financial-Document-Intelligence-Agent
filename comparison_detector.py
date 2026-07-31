@@ -79,6 +79,7 @@ import comparison_validators
 import config
 import detection_job_retry
 import filing_registry
+import runtime_fault_hooks
 from governance.comparison_schema import (
     dump_comparison,
     load_comparison,
@@ -1183,9 +1184,31 @@ def execute_attempt(
             "supplied together"
         )
     try:
+        # Disabled in production. Inside this try block on purpose: a controlled
+        # failure raised here takes the real domain-failure path below, so retry
+        # scheduling and terminal exhaustion are exercised rather than bypassed.
+        runtime_fault_hooks.checkpoint(
+            runtime_fault_hooks.WORKER_BEFORE_DETECTOR_COMPUTE,
+            comparison_id=comparison_id,
+            attempt_id=attempt_id,
+            job_id=job_id,
+            worker_id=worker_id,
+            claim_generation=claim_generation,
+        )
         wire = _compute_result(
             record, previous_ref, current_ref, previous_entry, current_entry,
             chroma_client,
+        )
+        # Disabled in production. Computation is done but nothing is durable
+        # yet, which is the window a reclaiming worker must be able to fence.
+        runtime_fault_hooks.checkpoint(
+            runtime_fault_hooks
+            .WORKER_AFTER_DETECTOR_COMPUTE_BEFORE_TERMINAL_COMMIT,
+            comparison_id=comparison_id,
+            attempt_id=attempt_id,
+            job_id=job_id,
+            worker_id=worker_id,
+            claim_generation=claim_generation,
         )
 
         try:
