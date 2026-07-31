@@ -137,11 +137,17 @@ JOB_STATUSES = (JOB_QUEUED, JOB_RUNNING, JOB_SUCCEEDED, JOB_FAILED)
 
 EVENT_JOB_QUEUED = "detection_job_queued"
 EVENT_JOB_CLAIMED = "detection_job_claimed"
+EVENT_JOB_HEARTBEAT = "detection_job_heartbeat"
+EVENT_JOB_RECLAIMED = "detection_job_reclaimed"
+EVENT_JOB_CLAIM_EXHAUSTED = "detection_job_claim_exhausted"
 EVENT_JOB_SUCCEEDED = "detection_job_succeeded"
 EVENT_JOB_FAILED = "detection_job_failed"
 JOB_EVENT_TYPES = (
     EVENT_JOB_QUEUED,
     EVENT_JOB_CLAIMED,
+    EVENT_JOB_HEARTBEAT,
+    EVENT_JOB_RECLAIMED,
+    EVENT_JOB_CLAIM_EXHAUSTED,
     EVENT_JOB_SUCCEEDED,
     EVENT_JOB_FAILED,
 )
@@ -178,7 +184,15 @@ REASON_JOB_ATTEMPT_MISMATCH = "detection_job_attempt_mismatch"
 REASON_JOB_RESULT_HASH_MISMATCH = "detection_job_result_hash_mismatch"
 REASON_JOB_INPUTS_CHANGED = "detection_job_inputs_changed"
 REASON_JOB_VERSION_CHANGED = "detection_job_version_changed"
-REASON_JOB_RECLAIM_NOT_SUPPORTED = "detection_job_reclaim_not_supported"
+REASON_ATTEMPT_MANAGED_BY_JOB = "detection_attempt_managed_by_job"
+ATTEMPT_MANAGED_BY_JOB_MESSAGE = (
+    "this detection attempt is managed by a worker job and must recover "
+    "through fenced lease reclaim"
+)
+REASON_JOB_LEASE_EXPIRED = "detection_job_lease_expired"
+REASON_JOB_CLAIM_FENCED = "detection_job_claim_fenced"
+REASON_JOB_CLAIMS_EXHAUSTED = "detection_job_claims_exhausted"
+REASON_JOB_CLOCK_INVALID = "detection_job_clock_invalid"
 REASON_RESULT_INPUTS_STALE = "comparison_inputs_stale"
 REASON_RESULT_VERSION_SUPERSEDED = "detector_version_superseded"
 
@@ -190,6 +204,26 @@ FAILURE_ATTEMPT_TIMED_OUT = "detection_attempt_timed_out"
 TIMED_OUT_SUMMARY = (
     "the attempt exceeded the configured stale threshold and was retired by an "
     "explicit operator replay request"
+)
+FAILURE_ATTEMPT_WORKER_LEASE_EXPIRED = (
+    "detection_attempt_worker_lease_expired"
+)
+WORKER_LEASE_EXPIRED_SUMMARY = (
+    "the worker claim lease expired and an explicit one-shot worker invocation "
+    "retired the attempt"
+)
+JOB_CLAIMS_EXHAUSTED_SUMMARY = (
+    "the detection job exhausted its bounded worker claim generations"
+)
+JOB_OWNERSHIP_LOST_CODES = frozenset(
+    {
+        REASON_JOB_LEASE_EXPIRED,
+        REASON_JOB_CLAIM_FENCED,
+        REASON_JOB_WORKER_MISMATCH,
+        REASON_JOB_CLAIM_INVALID,
+        REASON_JOB_ATTEMPT_MISMATCH,
+        REASON_JOB_NOT_RUNNING,
+    }
 )
 
 # Allowlisted replay reason codes. Operator prose lives in operator_note; the
@@ -461,6 +495,10 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
     finished_at                  TEXT,
     worker_id                    TEXT,
     claim_token_hash             TEXT,
+    claim_generation             INTEGER NOT NULL,
+    lease_started_at             TEXT,
+    heartbeat_at                 TEXT,
+    lease_expires_at             TEXT,
     result_hash                  TEXT,
     failure_code                 TEXT,
     failure_summary              TEXT,
@@ -476,6 +514,10 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND finished_at IS NULL
             AND worker_id IS NULL
             AND claim_token_hash IS NULL
+            AND claim_generation = 0
+            AND lease_started_at IS NULL
+            AND heartbeat_at IS NULL
+            AND lease_expires_at IS NULL
             AND result_hash IS NULL
             AND failure_code IS NULL
             AND failure_summary IS NULL)
@@ -487,6 +529,15 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND length(trim(worker_id)) BETWEEN 1 AND 120
             AND claim_token_hash IS NOT NULL
             AND length(claim_token_hash) = 64
+            AND claim_generation >= 1
+            AND lease_started_at IS NOT NULL
+            AND heartbeat_at IS NOT NULL
+            AND lease_expires_at IS NOT NULL
+            AND julianday(lease_started_at) IS NOT NULL
+            AND julianday(heartbeat_at) IS NOT NULL
+            AND julianday(lease_expires_at) IS NOT NULL
+            AND julianday(heartbeat_at) >= julianday(lease_started_at)
+            AND julianday(lease_expires_at) >= julianday(heartbeat_at)
             AND result_hash IS NULL
             AND failure_code IS NULL
             AND failure_summary IS NULL)
@@ -498,6 +549,15 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
             AND length(trim(worker_id)) BETWEEN 1 AND 120
             AND claim_token_hash IS NOT NULL
             AND length(claim_token_hash) = 64
+            AND claim_generation >= 1
+            AND lease_started_at IS NOT NULL
+            AND heartbeat_at IS NOT NULL
+            AND lease_expires_at IS NOT NULL
+            AND julianday(lease_started_at) IS NOT NULL
+            AND julianday(heartbeat_at) IS NOT NULL
+            AND julianday(lease_expires_at) IS NOT NULL
+            AND julianday(heartbeat_at) >= julianday(lease_started_at)
+            AND julianday(lease_expires_at) >= julianday(heartbeat_at)
             AND result_hash IS NOT NULL
             AND failure_code IS NULL
             AND failure_summary IS NULL)
@@ -511,13 +571,26 @@ CREATE TABLE IF NOT EXISTS comparison_detection_jobs (
                 (attempt_id IS NULL
                     AND claimed_at IS NULL
                     AND worker_id IS NULL
-                    AND claim_token_hash IS NULL)
+                    AND claim_token_hash IS NULL
+                    AND claim_generation = 0
+                    AND lease_started_at IS NULL
+                    AND heartbeat_at IS NULL
+                    AND lease_expires_at IS NULL)
                 OR (attempt_id IS NOT NULL
                     AND claimed_at IS NOT NULL
                     AND worker_id IS NOT NULL
                     AND length(trim(worker_id)) BETWEEN 1 AND 120
                     AND claim_token_hash IS NOT NULL
-                    AND length(claim_token_hash) = 64)
+                    AND length(claim_token_hash) = 64
+                    AND claim_generation >= 1
+                    AND lease_started_at IS NOT NULL
+                    AND heartbeat_at IS NOT NULL
+                    AND lease_expires_at IS NOT NULL
+                    AND julianday(lease_started_at) IS NOT NULL
+                    AND julianday(heartbeat_at) IS NOT NULL
+                    AND julianday(lease_expires_at) IS NOT NULL
+                    AND julianday(heartbeat_at) >= julianday(lease_started_at)
+                    AND julianday(lease_expires_at) >= julianday(heartbeat_at))
             ))
     )
 )
@@ -538,42 +611,95 @@ CREATE TABLE IF NOT EXISTS comparison_detection_job_events (
     event_type     TEXT NOT NULL
                    CHECK (event_type IN (
                        'detection_job_queued', 'detection_job_claimed',
+                       'detection_job_heartbeat', 'detection_job_reclaimed',
+                       'detection_job_claim_exhausted',
                        'detection_job_succeeded', 'detection_job_failed'
                    )),
-    event_seq      INTEGER NOT NULL CHECK (event_seq BETWEEN 0 AND 2),
+    event_seq      INTEGER NOT NULL CHECK (event_seq >= 0),
     created_at     TEXT NOT NULL,
     worker_id      TEXT,
+    claim_generation INTEGER NOT NULL,
+    source_attempt_id TEXT
+                      REFERENCES comparison_detection_attempts (attempt_id),
+    replacement_attempt_id TEXT
+                           REFERENCES comparison_detection_attempts (attempt_id),
+    lease_expires_at TEXT,
     result_hash    TEXT,
     failure_code   TEXT,
-    UNIQUE (job_id, event_type),
     UNIQUE (job_id, event_seq),
     CHECK (
         (event_type = 'detection_job_queued'
             AND event_seq = 0
             AND attempt_id IS NULL
             AND worker_id IS NULL
+            AND claim_generation = 0
+            AND source_attempt_id IS NULL
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NULL
             AND result_hash IS NULL
             AND failure_code IS NULL)
         OR (event_type = 'detection_job_claimed'
             AND event_seq = 1
             AND attempt_id IS NOT NULL
             AND worker_id IS NOT NULL
+            AND claim_generation = 1
+            AND source_attempt_id IS NULL
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NOT NULL
             AND result_hash IS NULL
             AND failure_code IS NULL)
-        OR (event_type = 'detection_job_succeeded'
-            AND event_seq = 2
+        OR (event_type = 'detection_job_heartbeat'
             AND attempt_id IS NOT NULL
             AND worker_id IS NOT NULL
+            AND claim_generation >= 1
+            AND source_attempt_id IS NULL
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL)
+        OR (event_type = 'detection_job_reclaimed'
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND claim_generation >= 2
+            AND source_attempt_id IS NOT NULL
+            AND replacement_attempt_id = attempt_id
+            AND lease_expires_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code IS NULL)
+        OR (event_type = 'detection_job_claim_exhausted'
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND claim_generation >= 1
+            AND source_attempt_id = attempt_id
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NOT NULL
+            AND result_hash IS NULL
+            AND failure_code = 'detection_job_claims_exhausted')
+        OR (event_type = 'detection_job_succeeded'
+            AND attempt_id IS NOT NULL
+            AND worker_id IS NOT NULL
+            AND claim_generation >= 1
+            AND source_attempt_id IS NULL
+            AND replacement_attempt_id IS NULL
+            AND lease_expires_at IS NOT NULL
             AND result_hash IS NOT NULL
             AND failure_code IS NULL)
         OR (event_type = 'detection_job_failed'
-            AND event_seq IN (1, 2)
             AND result_hash IS NULL
             AND failure_code IS NOT NULL
             AND (
-                (event_seq = 1 AND attempt_id IS NULL AND worker_id IS NULL)
-                OR (event_seq = 2
-                    AND attempt_id IS NOT NULL AND worker_id IS NOT NULL)
+                (attempt_id IS NULL
+                    AND worker_id IS NULL
+                    AND claim_generation = 0
+                    AND source_attempt_id IS NULL
+                    AND replacement_attempt_id IS NULL
+                    AND lease_expires_at IS NULL)
+                OR (attempt_id IS NOT NULL
+                    AND worker_id IS NOT NULL
+                    AND claim_generation >= 1
+                    AND source_attempt_id IS NULL
+                    AND replacement_attempt_id IS NULL
+                    AND lease_expires_at IS NOT NULL)
             ))
     )
 )
@@ -778,11 +904,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_active
     WHERE status IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS idx_detection_jobs_queue
     ON comparison_detection_jobs (status, queued_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_detection_jobs_expiry
+    ON comparison_detection_jobs (status, lease_expires_at, job_id);
 CREATE INDEX IF NOT EXISTS idx_detection_jobs_comparison
     ON comparison_detection_jobs (comparison_id, queued_at, job_id);
 {_DETECTION_JOB_EVENTS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_job_events_job
     ON comparison_detection_job_events (job_id, event_seq, created_at, event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_job_event_singletons
+    ON comparison_detection_job_events (job_id, event_type)
+    WHERE event_type IN (
+        'detection_job_queued', 'detection_job_claimed',
+        'detection_job_claim_exhausted',
+        'detection_job_succeeded', 'detection_job_failed'
+    );
 {_DETECTION_REPLAYS_DDL};
 CREATE INDEX IF NOT EXISTS idx_detection_replays_comparison
     ON comparison_detection_replays (comparison_id, requested_at);
@@ -1111,6 +1246,140 @@ def _migrate_attempt_timed_out(db_path: Path) -> None:
                 conn.execute(f"ALTER TABLE {temp_name} RENAME TO {table}")
 
 
+def _migrate_detection_job_leases(db_path: Path) -> None:
+    """Rebuild pre-lease job/event tables with an honest historical mapping.
+
+    Existing queued and pre-attempt failed jobs become generation 0 with no
+    lease. Existing claimed/running/terminal jobs become generation 1. For a
+    historical running claim, ``claimed_at`` is copied into every lease
+    timestamp, so it is conservatively expired rather than silently granted a
+    fresh lease during migration.
+
+    Both tables are rebuilt in one serialized transaction because the event
+    table references jobs and attempts. Repeated heartbeat/reclaim events also
+    require removing the old ``UNIQUE(job_id, event_type)`` constraint.
+    """
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparison_detection_jobs'"
+            ).fetchone()
+            event_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='comparison_detection_job_events'"
+            ).fetchone()
+            rebuild_jobs = (
+                job_row is not None
+                and "claim_generation" not in (job_row[0] or "")
+            )
+            rebuild_events = (
+                event_row is not None
+                and "'detection_job_heartbeat'" not in (event_row[0] or "")
+            )
+
+            if rebuild_jobs:
+                conn.execute(
+                    _DETECTION_JOBS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS comparison_detection_jobs",
+                        "CREATE TABLE comparison_detection_jobs_lease_rebuilt",
+                    )
+                )
+                conn.execute(
+                    """
+                    INSERT INTO comparison_detection_jobs_lease_rebuilt (
+                        job_id, comparison_id, attempt_id, trigger_type, status,
+                        request_hash, detector_version, workflow_version,
+                        previous_source_hash, current_source_hash,
+                        requested_by_subject, requested_by_auth_method,
+                        requested_by_token_id, requested_by_policy_id,
+                        requested_by_policy_version, queued_at, claimed_at,
+                        finished_at, worker_id, claim_token_hash,
+                        claim_generation, lease_started_at, heartbeat_at,
+                        lease_expires_at, result_hash, failure_code,
+                        failure_summary
+                    )
+                    SELECT
+                        job_id, comparison_id, attempt_id, trigger_type, status,
+                        request_hash, detector_version, workflow_version,
+                        previous_source_hash, current_source_hash,
+                        requested_by_subject, requested_by_auth_method,
+                        requested_by_token_id, requested_by_policy_id,
+                        requested_by_policy_version, queued_at, claimed_at,
+                        finished_at, worker_id, claim_token_hash,
+                        CASE WHEN attempt_id IS NULL THEN 0 ELSE 1 END,
+                        CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
+                        CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
+                        CASE WHEN attempt_id IS NULL THEN NULL ELSE claimed_at END,
+                        result_hash, failure_code, failure_summary
+                    FROM comparison_detection_jobs
+                    """
+                )
+
+            if rebuild_events:
+                conn.execute(
+                    _DETECTION_JOB_EVENTS_DDL.replace(
+                        "CREATE TABLE IF NOT EXISTS "
+                        "comparison_detection_job_events",
+                        "CREATE TABLE "
+                        "comparison_detection_job_events_lease_rebuilt",
+                    )
+                )
+                generation = (
+                    "CASE WHEN e.attempt_id IS NULL THEN 0 ELSE 1 END"
+                    if rebuild_jobs
+                    else "j.claim_generation"
+                )
+                lease_expires = (
+                    "CASE WHEN e.attempt_id IS NULL "
+                    "THEN NULL ELSE j.claimed_at END"
+                    if rebuild_jobs
+                    else "CASE WHEN e.attempt_id IS NULL "
+                    "THEN NULL ELSE j.lease_expires_at END"
+                )
+                conn.execute(
+                    f"""
+                    INSERT INTO comparison_detection_job_events_lease_rebuilt (
+                        event_id, job_id, comparison_id, attempt_id, event_type,
+                        event_seq, created_at, worker_id, claim_generation,
+                        source_attempt_id, replacement_attempt_id,
+                        lease_expires_at, result_hash, failure_code
+                    )
+                    SELECT
+                        e.event_id, e.job_id, e.comparison_id, e.attempt_id,
+                        e.event_type, e.event_seq, e.created_at, e.worker_id,
+                        {generation}, NULL, NULL, {lease_expires},
+                        e.result_hash, e.failure_code
+                    FROM comparison_detection_job_events e
+                    JOIN comparison_detection_jobs j ON j.job_id = e.job_id
+                    """
+                )
+
+            if rebuild_events:
+                conn.execute("DROP TABLE comparison_detection_job_events")
+            if rebuild_jobs:
+                conn.execute("DROP TABLE comparison_detection_jobs")
+                conn.execute(
+                    "ALTER TABLE comparison_detection_jobs_lease_rebuilt "
+                    "RENAME TO comparison_detection_jobs"
+                )
+            if rebuild_events:
+                conn.execute(
+                    "ALTER TABLE comparison_detection_job_events_lease_rebuilt "
+                    "RENAME TO comparison_detection_job_events"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+
 def _connect(db_path: str | Path) -> sqlite3.Connection:
     """Open a per-operation connection with the store's pragmas applied."""
     path = Path(db_path)
@@ -1132,6 +1401,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     _migrate_detecting_status(db_path)
     _migrate_queued_for_detection_status(db_path)
     _migrate_attempt_timed_out(db_path)
+    _migrate_detection_job_leases(db_path)
     _migrate_review_items_vocabulary(db_path)
     _migrate_actor_attribution(db_path)
     with closing(_connect(db_path)) as conn, conn:
@@ -1140,6 +1410,25 @@ def init_db(db_path: str | Path | None = None) -> None:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_moment(now: datetime | None = None) -> datetime:
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+        raise ValueError("now must be timezone-aware")
+    return moment.astimezone(timezone.utc)
+
+
+def _validated_policy_int(
+    value: Any, *, field: str, minimum: int, maximum: int
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(
+            f"{field} must be between {minimum} and {maximum}"
+        )
+    return value
 
 
 def _bounded_actor_value(value: Any, *, field: str, max_chars: int) -> str:
@@ -2018,10 +2307,10 @@ def mark_failed(
 #   attempt:                          (none) -> running -> succeeded | failed
 #
 # Terminal states do not transition. Explicit bounded replay remains available
-# for eligible direct/replay attempts, but there is no automatic retry or
-# timeout takeover. The one-shot initial-detection worker has no lease,
-# heartbeat, or reclaim: a process killed after claim leaves the comparison
-# detecting with its job and attempt running indefinitely and visibly.
+# for eligible direct/replay attempts, but there is no automatic retry.
+# One-shot initial-detection claims have finite leases; only a later explicit
+# worker invocation can atomically retire and replace an expired claimed
+# attempt. Merely crossing the expiry changes nothing.
 
 
 def detection_attempt_id_for(
@@ -2551,8 +2840,10 @@ def detection_job_id_for(request_hash: str) -> str:
     return f"djob_{hashlib.sha256(request_hash.encode('utf-8')).hexdigest()[:24]}"
 
 
-def _detection_job_event_id(job_id: str, event_type: str) -> str:
-    key = f"{job_id}|{event_type}"
+def _detection_job_event_id(
+    job_id: str, event_type: str, event_seq: int
+) -> str:
+    key = f"{job_id}|{event_type}|{event_seq}"
     return f"djob_evt_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}"
 
 
@@ -2562,23 +2853,35 @@ def _insert_detection_job_event(
     job_id: str,
     comparison_id: str,
     event_type: str,
-    event_seq: int,
     now: str,
+    event_seq: int | None = None,
     attempt_id: str | None = None,
     worker_id: str | None = None,
+    claim_generation: int = 0,
+    source_attempt_id: str | None = None,
+    replacement_attempt_id: str | None = None,
+    lease_expires_at: str | None = None,
     result_hash: str | None = None,
     failure_code: str | None = None,
 ) -> None:
-    """Append one job transition. There is no update/delete event path."""
+    """Append one job transition. Repeated events get monotonic sequences."""
+    if event_seq is None:
+        event_seq = conn.execute(
+            "SELECT COALESCE(MAX(event_seq), -1) + 1 "
+            "FROM comparison_detection_job_events WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()[0]
     conn.execute(
         """
         INSERT INTO comparison_detection_job_events (
             event_id, job_id, comparison_id, attempt_id, event_type,
-            event_seq, created_at, worker_id, result_hash, failure_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            event_seq, created_at, worker_id, claim_generation,
+            source_attempt_id, replacement_attempt_id, lease_expires_at,
+            result_hash, failure_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            _detection_job_event_id(job_id, event_type),
+            _detection_job_event_id(job_id, event_type, event_seq),
             job_id,
             comparison_id,
             attempt_id,
@@ -2586,6 +2889,10 @@ def _insert_detection_job_event(
             event_seq,
             now,
             worker_id,
+            claim_generation,
+            source_attempt_id,
+            replacement_attempt_id,
+            lease_expires_at,
             result_hash,
             failure_code,
         ),
@@ -2781,11 +3088,14 @@ def enqueue_detection_job(
                     requested_by_subject, requested_by_auth_method,
                     requested_by_token_id, requested_by_policy_id,
                     requested_by_policy_version, queued_at, claimed_at,
-                    finished_at, worker_id, claim_token_hash, result_hash,
-                    failure_code, failure_summary
+                    finished_at, worker_id, claim_token_hash,
+                    claim_generation, lease_started_at, heartbeat_at,
+                    lease_expires_at, result_hash, failure_code,
+                    failure_summary
                 ) VALUES (
                     ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                    NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL,
+                    NULL, NULL, NULL
                 )
                 """,
                 (
@@ -2863,6 +3173,64 @@ def peek_queued_detection_job(
                 (JOB_QUEUED,),
             ).fetchone()
     return dict(row) if row else None
+
+
+def peek_claimable_detection_job(
+    *,
+    job_id: str | None = None,
+    reclaim_grace_seconds: int,
+    now: datetime | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Read the next queued or reclaim-eligible job without mutating storage.
+
+    Queued work always wins. With none queued, expired running jobs are ordered
+    by parsed lease expiry then job id. Expiry plus grace must be STRICTLY in
+    the past, avoiding overlap with the inclusive finalization boundary.
+    """
+    grace = _validated_policy_int(
+        reclaim_grace_seconds,
+        field="reclaim_grace_seconds",
+        minimum=0,
+        maximum=86_400,
+    )
+    moment = _utc_moment(now)
+    path = Path(db_path or config.COMPARISON_DB_PATH)
+    with closing(_connect_readonly(path)) as conn:
+        if job_id is not None:
+            row = conn.execute(
+                "SELECT * FROM comparison_detection_jobs "
+                "WHERE job_id = ? AND status IN (?, ?)",
+                (job_id, JOB_QUEUED, JOB_RUNNING),
+            ).fetchone()
+            candidates = [row] if row is not None else []
+        else:
+            queued = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE status = ? "
+                "ORDER BY queued_at, job_id LIMIT 1",
+                (JOB_QUEUED,),
+            ).fetchone()
+            if queued is not None:
+                return dict(queued)
+            candidates = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE status = ? "
+                "ORDER BY lease_expires_at, job_id",
+                (JOB_RUNNING,),
+            ).fetchall()
+
+    ready: list[tuple[datetime, str, sqlite3.Row]] = []
+    for row in candidates:
+        if row["status"] == JOB_QUEUED:
+            return dict(row)
+        expires = parse_utc_timestamp(
+            row["lease_expires_at"], field="lease_expires_at"
+        )
+        if moment > expires + timedelta(seconds=grace):
+            ready.append((expires, row["job_id"], row))
+    if not ready:
+        return None
+    ready.sort(key=lambda item: (item[0], item[1]))
+    return dict(ready[0][2])
 
 
 def _fail_queued_job_in_transaction(
@@ -2964,6 +3332,179 @@ def fail_queued_detection_job(
     return dict(row)
 
 
+def _insert_running_job_attempt(
+    conn: sqlite3.Connection, job: sqlite3.Row, *, now: str
+) -> sqlite3.Row:
+    comparison_id = job["comparison_id"]
+    next_number = conn.execute(
+        "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+        "FROM comparison_detection_attempts WHERE comparison_id = ?",
+        (comparison_id,),
+    ).fetchone()[0]
+    attempt_id = detection_attempt_id_for(
+        comparison_id,
+        next_number,
+        detector_version=job["detector_version"],
+        workflow_version=job["workflow_version"],
+        previous_source_hash=job["previous_source_hash"],
+        current_source_hash=job["current_source_hash"],
+    )
+    conn.execute(
+        """
+        INSERT INTO comparison_detection_attempts (
+            attempt_id, comparison_id, attempt_number, status,
+            detector_version, workflow_version,
+            previous_source_hash, current_source_hash,
+            started_at, finished_at, result_hash,
+            failure_code, failure_summary
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+        """,
+        (
+            attempt_id,
+            comparison_id,
+            next_number,
+            ATTEMPT_RUNNING,
+            job["detector_version"],
+            job["workflow_version"],
+            job["previous_source_hash"],
+            job["current_source_hash"],
+            now,
+        ),
+    )
+    _insert_detection_event(
+        conn,
+        attempt_id=attempt_id,
+        comparison_id=comparison_id,
+        event_type=EVENT_DETECTION_STARTED,
+        now=now,
+    )
+    return conn.execute(
+        "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+
+
+def _time_out_worker_attempt(
+    conn: sqlite3.Connection, attempt: sqlite3.Row, *, now: str
+) -> sqlite3.Row:
+    cursor = conn.execute(
+        "UPDATE comparison_detection_attempts SET status = ?, "
+        "finished_at = ?, failure_code = ?, failure_summary = ? "
+        "WHERE attempt_id = ? AND status = ?",
+        (
+            ATTEMPT_TIMED_OUT,
+            now,
+            FAILURE_ATTEMPT_WORKER_LEASE_EXPIRED,
+            WORKER_LEASE_EXPIRED_SUMMARY[:MAX_FAILURE_SUMMARY_CHARS],
+            attempt["attempt_id"],
+            ATTEMPT_RUNNING,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise DetectionStateError(
+            REASON_JOB_CLAIM_FENCED,
+            "the expired detection attempt is no longer owned by this claim",
+            comparison_id=attempt["comparison_id"],
+            attempt_id=attempt["attempt_id"],
+        )
+    _insert_detection_event(
+        conn,
+        attempt_id=attempt["attempt_id"],
+        comparison_id=attempt["comparison_id"],
+        event_type=EVENT_DETECTION_TIMED_OUT,
+        now=now,
+        failure_code=FAILURE_ATTEMPT_WORKER_LEASE_EXPIRED,
+    )
+    return conn.execute(
+        "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
+        (attempt["attempt_id"],),
+    ).fetchone()
+
+
+def _fail_expired_running_job(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    attempt: sqlite3.Row,
+    *,
+    failure_code: str,
+    failure_summary: str,
+    now: str,
+    claim_exhausted: bool = False,
+) -> tuple[sqlite3.Row, sqlite3.Row]:
+    timed_out = _time_out_worker_attempt(conn, attempt, now=now)
+    if claim_exhausted:
+        _insert_detection_job_event(
+            conn,
+            job_id=job["job_id"],
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt["attempt_id"],
+            event_type=EVENT_JOB_CLAIM_EXHAUSTED,
+            now=now,
+            worker_id=job["worker_id"],
+            claim_generation=job["claim_generation"],
+            source_attempt_id=attempt["attempt_id"],
+            lease_expires_at=job["lease_expires_at"],
+            failure_code=REASON_JOB_CLAIMS_EXHAUSTED,
+        )
+    cursor = conn.execute(
+        "UPDATE comparison_detection_jobs SET status = ?, finished_at = ?, "
+        "failure_code = ?, failure_summary = ? "
+        "WHERE job_id = ? AND status = ?",
+        (
+            JOB_FAILED,
+            now,
+            failure_code,
+            failure_summary[:MAX_FAILURE_SUMMARY_CHARS],
+            job["job_id"],
+            JOB_RUNNING,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise DetectionStateError(
+            REASON_JOB_CLAIM_FENCED,
+            "the expired detection job is no longer running",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt["attempt_id"],
+        )
+    _insert_detection_job_event(
+        conn,
+        job_id=job["job_id"],
+        comparison_id=job["comparison_id"],
+        attempt_id=attempt["attempt_id"],
+        event_type=EVENT_JOB_FAILED,
+        now=now,
+        worker_id=job["worker_id"],
+        claim_generation=job["claim_generation"],
+        lease_expires_at=job["lease_expires_at"],
+        failure_code=failure_code,
+    )
+    cursor = conn.execute(
+        "UPDATE comparisons SET status = ?, failure_code = ?, "
+        "failure_summary = ?, updated_at = ? "
+        "WHERE comparison_id = ? AND status = ?",
+        (
+            STATUS_FAILED,
+            failure_code,
+            failure_summary[:MAX_FAILURE_SUMMARY_CHARS],
+            now,
+            job["comparison_id"],
+            STATUS_DETECTING,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise DetectionStateError(
+            REASON_TRANSITION_INVALID,
+            "the comparison could not be failed after lease expiry",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt["attempt_id"],
+        )
+    final_job = conn.execute(
+        "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+        (job["job_id"],),
+    ).fetchone()
+    return final_job, timed_out
+
+
 def claim_detection_job(
     *,
     worker_id: str,
@@ -2971,201 +3512,357 @@ def claim_detection_job(
     workflow_version: str,
     previous_source_hash: str,
     current_source_hash: str,
+    lease_duration_seconds: int,
+    reclaim_grace_seconds: int,
+    max_claim_generations: int,
     job_id: str | None = None,
+    now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    """Claim one queued job and create its running attempt atomically.
-
-    Returns ``None`` when no matching queued job remains, a ``kind=failed``
-    outcome when captured inputs/versions changed before claim, or a
-    ``kind=claimed`` outcome carrying the raw claim token exactly once.
-    """
+    """Claim queued work or atomically reclaim one expired running claim."""
     db_path = db_path or config.COMPARISON_DB_PATH
     worker = validate_worker_id(worker_id)
-    now = _utc_now_iso()
+    lease_seconds = _validated_policy_int(
+        lease_duration_seconds,
+        field="lease_duration_seconds",
+        minimum=1,
+        maximum=86_400,
+    )
+    grace_seconds = _validated_policy_int(
+        reclaim_grace_seconds,
+        field="reclaim_grace_seconds",
+        minimum=0,
+        maximum=86_400,
+    )
+    max_generations = _validated_policy_int(
+        max_claim_generations,
+        field="max_claim_generations",
+        minimum=1,
+        maximum=1_000,
+    )
+    init_db(db_path)
+    moment = _utc_moment(now)
+    now_iso = moment.isoformat()
+    lease_expires_at = (
+        moment + timedelta(seconds=lease_seconds)
+    ).isoformat()
+
     with closing(_connect(db_path)) as conn:
         conn.isolation_level = None
         conn.execute("BEGIN IMMEDIATE")
         try:
-            if job_id is None:
+            if job_id is not None:
+                job = conn.execute(
+                    "SELECT * FROM comparison_detection_jobs "
+                    "WHERE job_id = ? AND status IN (?, ?)",
+                    (job_id, JOB_QUEUED, JOB_RUNNING),
+                ).fetchone()
+            else:
                 job = conn.execute(
                     "SELECT * FROM comparison_detection_jobs WHERE status = ? "
                     "ORDER BY queued_at, job_id LIMIT 1",
                     (JOB_QUEUED,),
                 ).fetchone()
-            else:
-                job = conn.execute(
-                    "SELECT * FROM comparison_detection_jobs "
-                    "WHERE job_id = ? AND status = ?",
-                    (job_id, JOB_QUEUED),
-                ).fetchone()
+                if job is None:
+                    running = conn.execute(
+                        "SELECT * FROM comparison_detection_jobs "
+                        "WHERE status = ? ORDER BY lease_expires_at, job_id",
+                        (JOB_RUNNING,),
+                    ).fetchall()
+                    job = next(
+                        (
+                            item
+                            for item in running
+                            if moment
+                            > parse_utc_timestamp(
+                                item["lease_expires_at"],
+                                field="lease_expires_at",
+                            )
+                            + timedelta(seconds=grace_seconds)
+                        ),
+                        None,
+                    )
             if job is None:
                 conn.execute("COMMIT")
                 return None
 
-            comparison_id = job["comparison_id"]
             comparison = conn.execute(
                 "SELECT * FROM comparisons WHERE comparison_id = ?",
-                (comparison_id,),
+                (job["comparison_id"],),
             ).fetchone()
-            if (
-                comparison is None
-                or comparison["status"] != STATUS_QUEUED_FOR_DETECTION
-            ):
-                raise DetectionStateError(
-                    REASON_TRANSITION_INVALID,
-                    "the queued job's comparison is not queued_for_detection",
-                    comparison_id=comparison_id,
-                )
-
             version_changed = (
                 job["detector_version"] != detector_version
                 or job["workflow_version"] != workflow_version
+                or comparison is None
                 or comparison["workflow_version"] != workflow_version
             )
             inputs_changed = (
                 job["previous_source_hash"] != previous_source_hash
                 or job["current_source_hash"] != current_source_hash
             )
-            if version_changed or inputs_changed:
-                code = (
-                    REASON_JOB_VERSION_CHANGED
-                    if version_changed
-                    else REASON_JOB_INPUTS_CHANGED
+
+            if job["status"] == JOB_QUEUED:
+                if (
+                    comparison is None
+                    or comparison["status"] != STATUS_QUEUED_FOR_DETECTION
+                ):
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the queued job's comparison is not queued_for_detection",
+                        comparison_id=job["comparison_id"],
+                    )
+                if version_changed or inputs_changed:
+                    code = (
+                        REASON_JOB_VERSION_CHANGED
+                        if version_changed
+                        else REASON_JOB_INPUTS_CHANGED
+                    )
+                    summary = (
+                        "the detector or workflow version changed before worker claim"
+                        if version_changed
+                        else "the filing source content changed before worker claim"
+                    )
+                    failed = _fail_queued_job_in_transaction(
+                        conn,
+                        job,
+                        failure_code=code,
+                        failure_summary=summary,
+                        now=now_iso,
+                    )
+                    conn.execute("COMMIT")
+                    return {"kind": "failed", "job": dict(failed)}
+                running = conn.execute(
+                    "SELECT attempt_id FROM comparison_detection_attempts "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (job["comparison_id"], ATTEMPT_RUNNING),
+                ).fetchone()
+                if running is not None:
+                    raise DetectionStateError(
+                        REASON_DETECTION_IN_PROGRESS,
+                        "a detection attempt is already running for this comparison",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=running["attempt_id"],
+                    )
+                attempt = _insert_running_job_attempt(
+                    conn, job, now=now_iso
                 )
-                summary = (
-                    "the detector or workflow version changed before worker claim"
-                    if version_changed
-                    else "the filing source content changed before worker claim"
+                raw_claim_token = secrets.token_urlsafe(32)
+                token_hash = hashlib.sha256(
+                    raw_claim_token.encode("utf-8")
+                ).hexdigest()
+                cursor = conn.execute(
+                    "UPDATE comparison_detection_jobs SET status = ?, "
+                    "attempt_id = ?, claimed_at = ?, worker_id = ?, "
+                    "claim_token_hash = ?, claim_generation = 1, "
+                    "lease_started_at = ?, heartbeat_at = ?, "
+                    "lease_expires_at = ? "
+                    "WHERE job_id = ? AND status = ?",
+                    (
+                        JOB_RUNNING,
+                        attempt["attempt_id"],
+                        now_iso,
+                        worker,
+                        token_hash,
+                        now_iso,
+                        now_iso,
+                        lease_expires_at,
+                        job["job_id"],
+                        JOB_QUEUED,
+                    ),
                 )
-                failed = _fail_queued_job_in_transaction(
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_JOB_CLAIM_FENCED,
+                        "the queued detection job was claimed concurrently",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=attempt["attempt_id"],
+                    )
+                _insert_detection_job_event(
                     conn,
-                    job,
-                    failure_code=code,
-                    failure_summary=summary,
-                    now=now,
+                    job_id=job["job_id"],
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt["attempt_id"],
+                    event_type=EVENT_JOB_CLAIMED,
+                    event_seq=1,
+                    now=now_iso,
+                    worker_id=worker,
+                    claim_generation=1,
+                    lease_expires_at=lease_expires_at,
                 )
-                conn.execute("COMMIT")
-                return {"kind": "failed", "job": dict(failed)}
+                cursor = conn.execute(
+                    "UPDATE comparisons SET status = ?, updated_at = ? "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (
+                        STATUS_DETECTING,
+                        now_iso,
+                        job["comparison_id"],
+                        STATUS_QUEUED_FOR_DETECTION,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the comparison could not be transitioned to 'detecting'",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=attempt["attempt_id"],
+                    )
+                outcome_kind = "claimed"
+                source_attempt = None
+            else:
+                expiry = parse_utc_timestamp(
+                    job["lease_expires_at"], field="lease_expires_at"
+                )
+                if moment <= expiry + timedelta(seconds=grace_seconds):
+                    conn.execute("COMMIT")
+                    return None
+                if comparison is None or comparison["status"] != STATUS_DETECTING:
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the expired job's comparison is not detecting",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=job["attempt_id"],
+                    )
+                source_attempt = _require_running_attempt(
+                    conn, job["attempt_id"]
+                )
+                if source_attempt["comparison_id"] != job["comparison_id"]:
+                    raise DetectionStateError(
+                        REASON_JOB_ATTEMPT_MISMATCH,
+                        "the expired attempt belongs to another comparison",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=job["attempt_id"],
+                    )
+                running = conn.execute(
+                    "SELECT attempt_id FROM comparison_detection_attempts "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (job["comparison_id"], ATTEMPT_RUNNING),
+                ).fetchall()
+                if len(running) != 1 or (
+                    running[0]["attempt_id"] != source_attempt["attempt_id"]
+                ):
+                    raise DetectionStateError(
+                        REASON_TRANSITION_INVALID,
+                        "the expired attempt is not the only running attempt",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=source_attempt["attempt_id"],
+                    )
+                if version_changed or inputs_changed:
+                    code = (
+                        REASON_JOB_VERSION_CHANGED
+                        if version_changed
+                        else REASON_JOB_INPUTS_CHANGED
+                    )
+                    summary = (
+                        "the detector or workflow version changed before reclaim"
+                        if version_changed
+                        else "the filing source content changed before reclaim"
+                    )
+                    final_job, timed_out = _fail_expired_running_job(
+                        conn,
+                        job,
+                        source_attempt,
+                        failure_code=code,
+                        failure_summary=summary,
+                        now=now_iso,
+                    )
+                    conn.execute("COMMIT")
+                    return {
+                        "kind": "failed",
+                        "job": dict(final_job),
+                        "attempt": dict(timed_out),
+                    }
+                if job["claim_generation"] >= max_generations:
+                    final_job, timed_out = _fail_expired_running_job(
+                        conn,
+                        job,
+                        source_attempt,
+                        failure_code=REASON_JOB_CLAIMS_EXHAUSTED,
+                        failure_summary=JOB_CLAIMS_EXHAUSTED_SUMMARY,
+                        now=now_iso,
+                        claim_exhausted=True,
+                    )
+                    conn.execute("COMMIT")
+                    return {
+                        "kind": "exhausted",
+                        "job": dict(final_job),
+                        "attempt": dict(timed_out),
+                    }
 
-            running = conn.execute(
-                "SELECT attempt_id FROM comparison_detection_attempts "
-                "WHERE comparison_id = ? AND status = ?",
-                (comparison_id, ATTEMPT_RUNNING),
-            ).fetchone()
-            if running is not None:
-                raise DetectionStateError(
-                    REASON_DETECTION_IN_PROGRESS,
-                    "a detection attempt is already running for this comparison",
-                    comparison_id=comparison_id,
-                    attempt_id=running["attempt_id"],
+                source_attempt = _time_out_worker_attempt(
+                    conn, source_attempt, now=now_iso
                 )
+                attempt = _insert_running_job_attempt(
+                    conn, job, now=now_iso
+                )
+                raw_claim_token = secrets.token_urlsafe(32)
+                token_hash = hashlib.sha256(
+                    raw_claim_token.encode("utf-8")
+                ).hexdigest()
+                generation = job["claim_generation"] + 1
+                cursor = conn.execute(
+                    "UPDATE comparison_detection_jobs SET attempt_id = ?, "
+                    "worker_id = ?, claim_token_hash = ?, "
+                    "claim_generation = ?, lease_started_at = ?, "
+                    "heartbeat_at = ?, lease_expires_at = ? "
+                    "WHERE job_id = ? AND status = ? "
+                    "AND claim_generation = ?",
+                    (
+                        attempt["attempt_id"],
+                        worker,
+                        token_hash,
+                        generation,
+                        now_iso,
+                        now_iso,
+                        lease_expires_at,
+                        job["job_id"],
+                        JOB_RUNNING,
+                        job["claim_generation"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DetectionStateError(
+                        REASON_JOB_CLAIM_FENCED,
+                        "the expired detection job claim changed during reclaim",
+                        comparison_id=job["comparison_id"],
+                        attempt_id=source_attempt["attempt_id"],
+                    )
+                _insert_detection_job_event(
+                    conn,
+                    job_id=job["job_id"],
+                    comparison_id=job["comparison_id"],
+                    attempt_id=attempt["attempt_id"],
+                    event_type=EVENT_JOB_RECLAIMED,
+                    now=now_iso,
+                    worker_id=worker,
+                    claim_generation=generation,
+                    source_attempt_id=source_attempt["attempt_id"],
+                    replacement_attempt_id=attempt["attempt_id"],
+                    lease_expires_at=lease_expires_at,
+                )
+                conn.execute(
+                    "UPDATE comparisons SET updated_at = ? "
+                    "WHERE comparison_id = ? AND status = ?",
+                    (now_iso, job["comparison_id"], STATUS_DETECTING),
+                )
+                outcome_kind = "reclaimed"
 
-            next_number = conn.execute(
-                "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
-                "FROM comparison_detection_attempts WHERE comparison_id = ?",
-                (comparison_id,),
-            ).fetchone()[0]
-            attempt_id = detection_attempt_id_for(
-                comparison_id,
-                next_number,
-                detector_version=detector_version,
-                workflow_version=workflow_version,
-                previous_source_hash=previous_source_hash,
-                current_source_hash=current_source_hash,
-            )
-            conn.execute(
-                """
-                INSERT INTO comparison_detection_attempts (
-                    attempt_id, comparison_id, attempt_number, status,
-                    detector_version, workflow_version,
-                    previous_source_hash, current_source_hash,
-                    started_at, finished_at, result_hash,
-                    failure_code, failure_summary
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
-                """,
-                (
-                    attempt_id,
-                    comparison_id,
-                    next_number,
-                    ATTEMPT_RUNNING,
-                    detector_version,
-                    workflow_version,
-                    previous_source_hash,
-                    current_source_hash,
-                    now,
-                ),
-            )
-            _insert_detection_event(
-                conn,
-                attempt_id=attempt_id,
-                comparison_id=comparison_id,
-                event_type=EVENT_DETECTION_STARTED,
-                now=now,
-            )
-            raw_claim_token = secrets.token_urlsafe(32)
-            claim_token_hash = hashlib.sha256(
-                raw_claim_token.encode("utf-8")
-            ).hexdigest()
-            conn.execute(
-                "UPDATE comparison_detection_jobs SET status = ?, "
-                "attempt_id = ?, claimed_at = ?, worker_id = ?, "
-                "claim_token_hash = ? WHERE job_id = ? AND status = ?",
-                (
-                    JOB_RUNNING,
-                    attempt_id,
-                    now,
-                    worker,
-                    claim_token_hash,
-                    job["job_id"],
-                    JOB_QUEUED,
-                ),
-            )
-            _insert_detection_job_event(
-                conn,
-                job_id=job["job_id"],
-                comparison_id=comparison_id,
-                attempt_id=attempt_id,
-                event_type=EVENT_JOB_CLAIMED,
-                event_seq=1,
-                now=now,
-                worker_id=worker,
-            )
-            cursor = conn.execute(
-                "UPDATE comparisons SET status = ?, updated_at = ? "
-                "WHERE comparison_id = ? AND status = ?",
-                (
-                    STATUS_DETECTING,
-                    now,
-                    comparison_id,
-                    STATUS_QUEUED_FOR_DETECTION,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise DetectionStateError(
-                    REASON_TRANSITION_INVALID,
-                    "the comparison could not be transitioned to 'detecting'",
-                    comparison_id=comparison_id,
-                    attempt_id=attempt_id,
-                )
             claimed_job = conn.execute(
                 "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
                 (job["job_id"],),
-            ).fetchone()
-            attempt = conn.execute(
-                "SELECT * FROM comparison_detection_attempts WHERE attempt_id = ?",
-                (attempt_id,),
             ).fetchone()
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-    return {
-        "kind": "claimed",
+    outcome = {
+        "kind": outcome_kind,
         "job": dict(claimed_job),
         "attempt": dict(attempt),
         "claim_token": raw_claim_token,
     }
+    if source_attempt is not None:
+        outcome["source_attempt"] = dict(source_attempt)
+    return outcome
 
 
 def _require_running_job_claim(
@@ -3174,7 +3871,9 @@ def _require_running_job_claim(
     job_id: str,
     attempt_id: str,
     worker_id: str,
+    claim_generation: int,
     claim_token: str,
+    now: datetime,
 ) -> tuple[sqlite3.Row, sqlite3.Row, sqlite3.Row]:
     job = conn.execute(
         "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
@@ -3190,6 +3889,19 @@ def _require_running_job_claim(
             f"the detection job is already '{job['status']}'",
             comparison_id=job["comparison_id"],
             attempt_id=job["attempt_id"],
+        )
+    generation = _validated_policy_int(
+        claim_generation,
+        field="claim_generation",
+        minimum=1,
+        maximum=1_000_000,
+    )
+    if job["claim_generation"] != generation:
+        raise DetectionStateError(
+            REASON_JOB_CLAIM_FENCED,
+            "the detection job claim generation is no longer current",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
         )
     worker = validate_worker_id(worker_id)
     if job["worker_id"] != worker:
@@ -3217,6 +3929,16 @@ def _require_running_job_claim(
             comparison_id=job["comparison_id"],
             attempt_id=attempt_id,
         )
+    expires = parse_utc_timestamp(
+        job["lease_expires_at"], field="lease_expires_at"
+    )
+    if now > expires:
+        raise DetectionStateError(
+            REASON_JOB_LEASE_EXPIRED,
+            "the detection job claim lease has expired",
+            comparison_id=job["comparison_id"],
+            attempt_id=attempt_id,
+        )
     attempt = _require_running_attempt(conn, attempt_id)
     if attempt["comparison_id"] != job["comparison_id"]:
         raise DetectionStateError(
@@ -3239,6 +3961,107 @@ def _require_running_job_claim(
     return job, attempt, comparison
 
 
+def heartbeat_detection_job(
+    job_id: str,
+    *,
+    worker_id: str,
+    claim_generation: int,
+    claim_token: str,
+    heartbeat_extension_seconds: int,
+    now: datetime | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Extend one still-active lease and append a repeatable heartbeat event."""
+    db_path = db_path or config.COMPARISON_DB_PATH
+    extension = _validated_policy_int(
+        heartbeat_extension_seconds,
+        field="heartbeat_extension_seconds",
+        minimum=1,
+        maximum=86_400,
+    )
+    moment = _utc_moment(now)
+    now_iso = moment.isoformat()
+    with closing(_connect(db_path)) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if current is None:
+                raise DetectionStateError(
+                    REASON_JOB_NOT_FOUND,
+                    "no detection job with this id exists",
+                )
+            job, _attempt, _comparison = _require_running_job_claim(
+                conn,
+                job_id=job_id,
+                attempt_id=current["attempt_id"] or "",
+                worker_id=worker_id,
+                claim_generation=claim_generation,
+                claim_token=claim_token,
+                now=moment,
+            )
+            previous_heartbeat = parse_utc_timestamp(
+                job["heartbeat_at"], field="heartbeat_at"
+            )
+            if moment < previous_heartbeat:
+                raise DetectionStateError(
+                    REASON_JOB_CLOCK_INVALID,
+                    "heartbeat time precedes the previous heartbeat",
+                    comparison_id=job["comparison_id"],
+                    attempt_id=job["attempt_id"],
+                )
+            current_expiry = parse_utc_timestamp(
+                job["lease_expires_at"], field="lease_expires_at"
+            )
+            extended = max(
+                current_expiry,
+                moment + timedelta(seconds=extension),
+            )
+            lease_expires_at = extended.isoformat()
+            cursor = conn.execute(
+                "UPDATE comparison_detection_jobs SET heartbeat_at = ?, "
+                "lease_expires_at = ? WHERE job_id = ? AND status = ? "
+                "AND claim_generation = ?",
+                (
+                    now_iso,
+                    lease_expires_at,
+                    job_id,
+                    JOB_RUNNING,
+                    claim_generation,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise DetectionStateError(
+                    REASON_JOB_CLAIM_FENCED,
+                    "the detection job claim changed during heartbeat",
+                    comparison_id=job["comparison_id"],
+                    attempt_id=job["attempt_id"],
+                )
+            _insert_detection_job_event(
+                conn,
+                job_id=job_id,
+                comparison_id=job["comparison_id"],
+                attempt_id=job["attempt_id"],
+                event_type=EVENT_JOB_HEARTBEAT,
+                now=now_iso,
+                worker_id=job["worker_id"],
+                claim_generation=job["claim_generation"],
+                lease_expires_at=lease_expires_at,
+            )
+            updated = conn.execute(
+                "SELECT * FROM comparison_detection_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(updated)
+
+
 def _canonical_result_hash(result_json: str) -> str:
     parsed = json.loads(result_json)
     if not isinstance(parsed, dict):
@@ -3254,6 +4077,7 @@ def complete_detection_job(
     attempt_id: str,
     *,
     worker_id: str,
+    claim_generation: int,
     claim_token: str,
     result_json: str,
     result_hash: str,
@@ -3261,6 +4085,7 @@ def complete_detection_job(
     workflow_version: str,
     previous_source_hash: str,
     current_source_hash: str,
+    now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Atomically finalize job, attempt, result, events, and comparison."""
@@ -3271,7 +4096,8 @@ def complete_detection_job(
             "the supplied result hash does not match the canonical result",
             attempt_id=attempt_id,
         )
-    now = _utc_now_iso()
+    moment = _utc_moment(now)
+    now_iso = moment.isoformat()
     with closing(_connect(db_path)) as conn:
         conn.isolation_level = None
         conn.execute("BEGIN IMMEDIATE")
@@ -3281,7 +4107,9 @@ def complete_detection_job(
                 job_id=job_id,
                 attempt_id=attempt_id,
                 worker_id=worker_id,
+                claim_generation=claim_generation,
                 claim_token=claim_token,
+                now=moment,
             )
             expected = (
                 detector_version,
@@ -3320,27 +4148,33 @@ def complete_detection_job(
                 detector_version=detector_version,
                 previous_source_hash=previous_source_hash,
                 current_source_hash=current_source_hash,
-                now=now,
+                now=now_iso,
             )
             conn.execute(
                 "UPDATE comparison_detection_attempts SET status = ?, "
                 "finished_at = ?, result_hash = ? "
                 "WHERE attempt_id = ? AND status = ?",
-                (ATTEMPT_SUCCEEDED, now, result_hash, attempt_id, ATTEMPT_RUNNING),
+                (
+                    ATTEMPT_SUCCEEDED,
+                    now_iso,
+                    result_hash,
+                    attempt_id,
+                    ATTEMPT_RUNNING,
+                ),
             )
             _insert_detection_event(
                 conn,
                 attempt_id=attempt_id,
                 comparison_id=job["comparison_id"],
                 event_type=EVENT_DETECTION_SUCCEEDED,
-                now=now,
+                now=now_iso,
                 result_hash=result_hash,
             )
             conn.execute(
                 "UPDATE comparison_detection_jobs SET status = ?, "
                 "finished_at = ?, result_hash = ? "
                 "WHERE job_id = ? AND status = ?",
-                (JOB_SUCCEEDED, now, result_hash, job_id, JOB_RUNNING),
+                (JOB_SUCCEEDED, now_iso, result_hash, job_id, JOB_RUNNING),
             )
             _insert_detection_job_event(
                 conn,
@@ -3348,9 +4182,10 @@ def complete_detection_job(
                 comparison_id=job["comparison_id"],
                 attempt_id=attempt_id,
                 event_type=EVENT_JOB_SUCCEEDED,
-                event_seq=2,
-                now=now,
+                now=now_iso,
                 worker_id=job["worker_id"],
+                claim_generation=job["claim_generation"],
+                lease_expires_at=job["lease_expires_at"],
                 result_hash=result_hash,
             )
             cursor = conn.execute(
@@ -3358,7 +4193,7 @@ def complete_detection_job(
                 "WHERE comparison_id = ? AND status = ?",
                 (
                     STATUS_DETECTED,
-                    now,
+                    now_iso,
                     job["comparison_id"],
                     STATUS_DETECTING,
                 ),
@@ -3390,15 +4225,18 @@ def fail_detection_job(
     attempt_id: str,
     *,
     worker_id: str,
+    claim_generation: int,
     claim_token: str,
     failure_code: str,
     failure_summary: str,
+    now: datetime | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Atomically fail a claimed job and its linked running attempt."""
     db_path = db_path or config.COMPARISON_DB_PATH
     code, summary = _safe_job_failure(failure_code, failure_summary)
-    now = _utc_now_iso()
+    moment = _utc_moment(now)
+    now_iso = moment.isoformat()
     with closing(_connect(db_path)) as conn:
         conn.isolation_level = None
         conn.execute("BEGIN IMMEDIATE")
@@ -3408,7 +4246,9 @@ def fail_detection_job(
                 job_id=job_id,
                 attempt_id=attempt_id,
                 worker_id=worker_id,
+                claim_generation=claim_generation,
                 claim_token=claim_token,
+                now=moment,
             )
             conn.execute(
                 "UPDATE comparison_detection_attempts SET status = ?, "
@@ -3416,7 +4256,7 @@ def fail_detection_job(
                 "WHERE attempt_id = ? AND status = ?",
                 (
                     ATTEMPT_FAILED,
-                    now,
+                    now_iso,
                     code,
                     summary,
                     attempt_id,
@@ -3428,14 +4268,21 @@ def fail_detection_job(
                 attempt_id=attempt_id,
                 comparison_id=job["comparison_id"],
                 event_type=EVENT_DETECTION_FAILED,
-                now=now,
+                now=now_iso,
                 failure_code=code,
             )
             conn.execute(
                 "UPDATE comparison_detection_jobs SET status = ?, "
                 "finished_at = ?, failure_code = ?, failure_summary = ? "
                 "WHERE job_id = ? AND status = ?",
-                (JOB_FAILED, now, code, summary, job_id, JOB_RUNNING),
+                (
+                    JOB_FAILED,
+                    now_iso,
+                    code,
+                    summary,
+                    job_id,
+                    JOB_RUNNING,
+                ),
             )
             _insert_detection_job_event(
                 conn,
@@ -3443,9 +4290,10 @@ def fail_detection_job(
                 comparison_id=job["comparison_id"],
                 attempt_id=attempt_id,
                 event_type=EVENT_JOB_FAILED,
-                event_seq=2,
-                now=now,
+                now=now_iso,
                 worker_id=job["worker_id"],
+                claim_generation=job["claim_generation"],
+                lease_expires_at=job["lease_expires_at"],
                 failure_code=code,
             )
             cursor = conn.execute(
@@ -3456,7 +4304,7 @@ def fail_detection_job(
                     STATUS_FAILED,
                     code,
                     summary,
-                    now,
+                    now_iso,
                     job["comparison_id"],
                     STATUS_DETECTING,
                 ),
@@ -3688,14 +4536,13 @@ def start_detection_replay(
 
             linked_job = conn.execute(
                 "SELECT job_id FROM comparison_detection_jobs "
-                "WHERE attempt_id = ? AND status = ?",
-                (source_attempt_id, JOB_RUNNING),
+                "WHERE attempt_id = ?",
+                (source_attempt_id,),
             ).fetchone()
             if linked_job is not None:
                 raise DetectionStateError(
-                    REASON_JOB_RECLAIM_NOT_SUPPORTED,
-                    "a worker-owned detection job cannot be replayed in this "
-                    "commit because no lease, fencing, or safe reclaim exists",
+                    REASON_ATTEMPT_MANAGED_BY_JOB,
+                    ATTEMPT_MANAGED_BY_JOB_MESSAGE,
                     comparison_id=source["comparison_id"],
                     attempt_id=source_attempt_id,
                 )
@@ -4126,6 +4973,7 @@ RELIABILITY_REQUIRED_TABLES = (
     "comparisons",
     "comparison_detection_attempts",
     "comparison_detection_jobs",
+    "comparison_detection_job_events",
     "comparison_detection_replays",
 )
 
@@ -4180,6 +5028,26 @@ _RELIABILITY_JOB_COLUMNS = (
     "claimed_at",
     "finished_at",
     "worker_id",
+    "claim_generation",
+    "lease_started_at",
+    "heartbeat_at",
+    "lease_expires_at",
+    "result_hash",
+    "failure_code",
+)
+_RELIABILITY_JOB_EVENT_COLUMNS = (
+    "event_id",
+    "job_id",
+    "comparison_id",
+    "attempt_id",
+    "event_type",
+    "event_seq",
+    "created_at",
+    "worker_id",
+    "claim_generation",
+    "source_attempt_id",
+    "replacement_attempt_id",
+    "lease_expires_at",
     "result_hash",
     "failure_code",
 )
@@ -4283,6 +5151,15 @@ def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, An
                         "ORDER BY queued_at, job_id"
                     ).fetchall()
                 ]
+                job_events = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT "
+                        + ", ".join(_RELIABILITY_JOB_EVENT_COLUMNS)
+                        + " FROM comparison_detection_job_events "
+                        "ORDER BY created_at, job_id, event_seq, event_id"
+                    ).fetchall()
+                ]
                 replays = [
                     dict(row)
                     for row in conn.execute(
@@ -4316,6 +5193,7 @@ def read_reliability_snapshot(db_path: str | Path | None = None) -> dict[str, An
         "comparisons": comparisons,
         "attempts": attempts,
         "jobs": jobs,
+        "job_events": job_events,
         "replays": replays,
         "attempts_per_comparison": counts,
     }

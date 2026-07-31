@@ -1,0 +1,24 @@
+# Detection-job lease policy (bounded Stage 3.5 crash recovery).
+#
+# This flat mapping is exact: unknown or missing keys fail startup. A missing
+# file uses identical baked-in defaults; a present-invalid file never falls
+# back silently. Expiry changes no state by itself. Only a later explicit
+# one-shot worker invocation may reclaim eligible work.
+
+policy_id: detection_job_lease_v1
+policy_version: "1"
+
+# The controlled deterministic detector normally completes in well under a
+# second. Two minutes leaves a generous local-process margin while bounding the
+# duration of an abandoned claim.
+lease_duration_seconds: 120
+
+# A long-running worker may explicitly extend its active claim. The new expiry
+# never moves backwards.
+heartbeat_extension_seconds: 120
+
+# Reclaim is permitted only strictly after expiry plus this grace interval.
+reclaim_grace_seconds: 15
+
+# Generation 1 is the initial claim. At most two reclaimed attempts may follow.
+max_claim_generations: 3

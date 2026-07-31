@@ -54,9 +54,10 @@ those transactions leaves ``comparison.status='detecting'`` with a ``running``
 attempt until an eligible explicit replay. Authenticated API initial detection
 instead queues before reaching this module; its one-shot worker calls the same
 execution seam after an atomic claim. Killing that worker after claim leaves
-the job and attempt running indefinitely because no lease, heartbeat, fencing,
-timeout takeover, or safe reclaim exists. Nothing here infers termination from
-age or file mtime, marks work failed on a guess, or starts a replacement.
+the job and attempt running until its finite lease expires and a later explicit
+one-shot worker invocation atomically reclaims it. The old worker is fenced
+from finalization. Nothing runs merely because time passes, and there is no
+automatic retry, scheduler, daemon, or external queue.
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -196,7 +198,8 @@ class DetectionInProgress(DetectionError):
     not terminal. Because the running attempt is persisted rather than held in
     memory, a process killed during detection leaves this state visible.
     Eligible direct/replay attempts require explicit bounded replay; a
-    worker-owned claim cannot be reclaimed until leases and fencing exist.
+    worker-owned attempt is recovered only through its fenced lease-reclaim
+    path.
     """
 
 
@@ -1127,7 +1130,9 @@ def execute_attempt(
     actor_context: Mapping[str, Any] | None = None,
     job_id: str | None = None,
     worker_id: str | None = None,
+    claim_generation: int | None = None,
     claim_token: str | None = None,
+    job_now: datetime | None = None,
 ) -> tuple[dict[str, Any], bool, str | None]:
     """Compute and finalize ONE already-started running attempt.
 
@@ -1145,14 +1150,21 @@ def execute_attempt(
     db_path = db_path or config.COMPARISON_DB_PATH
     comparison_id = record["comparison_id"]
     job_execution = any(
-        value is not None for value in (job_id, worker_id, claim_token)
+        value is not None
+        for value in (job_id, worker_id, claim_generation, claim_token)
     )
-    if job_execution and not all(
-        isinstance(value, str) and value
-        for value in (job_id, worker_id, claim_token)
+    if job_execution and not (
+        all(
+            isinstance(value, str) and value
+            for value in (job_id, worker_id, claim_token)
+        )
+        and isinstance(claim_generation, int)
+        and not isinstance(claim_generation, bool)
+        and claim_generation >= 1
     ):
         raise ValueError(
-            "job_id, worker_id, and claim_token must be supplied together"
+            "job_id, worker_id, claim_generation, and claim_token must be "
+            "supplied together"
         )
     try:
         wire = _compute_result(
@@ -1169,6 +1181,7 @@ def execute_attempt(
                     job_id,
                     attempt_id,
                     worker_id=worker_id,
+                    claim_generation=claim_generation,
                     claim_token=claim_token,
                     result_json=json.dumps(wire),
                     result_hash=result_hash,
@@ -1176,6 +1189,7 @@ def execute_attempt(
                     workflow_version=comparison_store.WORKFLOW_VERSION,
                     previous_source_hash=previous_hash,
                     current_source_hash=current_hash,
+                    now=job_now,
                     db_path=db_path,
                 )
                 finalized = terminal["attempt"]
@@ -1217,10 +1231,47 @@ def execute_attempt(
             actor_context=actor_context,
             job_id=job_id,
             worker_id=worker_id,
+            claim_generation=claim_generation,
             claim_token=claim_token,
+            job_now=job_now,
         )
         raise
     except Exception as exc:
+        if (
+            job_execution
+            and isinstance(exc, comparison_store.DetectionStateError)
+            and exc.code in comparison_store.JOB_OWNERSHIP_LOST_CODES
+        ):
+            current_job = comparison_store.get_detection_job(
+                job_id, db_path=db_path
+            )
+            current_attempt = comparison_store.get_detection_attempt(
+                attempt_id, db_path=db_path
+            )
+            comparison_reliability.log_detection_job_event(
+                comparison_reliability.EVENT_JOB_FINALIZE_REJECTED,
+                job=current_job or {
+                    "job_id": job_id,
+                    "comparison_id": comparison_id,
+                    "attempt_id": attempt_id,
+                    "claim_generation": claim_generation,
+                },
+                attempt=current_attempt,
+                source_attempt_id=(
+                    attempt_id
+                    if current_job
+                    and current_job.get("attempt_id") != attempt_id
+                    else None
+                ),
+                replacement_attempt_id=(
+                    current_job.get("attempt_id")
+                    if current_job
+                    and current_job.get("attempt_id") != attempt_id
+                    else None
+                ),
+                failure_code=exc.code,
+            )
+            raise
         # Unexpected, non-domain fault. Full diagnostics are logged here so they
         # survive regardless of caller (the API layer logs too, but the CLI and
         # the regression runner do not).
@@ -1236,7 +1287,9 @@ def execute_attempt(
             actor_context=actor_context,
             job_id=job_id,
             worker_id=worker_id,
+            claim_generation=claim_generation,
             claim_token=claim_token,
+            job_now=job_now,
         )
         # Chained so the API layer's logger.exception also captures the real
         # fault; the DetectionInternalError message itself stays safe.
@@ -1404,7 +1457,9 @@ def _finalize_failed_attempt(
     actor_context: Mapping[str, Any] | None = None,
     job_id: str | None = None,
     worker_id: str | None = None,
+    claim_generation: int | None = None,
     claim_token: str | None = None,
+    job_now: datetime | None = None,
 ) -> None:
     """Mark the running attempt failed, never masking the original fault.
 
@@ -1424,9 +1479,11 @@ def _finalize_failed_attempt(
                 job_id,
                 attempt_id,
                 worker_id=worker_id,
+                claim_generation=claim_generation,
                 claim_token=claim_token,
                 failure_code=failure_code,
                 failure_summary=_safe_failure_summary(failure_code),
+                now=job_now,
                 db_path=db_path,
             )
             finalized = terminal["attempt"]
@@ -1437,6 +1494,48 @@ def _finalize_failed_attempt(
                 failure_summary=_safe_failure_summary(failure_code),
                 db_path=db_path,
             )
+    except comparison_store.DetectionStateError as exc:
+        if (
+            job_id is not None
+            and exc.code in comparison_store.JOB_OWNERSHIP_LOST_CODES
+        ):
+            current_job = comparison_store.get_detection_job(
+                job_id, db_path=db_path
+            )
+            current_attempt = comparison_store.get_detection_attempt(
+                attempt_id, db_path=db_path
+            )
+            comparison_reliability.log_detection_job_event(
+                comparison_reliability.EVENT_JOB_FINALIZE_REJECTED,
+                job=current_job or {
+                    "job_id": job_id,
+                    "attempt_id": attempt_id,
+                    "claim_generation": claim_generation,
+                },
+                attempt=current_attempt,
+                source_attempt_id=(
+                    attempt_id
+                    if current_job
+                    and current_job.get("attempt_id") != attempt_id
+                    else None
+                ),
+                replacement_attempt_id=(
+                    current_job.get("attempt_id")
+                    if current_job
+                    and current_job.get("attempt_id") != attempt_id
+                    else None
+                ),
+                failure_code=exc.code,
+            )
+            raise
+        logger.exception(
+            "Could not finalize detection attempt %s as failed; it remains "
+            "running and its comparison remains 'detecting'",
+            attempt_id,
+        )
+        if job_id is not None:
+            raise
+        return
     except Exception:
         logger.exception(
             "Could not finalize detection attempt %s as failed; it remains "

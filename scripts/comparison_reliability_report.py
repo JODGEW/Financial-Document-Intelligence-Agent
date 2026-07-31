@@ -3,8 +3,8 @@
 Reads the same service layer the API routes use, so the terminal report and
 `GET /api/comparison-reliability/*` can never disagree.
 
-READ-ONLY. This command never starts, retires, retries, or replays a detection
-attempt, never repairs a comparison, and never writes to the database — the
+READ-ONLY. This command never starts, retires, heartbeats, reclaims, retries,
+or replays a detection attempt, never repairs a comparison, and never writes to the database — the
 service opens SQLite with `mode=ro`, so a write is refused by the driver rather
 than merely avoided. Resolving a stale attempt still means an operator
 explicitly POSTing to the replay endpoint.
@@ -84,6 +84,14 @@ def print_summary(report: dict) -> None:
         f"max_attempts={report['max_attempts_per_comparison']}"
     )
     print(
+        f"  lease policy={report['lease_policy_id']}"
+        f"/{report['lease_policy_version']} "
+        f"lease={report['lease_duration_seconds']}s "
+        f"heartbeat_extension={report['heartbeat_extension_seconds']}s "
+        f"reclaim_grace={report['reclaim_grace_seconds']}s "
+        f"max_generations={report['max_claim_generations']}"
+    )
+    print(
         "  detector versions="
         + (", ".join(report["detector_versions"]) or "none")
         + " workflow versions="
@@ -106,6 +114,10 @@ def print_summary(report: dict) -> None:
         ("detection jobs running", "detection_jobs_running"),
         ("detection jobs succeeded", "detection_jobs_succeeded"),
         ("detection jobs failed", "detection_jobs_failed"),
+        ("active job leases", "active_job_leases"),
+        ("expired job leases", "expired_job_leases"),
+        ("reclaimable jobs", "reclaimable_jobs"),
+        ("claim-exhausted jobs", "claim_exhausted_jobs"),
         ("unresolved operational issues", "unresolved_operational_issues"),
     ):
         print(f"  {label:<38} {gauges[key]}")
@@ -117,6 +129,9 @@ def print_summary(report: dict) -> None:
         ("claimed", "jobs_claimed"),
         ("succeeded", "jobs_succeeded"),
         ("failed", "jobs_failed"),
+        ("heartbeat events", "job_heartbeats"),
+        ("reclaimed", "jobs_reclaimed"),
+        ("claim generations exhausted", "jobs_claim_exhausted"),
     ):
         print(f"  {label:<38} {jobs[key]}")
 
@@ -132,6 +147,10 @@ def print_summary(report: dict) -> None:
         for statistic in ("min", "max", "mean", "p50", "p95"):
             key = f"{prefix}_seconds_{statistic}"
             print(f"  {(label + ' ' + statistic):<38} {_seconds(job_durations[key])}")
+    print(
+        f"  {'negative lease durations':<38} "
+        f"{job_durations['negative_lease_duration_jobs']}"
+    )
 
     attempts = report["attempts"]
     print("\nAttempts in window:")
@@ -196,7 +215,8 @@ def print_summary(report: dict) -> None:
     print(
         f"\nUnresolved operational issues: "
         f"{gauges['unresolved_operational_issues']} "
-        "(reported only — nothing here is retried, replayed, or repaired "
+        "(reported only — nothing here is heartbeated, reclaimed, retried, "
+        "replayed, or repaired "
         "automatically)"
     )
 
