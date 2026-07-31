@@ -28,15 +28,37 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def test_committed_manifest_validates_and_is_honestly_proposed():
     document = rfb.load_manifest()
-    assert document["status"] == rfb.STATUS_PROPOSED
+    assert document["status"] in rfb.STATUS_ORDER
     assert document["target_pair_count"] == 10
     assert len(document["proposed_issuers"]) == 10
-    # No pairs: the remote metadata has not been resolved, and the manifest
-    # says so rather than carrying invented values.
-    assert document["pairs"] == []
-    for entry in document["proposed_issuers"]:
-        assert entry["resolution_status"] == rfb.ISSUER_PENDING
-        assert entry["cik"] is None
+
+    # The status must match what the file actually carries. Asserted both ways
+    # so the manifest cannot claim a maturity its contents do not support, and
+    # cannot silently carry unverified remote metadata either.
+    if document["status"] == rfb.STATUS_PROPOSED:
+        # Nothing resolved yet: the manifest says so rather than carrying
+        # invented values.
+        assert document["pairs"] == []
+        for entry in document["proposed_issuers"]:
+            assert entry["resolution_status"] == rfb.ISSUER_PENDING
+            assert entry["cik"] is None
+    else:
+        # source_verified and beyond assert that every filing was resolved from
+        # an official source and verified against a real digest.
+        assert len(document["pairs"]) == document["target_pair_count"]
+        for entry in document["proposed_issuers"]:
+            assert entry["resolution_status"] == rfb.ISSUER_RESOLVED
+            assert isinstance(entry["cik"], str) and entry["cik"].isdigit()
+        for pair in document["pairs"]:
+            for _side, payload in rfb.pair_sides(pair):
+                assert payload["form"] == rfb.MANIFEST_FORM
+                assert payload["expected_sha256"] != rfb.PLACEHOLDER_SHA256
+                # Official source only, derived rather than trusted.
+                assert payload["official_source_url"] == rfb.canonical_source_url(
+                    pair["cik"],
+                    payload["accession_number"],
+                    payload["primary_document"],
+                )
 
 
 def test_committed_manifest_slate_meets_the_frozen_selection_criteria():
@@ -51,15 +73,38 @@ def test_committed_manifest_slate_meets_the_frozen_selection_criteria():
         )
 
 
-def test_committed_manifest_contains_no_accession_numbers_or_digests():
-    """A proposed manifest must not carry remote metadata nobody verified."""
+def test_committed_manifest_carries_remote_metadata_only_once_verified():
+    """Remote metadata appears only when the status asserts it was verified.
+
+    A `proposed` manifest must not carry an accession number or digest nobody
+    checked; a `source_verified` one must not carry a placeholder standing in
+    for a digest nobody computed. Both directions are the same rule: the file
+    never asserts more than was actually established.
+    """
     raw = (
         REPO_ROOT / "benchmarks" / "real_filing_v1" / "manifest.json"
     ).read_text(encoding="utf-8")
     document = json.loads(raw)
-    assert document["pairs"] == []
     for entry in document["proposed_issuers"]:
         assert set(entry) == set(rfb._ISSUER_REQUIRED)
+
+    if document["status"] == rfb.STATUS_PROPOSED:
+        assert document["pairs"] == []
+        assert rfb.PLACEHOLDER_SHA256 not in raw or not document["pairs"]
+        return
+
+    assert document["pairs"], "a non-proposed manifest must carry resolved pairs"
+    # No placeholder digest survives past 'proposed' anywhere in the file.
+    assert rfb.PLACEHOLDER_SHA256 not in raw
+    seen_accessions = set()
+    for pair in document["pairs"]:
+        assert set(pair) == set(rfb._PAIR_REQUIRED)
+        for _side, payload in rfb.pair_sides(pair):
+            assert set(payload) == set(rfb._SIDE_REQUIRED)
+            key = (pair["cik"], payload["accession_number"])
+            assert key not in seen_accessions
+            seen_accessions.add(key)
+    assert len(seen_accessions) == 2 * len(document["pairs"])
 
 
 # --- Manifest schema ----------------------------------------------------------

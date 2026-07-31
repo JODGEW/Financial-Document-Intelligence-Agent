@@ -13,7 +13,9 @@ Bedrock, no embeddings at query time, no network.
 
 from __future__ import annotations
 
+import gzip
 import json
+import zlib
 from pathlib import Path
 
 import pytest
@@ -293,6 +295,88 @@ def test_acquisition_retry_policy_is_independent_of_detection_job_retry():
     assert "detection" not in rfa.ACQUISITION_RETRY_POLICY["policy_id"]
 
 
+# --- Content-Encoding ---------------------------------------------------------
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
+    return compressor.compress(data) + compressor.flush()
+
+
+@pytest.mark.parametrize(
+    "encoding,wire",
+    [
+        ("gzip", gzip.compress),
+        ("x-gzip", gzip.compress),
+        ("deflate", zlib.compress),
+        ("deflate", _raw_deflate),
+        ("identity", lambda data: data),
+        (None, lambda data: data),
+    ],
+)
+def test_content_encoding_is_decoded_before_anything_is_hashed(encoding, wire):
+    """The request advertises gzip and SEC honors it, but urllib does not decode
+    transfer encodings. Hashing the compressed stream would freeze a digest of a
+    gzip container rather than of the filing — and gzip headers carry an mtime,
+    so that digest would not even be reproducible across two identical
+    downloads."""
+    body = fx.PREVIOUS_HTML.encode("utf-8")
+    assert rfa.decode_content_encoding(wire(body), encoding) == body
+
+
+def test_unsupported_content_encoding_is_refused_not_passed_through():
+    with pytest.raises(rfa.AcquisitionError) as excinfo:
+        rfa.decode_content_encoding(b"whatever", "br")
+    assert excinfo.value.code == rfa.FAILURE_UNSUPPORTED_ENCODING
+
+
+def test_malformed_content_encoding_is_refused():
+    with pytest.raises(rfa.AcquisitionError) as excinfo:
+        rfa.decode_content_encoding(b"\x1f\x8b\x08not-a-real-stream", "gzip")
+    assert excinfo.value.code == rfa.FAILURE_MALFORMED_ENCODING
+
+
+def test_decompression_is_bounded_on_the_decompressed_size(corpus):
+    """A small transfer that expands past the cap is refused by the caller's
+    normal size check rather than streamed into memory."""
+    oversized = b"\x00" * (rfa.MAX_DOCUMENT_BYTES + 4096)
+    decoded = rfa.decode_content_encoding(gzip.compress(oversized), "gzip")
+    assert len(decoded) > rfa.MAX_DOCUMENT_BYTES
+
+    document = fx.single_pair_manifest()
+    fetcher, _transport, _clock = _fetcher([_ok(decoded)])
+    outcome = rfa.acquire_side(
+        fetcher=fetcher,
+        layout=corpus,
+        pair_id="pair-01",
+        side="previous",
+        side_payload=_side(document, "previous"),
+    )
+    assert outcome["failure_code"] == rfa.FAILURE_RESPONSE_TOO_LARGE
+    assert not outcome["verified"]
+
+
+def test_a_compressed_filing_verifies_against_the_uncompressed_digest(corpus):
+    """End to end: the manifest digest is the digest of the FILING, so a
+    gzip-encoded response must still verify."""
+    document = fx.single_pair_manifest()
+    body = fx.PREVIOUS_HTML.encode("utf-8")
+    expected = _side(document, "previous")["expected_sha256"]
+    assert expected == rfb.sha256_bytes(body)
+
+    decoded = rfa.decode_content_encoding(gzip.compress(body), "gzip")
+    fetcher, _transport, _clock = _fetcher([_ok(decoded)])
+    outcome = rfa.acquire_side(
+        fetcher=fetcher,
+        layout=corpus,
+        pair_id="pair-01",
+        side="previous",
+        side_payload=_side(document, "previous"),
+    )
+    assert outcome["verified"]
+    assert outcome["observed_sha256"] == expected
+
+
 # --- Download, checksums, caching --------------------------------------------
 
 
@@ -496,6 +580,67 @@ def test_slate_resolution_writes_a_local_proposal_and_never_edits_the_manifest(
     assert candidates[0]["accession_number"] == "0000000001-23-000001"
     assert (corpus.root / fetch_cli.RESOLUTION_FILE).exists()
     assert transport.calls[0][0] == "https://data.sec.gov/submissions/CIK0000000001.json"
+
+
+def _submissions(recent_forms, *, files=None, name="Fictional Issuer, Inc."):
+    def block(forms, tag):
+        return {
+            "form": list(forms),
+            "accessionNumber": [
+                f"000000000{tag}-2{i}-00000{i}" for i in range(len(forms))
+            ],
+            "filingDate": [f"20{20 + i}-03-01" for i in range(len(forms))],
+            "reportDate": [f"20{20 + i}-01-31" for i in range(len(forms))],
+            "primaryDocument": [f"doc{tag}{i}.htm" for i in range(len(forms))],
+        }
+
+    payload = {"name": name, "filings": {"recent": block(recent_forms, 1)}}
+    if files:
+        payload["filings"]["files"] = [{"name": n} for n in files]
+    return payload, block
+
+
+def test_slate_resolution_reads_paged_filing_history_not_just_recent(corpus):
+    """`filings.recent` truncates a high-volume filer's 10-K history — JPMorgan
+    exposes one 10-K row there. A candidate list built from `recent` alone
+    looks complete and is not."""
+    payload, block = _submissions(["10-K", "8-K"], files=["CIK0000000001-submissions-001.json"])
+    older = block(["10-K", "10-K/A", "10-K"], 2)
+    document = fx.single_pair_manifest()
+    fetcher, transport, _clock = _fetcher(
+        [
+            _ok(json.dumps(payload).encode("utf-8")),
+            _ok(json.dumps(older).encode("utf-8")),
+        ],
+        min_interval_seconds=0,
+    )
+
+    report = fetch_cli.resolve_slate(document, fetcher, corpus)
+    proposal = report["proposals"][0]
+    # 1 primary 10-K from recent + 2 from the paged file; the 10-K/A is excluded.
+    assert len(proposal["annual_filings"]) == 3
+    assert {row["form"] for row in proposal["annual_filings"]} == {"10-K"}
+    assert proposal["history_complete"] is True
+    assert proposal["unread_history_files"] == []
+    assert transport.calls[1][0] == (
+        "https://data.sec.gov/submissions/CIK0000000001-submissions-001.json"
+    )
+
+
+def test_unreadable_history_page_is_reported_not_silently_dropped(corpus):
+    payload, _block = _submissions(["10-K"], files=["CIK0000000001-submissions-001.json"])
+    document = fx.single_pair_manifest()
+    fetcher, _transport, _clock = _fetcher(
+        [_ok(json.dumps(payload).encode("utf-8")), _ok(b"not json at all")],
+        min_interval_seconds=0,
+    )
+
+    report = fetch_cli.resolve_slate(document, fetcher, corpus)
+    proposal = report["proposals"][0]
+    assert proposal["history_complete"] is False
+    assert proposal["unread_history_files"] == ["CIK0000000001-submissions-001.json"]
+    codes = [item["code"] for item in report["unresolved"]]
+    assert "filing_history_incomplete" in codes
 
 
 def test_slate_resolution_refuses_to_guess_a_missing_cik(corpus):

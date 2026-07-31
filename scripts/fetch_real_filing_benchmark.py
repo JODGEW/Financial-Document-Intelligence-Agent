@@ -98,13 +98,16 @@ def resolve_slate(
                 }
             )
             continue
+        candidates, unread = _annual_10k_candidates(payload, fetcher=fetcher)
         proposals.append(
             {
                 "slate_id": entry["slate_id"],
                 "issuer_name": entry["issuer_name"],
                 "cik": entry["cik"],
                 "official_entity_name": payload.get("name"),
-                "annual_filings": _annual_10k_candidates(payload),
+                "annual_filings": candidates,
+                "history_complete": not unread,
+                "unread_history_files": unread,
                 "note": (
                     "Candidate 10-K filings straight from the official "
                     "submissions endpoint. A human selects the two consecutive "
@@ -114,6 +117,20 @@ def resolve_slate(
                 ),
             }
         )
+        if unread:
+            unresolved.append(
+                {
+                    "slate_id": entry["slate_id"],
+                    "issuer_name": entry["issuer_name"],
+                    "code": "filing_history_incomplete",
+                    "detail": (
+                        f"{len(unread)} paged submission file(s) could not be "
+                        "read, so the candidate list is incomplete and a "
+                        "target year may be missing from it. Reported rather "
+                        "than presented as the issuer's full 10-K history."
+                    ),
+                }
+            )
 
     report = {
         "resolution_version": "real-filing-benchmark.resolution.v1",
@@ -132,18 +149,18 @@ def resolve_slate(
     return report
 
 
-def _annual_10k_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract 10-K rows from the official submissions payload, verbatim.
+def _rows_from_block(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """10-K rows from one submissions block, verbatim.
 
     Reads only fields the endpoint provides. 10-K/A amendments are excluded per
-    the frozen selection protocol.
+    the frozen selection protocol — the comparison is exact, so an amendment
+    can never be admitted as if it were a primary annual filing.
     """
-    recent = ((payload.get("filings") or {}).get("recent")) or {}
-    forms = recent.get("form") or []
-    accessions = recent.get("accessionNumber") or []
-    filing_dates = recent.get("filingDate") or []
-    report_dates = recent.get("reportDate") or []
-    documents = recent.get("primaryDocument") or []
+    forms = block.get("form") or []
+    accessions = block.get("accessionNumber") or []
+    filing_dates = block.get("filingDate") or []
+    report_dates = block.get("reportDate") or []
+    documents = block.get("primaryDocument") or []
     rows = []
     for index, form in enumerate(forms):
         if form != rfb.MANIFEST_FORM:
@@ -158,6 +175,42 @@ def _annual_10k_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _annual_10k_candidates(
+    payload: dict[str, Any], *, fetcher: rfa.Fetcher | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every primary 10-K row across recent AND paged history.
+
+    Returns ``(rows, unread_history_files)``.
+
+    ``filings.recent`` holds only the most recent submissions, so a
+    high-volume filer's 10-K rows fall out of it: JPMorgan Chase exposes one
+    10-K row there and Verizon three, while both issuers' target filings sit
+    in ``filings.files``. Reading ``recent`` alone would hand a human a
+    candidate list that looks complete and silently is not — the exact failure
+    this benchmark's design refuses elsewhere. A page that cannot be read is
+    REPORTED, never quietly dropped.
+    """
+    filings = (payload.get("filings") or {})
+    rows = _rows_from_block(filings.get("recent") or {})
+    unread: list[str] = []
+    for extra in filings.get("files") or []:
+        name = (extra or {}).get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if fetcher is None:
+            unread.append(name)
+            continue
+        try:
+            response = fetcher.get(
+                f"https://{rfb.SEC_DATA_HOST}/submissions/{name}"
+            )
+            rows.extend(_rows_from_block(json.loads(response.body.decode("utf-8"))))
+        except (rfa.AcquisitionError, ValueError, UnicodeDecodeError):
+            unread.append(name)
+    rows.sort(key=lambda row: (row["filing_date"] or "", row["accession_number"] or ""))
+    return rows, unread
 
 
 def main(argv: list[str] | None = None) -> int:

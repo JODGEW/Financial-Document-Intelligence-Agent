@@ -22,20 +22,53 @@ frozen public filing manifest
 | Infrastructure (schemas, acquisition, build, packets, evaluator, tests) | **implemented and offline-tested** |
 | Corpus selection protocol | **frozen** (`benchmarks/real_filing_v1/manifest.json`) |
 | Issuer slate | **frozen**, 10 issuers, 9 sector labels |
-| CIK / accession / date / document / digest resolution | **not done** — requires network |
-| Source verification | **not done** |
-| Corpus build over real filings | **not done** |
-| Human annotation | **not done** — zero labels are `human_verified` |
+| CIK / accession / date / document / digest resolution | **done** — resolved from official SEC endpoints |
+| Source verification | **done** — 20/20 filings SHA-256 verified |
+| Corpus build over real filings | **done, and it extracted nothing** — 20/20 sides `missing` |
+| Item 1A comparison workflow over real filings | **not exercised** — no pair had two extracted sections |
+| Human annotation | **not done** — zero labels are `human_verified`, zero packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
 
-The manifest's `status` is `proposed` and its `pairs` list is empty. Every
-per-filing field is remote metadata; none of it was invented, recalled, or
+The manifest's `status` is `source_verified`. Every per-filing field was
+resolved from an official SEC endpoint; none of it was invented, recalled, or
 approximated, because a wrong accession number in a frozen manifest is a
 fabricated fact that later readers cannot distinguish from a real one.
 
 **Stage 3 remains current.** Stage 3.5 remains in progress and stays in
-progress until this corpus is source-verified, built, human-annotated,
+progress until this corpus is built into reviewable units, human-annotated,
 evaluated, and reviewed.
+
+### The headline result: Item 1A did not extract from any real filing
+
+All 20 sides recorded `missing`. Real EDGAR 10-K HTML carries **no**
+`<h1>`–`<h6>` elements — Item 1A headings are styled `<div>`/`<span>` runs —
+and the existing HTML section path derives `section_key` from
+splitter-produced headings only. So no chunk carries the canonical Item 1A key.
+
+This is the failure mode pre-registered under *Known coverage limitations*
+below, and it is recorded rather than worked around. Nothing in the extraction
+path, heading recognition, alignment, validators, or governance thresholds was
+modified, and no pair was replaced after its outcome was known.
+
+The consequence is stated plainly: **the comparison workflow has not yet been
+measured on real filings at all.** Zero pairs are annotatable, zero packets
+exist, and the unlabeled report describes a workflow that did not run. Making
+the section path recognise heading-less EDGAR HTML is a product change to be
+justified and reviewed on its own merits — never tuned against detector output
+on these pairs — after which the corpus must be rebuilt.
+
+### Committed reports from the source-verification and build phase
+
+| File | Contents |
+|---|---|
+| `source_verification_report.json` | per-filing official URL, digest, byte count, acquisition provenance |
+| `corpus_build_report.json` | per-pair build hash and per-side extraction outcome, hashes, counts |
+| `execution_report.json` | the unlabeled execution report (no accuracy metric) |
+| `annotation_packet_inventory.json` | packet inventory, review readiness, blocking reasons |
+| `HUMAN_REVIEW_CHECKLIST.md` | what a reviewer does per pair, and why none is reviewable yet |
+
+All four JSON reports carry identifiers, hashes, counts, and outcomes only — no
+filing content, no section text, no excerpt, no local path, no credential.
 
 ---
 

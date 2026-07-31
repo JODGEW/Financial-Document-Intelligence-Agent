@@ -30,7 +30,14 @@ Safety model, in the order the checks run
    with it.
 6. **Retry-After is honored** when present, capped so a hostile or mistaken
    header cannot hang the run.
-7. **Atomic writes, verified content.** Bytes land in a temp file in the target
+7. **Content-Encoding is decoded before anything is hashed.** The request
+   advertises gzip and SEC honors it, but urllib does not decode transfer
+   encodings. Hashing the compressed stream would freeze a digest of a gzip
+   container rather than of the filing — and gzip headers carry an mtime and
+   OS byte, so that digest would not even be reproducible. Decompression is
+   bounded on the DECOMPRESSED size, and an unsupported or malformed encoding
+   is a coded refusal rather than compressed bytes handed on as content.
+8. **Atomic writes, verified content.** Bytes land in a temp file in the target
    directory, are fsynced, sha256-verified, and only then ``os.replace``-d into
    place. A verified cached file is reused instead of re-fetched; a cached file
    whose digest does not match is a refusal, never a silent overwrite.
@@ -50,6 +57,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -106,6 +114,8 @@ FAILURE_CACHED_CONTENT_MISMATCH = "cached_content_mismatch"
 FAILURE_PLACEHOLDER_HASH = "expected_hash_is_placeholder"
 FAILURE_RESPONSE_TOO_LARGE = "response_too_large"
 FAILURE_EMPTY_RESPONSE = "empty_response"
+FAILURE_UNSUPPORTED_ENCODING = "unsupported_content_encoding"
+FAILURE_MALFORMED_ENCODING = "malformed_content_encoding"
 
 
 class AcquisitionError(rfb.BenchmarkError):
@@ -257,7 +267,12 @@ def require_official_url(url: Any) -> str:
 
 @dataclass
 class Response:
-    """A minimal, injectable HTTP response: status, headers, body."""
+    """A minimal, injectable HTTP response: status, headers, body.
+
+    ``body`` is always the DECODED entity body. ``Content-Encoding`` is left in
+    ``headers`` verbatim as a record of how the bytes arrived, but it has
+    already been applied — see ``decode_content_encoding``.
+    """
 
     status: int
     headers: dict[str, str] = field(default_factory=dict)
@@ -270,6 +285,61 @@ class Response:
         return None
 
 
+# The request advertises `Accept-Encoding: gzip, deflate`, and SEC honors it.
+# urllib does NOT decode transfer encodings, so a transport that returned
+# `raw.read()` verbatim would hand back a compressed stream. That is not a
+# cosmetic bug: `acquire_side` hashes exactly these bytes, so every frozen
+# digest would be the sha256 of a gzip container rather than of the filing —
+# and gzip headers carry an mtime and OS byte, so the digest would not even be
+# stable across two downloads of identical content. Decoding here keeps
+# "expected_sha256 is the digest of the filing" true.
+_SUPPORTED_CONTENT_ENCODINGS = frozenset({"", "identity", "gzip", "x-gzip", "deflate"})
+
+
+def _decompress_bounded(data: bytes, wbits: int, limit: int) -> bytes:
+    """Inflate at most ``limit`` bytes, then stop.
+
+    Bounded on the DECOMPRESSED size, because the caller's byte cap protects
+    only against a large transfer, not against a small one that expands.
+    """
+    decompressor = zlib.decompressobj(wbits)
+    out = decompressor.decompress(data, limit)
+    # Anything still pending means the payload exceeds the bound. Return the
+    # oversized prefix so the caller's size check refuses it by the normal
+    # path instead of inventing a second refusal.
+    if decompressor.unconsumed_tail:
+        return out + b"\x00"
+    return out
+
+
+def decode_content_encoding(body: bytes, encoding: str | None) -> bytes:
+    """Apply Content-Encoding so callers always see the real entity body."""
+    token = (encoding or "").strip().lower()
+    if token not in _SUPPORTED_CONTENT_ENCODINGS:
+        raise AcquisitionError(
+            FAILURE_UNSUPPORTED_ENCODING,
+            f"official source returned an unsupported Content-Encoding "
+            f"({token!r}); bytes were not decoded and nothing was hashed",
+        )
+    if not body or token in ("", "identity"):
+        return body
+    limit = MAX_DOCUMENT_BYTES + 1
+    try:
+        if token in ("gzip", "x-gzip"):
+            return _decompress_bounded(body, 16 + zlib.MAX_WBITS, limit)
+        try:
+            return _decompress_bounded(body, zlib.MAX_WBITS, limit)
+        except zlib.error:
+            # Some servers send raw deflate under the same token.
+            return _decompress_bounded(body, -zlib.MAX_WBITS, limit)
+    except zlib.error as exc:
+        raise AcquisitionError(
+            FAILURE_MALFORMED_ENCODING,
+            f"official source returned a malformed {token} stream "
+            f"({type(exc).__name__})",
+        ) from exc
+
+
 def urllib_transport(
     url: str, *, headers: dict[str, str], timeout: float
 ) -> Response:
@@ -278,20 +348,27 @@ def urllib_transport(
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as raw:
+            response_headers = {key: value for key, value in raw.headers.items()}
             body = raw.read(MAX_DOCUMENT_BYTES + 1)
             return Response(
                 status=getattr(raw, "status", 200) or 200,
-                headers={key: value for key, value in raw.headers.items()},
-                body=body,
+                headers=response_headers,
+                body=decode_content_encoding(
+                    body, response_headers.get("Content-Encoding")
+                ),
             )
     except urllib.error.HTTPError as exc:  # a response, not a transport fault
+        error_headers = {key: value for key, value in (exc.headers or {}).items()}
         try:
-            body = exc.read(MAX_DOCUMENT_BYTES + 1)
+            body = decode_content_encoding(
+                exc.read(MAX_DOCUMENT_BYTES + 1),
+                error_headers.get("Content-Encoding"),
+            )
         except Exception:  # noqa: BLE001 - body is diagnostic only
             body = b""
         return Response(
             status=exc.code,
-            headers={key: value for key, value in (exc.headers or {}).items()},
+            headers=error_headers,
             body=body,
         )
 

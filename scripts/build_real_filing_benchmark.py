@@ -140,6 +140,39 @@ def _workspace_source_name(pair: dict[str, Any], side: str, payload: dict) -> st
     return f"{pair['pair_id']}-{side}-{payload['reporting_period']}{suffix}"
 
 
+# Used only if the client will not report its own bound.
+_CHROMA_FALLBACK_BATCH = 4096
+
+
+def _add_in_batches(chroma, documents: list, ids: list[str]) -> None:
+    """Upsert in client-sized batches.
+
+    Chroma refuses a single upsert larger than its own max batch size, and a
+    real 10-K comfortably exceeds it: Verizon's FY2022 filing alone produces
+    ~5.8k chunks against a 5,461 limit. The synthetic fixtures are orders of
+    magnitude too small to reach it, so this surfaces only against real
+    filings.
+
+    Batching is purely how the write is delivered — same chunks, same stable
+    ids, same order, and upsert stays idempotent. Nothing about what is indexed
+    or how a section is later identified changes.
+    """
+    limit = _CHROMA_FALLBACK_BATCH
+    getter = getattr(getattr(chroma, "_client", None), "get_max_batch_size", None)
+    if callable(getter):
+        try:
+            reported = int(getter())
+            if reported > 0:
+                limit = reported
+        except Exception:  # noqa: BLE001 - fall back to the conservative bound
+            pass
+    for start in range(0, len(documents), limit):
+        chroma.add_documents(
+            documents=documents[start : start + limit],
+            ids=ids[start : start + limit],
+        )
+
+
 def _ingest_pair(
     pair: dict[str, Any],
     verified: dict[str, dict[str, Any]],
@@ -205,7 +238,7 @@ def _ingest_pair(
             embedding_function=_BenchmarkEmbeddings(),
         )
         if unique:
-            chroma.add_documents(documents=unique, ids=ids)
+            _add_in_batches(chroma, unique, ids)
 
     return {
         "workspace": workspace,
