@@ -1,0 +1,220 @@
+{
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "annotation_schema_version": "real-filing-benchmark.annotation.v1",
+  "benchmark_id": "real_filing_v1",
+  "commit_sha": "6378192a0ab4118bf87d880b869ef22d2617c59c",
+  "corpus_role": "extraction_development_corpus",
+  "corpus_role_detail": "The twenty source documents in this corpus were inspected to diagnose HTML structure while the SEC Item heading parser was developed. Extraction results over them are IN-SAMPLE DEVELOPMENT results and are not evidence that extraction generalizes to unseen filings. A separately frozen holdout corpus, selected only after the extraction parser is frozen, is required for that.",
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": true,
+  "generalization_claim_supported": false,
+  "human_verified_labels": 0,
+  "manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0",
+  "notes": [
+    "These ten pairs are the extraction DEVELOPMENT corpus. Human review of them is diagnostic annotation: it can establish whether the extracted sections and detected changes are correct on these filings, and it cannot establish generalization to unseen ones.",
+    "Every annotation is machine_proposed. A machine-proposed label is NOT ground truth and can never enter a gold metric.",
+    "human_verified requires an annotator id and verification timestamp that no tool in this repository sets.",
+    "Section hashes changed with parser version sec_html_item_headings.v2. No prior annotation is invalidated because none existed: zero labels have ever been verified.",
+    "Packets and completed annotations stay in gitignored benchmark_data/; only this bounded inventory is committed."
+  ],
+  "packet_schema_version": "real-filing-benchmark.packet.v1",
+  "packets_written": 10,
+  "pairs": [
+    {
+      "annotation_basename": "communication-services-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "3ed57dcf489b663fdbbe67bae8b3f65e98079384580ee247559a3d64978c314d",
+      "current_unit_count": 5,
+      "human_verified": false,
+      "label_count": 5,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "1847f45b2f653a95f4d48a5cf3c65383a111dad5d4b6616edc3ed22b9a1eafde",
+      "pair_id": "communication-services-01",
+      "previous_section_hash": "89cd2f5eab35badfb4a9da8db1c79a1b600c266984b4025cd44e052846085a69",
+      "previous_unit_count": 5,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "consumer-discretionary-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "ffe82a5b99b54a0c37ed2be7f53154a9df89078560a726ecdbf3b353991203d7",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "7ea4d07faefcf3b289328a4173603aa65fd0465cd903486c96262730806fb214",
+      "pair_id": "consumer-discretionary-01",
+      "previous_section_hash": "1a9309b014547604fb76f48fffa40661588f0a3e2c436ed8813551b2da3ac6bf",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "consumer-staples-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "0a049843c51d0ec957955499c7a1ebf8161a4717b6c6de885a0076637424a5af",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "c625e2df9bb5332e2366c0dd92e6cf714cf48c9215554331e3633894586b1d2c",
+      "pair_id": "consumer-staples-01",
+      "previous_section_hash": "1424e269d56ebd60b25b44d2a6547ce0477d94e61a179b4ef426f8761891c8ee",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "energy-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "de496e2bf59f607b27cd97d0ce4ad9662de9c684a1b0e553667bc8fcb3f9b6bd",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "7eeb02a4bd63cf8d4c07fce58639d932c6304eac279d3bb4a6539968f078cb80",
+      "pair_id": "energy-01",
+      "previous_section_hash": "6b4a1f3069ae41c6b75842c25f696ee0d0ed80b0d529f6ada0a10ce2e5b2ffae",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "financials-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "3bc1e81e41742c24e905387595b50a5ef0074211f7828d6a97e45b3367d0c2d5",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "5920e7a0b2d234b3da7248369bf98b85b55752976885f6568de0ec3769acd800",
+      "pair_id": "financials-01",
+      "previous_section_hash": "38e5862e5bea4bc01965102d5179133621932476fe1368739b7df7c6f16412e7",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "health-care-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "58d320414ff8837257b409a91c7034f21bdf444b369ee5ba82d060bb708ea3cc",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 2,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "12e5d90166609b6eb9d7f0b3e49d0472a8bc3dfec53c6c98619ab5663e73df97",
+      "pair_id": "health-care-01",
+      "previous_section_hash": "d531ad7ce39ba27170c343bc43128df2505d56be23bd1ec9d5fb110e2369eb82",
+      "previous_unit_count": 2,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "industrials-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "fc614dce4f60be742754ddcbd89f6b5b2d91b050a01a70ee91adff7cb7c693f2",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "9f9dd37ceadcb7b5df6961b7f5f2c48feb3b9374d9d45670c30d0b10f014718d",
+      "pair_id": "industrials-01",
+      "previous_section_hash": "5800ddeb7ab9b9811c16a44934b879faae5d164ae2dd1588b943398b4fa1f9c3",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "information-technology-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "c406cb5f9a639c231aab2976bd4309852201751322b26444a876e3996beedad6",
+      "current_unit_count": 6,
+      "human_verified": false,
+      "label_count": 6,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "edc12e13fb1acf8ead98dafb97d791d84a0531f3c409f798869a959804d792e1",
+      "pair_id": "information-technology-01",
+      "previous_section_hash": "9ef8367681b8f7d4909a3a343c0f23f5debdfe6afccfcb5eb468580b89e3d27f",
+      "previous_unit_count": 6,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "information-technology-02.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "ec967481c52679ed6c04264bc4825897b135eda2348f6cb30f6ada2978f53022",
+      "current_unit_count": 1,
+      "human_verified": false,
+      "label_count": 1,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "f5427b26bbfdc8ce58788bb112be7e7aeb90b6be365168d972e5050b8a12a908",
+      "pair_id": "information-technology-02",
+      "previous_section_hash": "4374b52ac517d95f5b82ae64efcdd64ed0c7f43a7ceb1040f1f0f99ea3d5ab66",
+      "previous_unit_count": 1,
+      "review_ready": true
+    },
+    {
+      "annotation_basename": "utilities-01.machine_proposed.json",
+      "annotation_status": "machine_proposed",
+      "blocking_reason": null,
+      "current_section_hash": "b6824d8f90a442a02f6be03b1ab07ae75cffb6dd5a4351f6fcb6185b6e4dd7f5",
+      "current_unit_count": 5,
+      "human_verified": false,
+      "label_count": 5,
+      "packet_basename": "packet.json",
+      "packet_formats": [
+        "json",
+        "markdown"
+      ],
+      "packet_hash": "537d8d443b017245b6eedf327d0e54cedc646926fef7a8e476ec7aad35d41ae1",
+      "pair_id": "utilities-01",
+      "previous_section_hash": "103d6edddc91f7256b227988e7654d19e5caf7f20d2c699626e2221b244a89ee",
+      "previous_unit_count": 5,
+      "review_ready": true
+    }
+  ],
+  "pairs_blocked": 0,
+  "pairs_review_ready": 10,
+  "pairs_total": 10,
+  "regenerated_by": "python scripts/create_real_filing_annotation_packets.py",
+  "report_version": "real-filing-benchmark.packet-inventory.v2",
+  "supersedes": "real-filing-benchmark.packet-inventory.v1"
+}

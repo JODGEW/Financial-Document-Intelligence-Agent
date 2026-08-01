@@ -1,0 +1,279 @@
+{
+  "annotation_hash": null,
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "benchmark_id": "real_filing_v1",
+  "benchmark_version": 1,
+  "commit_sha": "6378192a0ab4118bf87d880b869ef22d2617c59c",
+  "corpus_quality": {
+    "filing_extraction_outcomes": {
+      "ambiguous": 0,
+      "extracted": 20,
+      "missing": 0,
+      "parse_failed": 0
+    },
+    "pairs_ambiguous_section": 0,
+    "pairs_built": 10,
+    "pairs_extracted": 10,
+    "pairs_human_verified": 0,
+    "pairs_machine_proposed_only": 0,
+    "pairs_missing_section": 0,
+    "pairs_parse_failed": 0,
+    "pairs_requested": 10,
+    "pairs_source_verified": 10
+  },
+  "corpus_role": "extraction_development_corpus",
+  "corpus_role_detail": "The twenty source documents in this corpus were inspected to diagnose HTML structure while the SEC Item heading parser was developed. Extraction results over them are IN-SAMPLE DEVELOPMENT results and are not evidence that extraction generalizes to unseen filings. A separately frozen holdout corpus, selected only after the extraction parser is frozen, is required for that.",
+  "declared_detector_version": "item1a_detector.v2",
+  "declared_workflow_version": "comparison_workflow.v2",
+  "detector_version": "item1a_detector.v2",
+  "evaluated_at": "2026-08-01T10:49:39.212452+00:00",
+  "evidence_resolution_mechanics": {
+    "evidence_foreign": 0,
+    "evidence_total": 1986,
+    "evidence_unresolved": 0,
+    "note": "Counts of references that did or did not resolve to an indexed chunk of the correct filing. This is a mechanical property of the pipeline, not a measure of whether the change was right."
+  },
+  "executions": [
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 4,
+      "changes_by_type": {
+        "modified": 4
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 5,
+      "evidence_foreign": 0,
+      "evidence_total": 96,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "communication-services-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 5,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 234,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "consumer-discretionary-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 129,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "consumer-staples-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 96,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "energy-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 369,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "financials-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 2,
+      "changes_by_type": {
+        "modified": 1,
+        "removed": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 150,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "health-care-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 2,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 197,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "industrials-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 4,
+      "changes_by_type": {
+        "modified": 4
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 6,
+      "evidence_foreign": 0,
+      "evidence_total": 230,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "information-technology-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 6,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 1,
+      "changes_by_type": {
+        "modified": 1
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 1,
+      "evidence_foreign": 0,
+      "evidence_total": 230,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "information-technology-02",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 1,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    },
+    {
+      "annotation_status": null,
+      "built": true,
+      "change_count": 5,
+      "changes_by_type": {
+        "modified": 5
+      },
+      "current_extraction_outcome": "extracted",
+      "current_unit_count": 5,
+      "evidence_foreign": 0,
+      "evidence_total": 255,
+      "evidence_unresolved": 0,
+      "executed": true,
+      "failure_code": null,
+      "lifecycle": "detected",
+      "pair_id": "utilities-01",
+      "previous_extraction_outcome": "extracted",
+      "previous_unit_count": 5,
+      "undetermined_count": 0,
+      "undetermined_reason_codes": {}
+    }
+  ],
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": true,
+  "generalization_claim_supported": false,
+  "gold_metrics": null,
+  "gold_metrics_available": false,
+  "manifest_hash": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0",
+  "manifest_status": "source_verified",
+  "metric_definitions_version": "real-filing-benchmark-metrics.v1",
+  "mode": "unlabeled_execution",
+  "operational": {
+    "detection_duration_sample_size": 10,
+    "detection_duration_seconds_p50": 0.39,
+    "detection_duration_seconds_p95": 1.477,
+    "detection_jobs": 0,
+    "execution_mode": "direct synchronous detection: the benchmark build calls the existing detector directly, so no durable job, lease, or retry is created. Zero jobs and zero reclaims mean that path was not exercised, not that it succeeded.",
+    "failures_by_code": {},
+    "lease_reclaims": 0,
+    "percentile_method": "nearest_rank",
+    "retries": 0,
+    "total_detection_attempts": 10
+  },
+  "report_version": "real-filing-benchmark.evaluation.v2",
+  "selection_protocol_version": "real-filing-selection.v1",
+  "supersedes": "real-filing-benchmark.evaluation.v1",
+  "warnings": [
+    "NO GOLD ACCURACY METRICS ARE AVAILABLE IN THIS REPORT.",
+    "Machine-proposed annotations are NOT verified labels and are not used here.",
+    "This report describes execution mechanics only and CANNOT SUPPORT ANY QUALITY OR ACCURACY CLAIM about the workflow on real filings."
+  ],
+  "workflow_version": "comparison_workflow.v2"
+}

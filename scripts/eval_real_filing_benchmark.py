@@ -637,6 +637,10 @@ def _provenance(
         "metric_definitions_version": rfb.METRIC_DEFINITIONS_VERSION,
         "annotation_protocol_version": rfb.ANNOTATION_PROTOCOL_VERSION,
         "selection_protocol_version": manifest["selection_protocol_version"],
+        # Corpus validity is provenance, not a footnote: any number in this
+        # report is qualified by whether the corpus was seen during extraction
+        # development.
+        **rfb.corpus_role_fields(),
         "commit_sha": rfb.repo_commit_sha(_REPO_ROOT),
         "evaluated_at": rfb.utc_now_iso(),
     }
@@ -867,6 +871,16 @@ def print_report(report: dict[str, Any]) -> None:
         f"commit={report['commit_sha'] or 'unknown'}"
     )
     print(f"  manifest_hash={report['manifest_hash'][:16]}…")
+    print(f"  corpus_role={report['corpus_role']}")
+    if report["extraction_parser_developed_using_this_corpus"]:
+        print(
+            "  ** DEVELOPMENT CORPUS: these filings were inspected while the "
+            "extraction parser\n"
+            "  ** was written. Extraction results below are IN-SAMPLE and are "
+            "NOT evidence that\n"
+            "  ** extraction generalizes to unseen filings. "
+            "generalization_claim_supported=false"
+        )
 
     quality = report["corpus_quality"]
     print("\nCorpus quality (counts):")

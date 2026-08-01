@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,7 @@ BENCHMARK_SUITES = (
     "tests/test_real_filing_benchmark_schema.py",
     "tests/test_real_filing_benchmark_tools.py",
     "tests/test_real_filing_benchmark_evaluator.py",
+    "tests/test_sec_html_item_extraction.py",
 )
 
 
@@ -761,3 +763,157 @@ def test_benchmark_introduces_no_gate_into_the_regression_suite():
 
     assert "real_filing" not in json.dumps(sorted(ecr.GATES))
     assert len(ecr.GATES) == 10
+
+
+# --- Corpus role: development, not holdout ------------------------------------
+#
+# The twenty real_filings_v1 filings were inspected to diagnose HTML structure
+# while sec_html_item_headings.v2 was designed. That makes every extraction
+# number over them in-sample. These tests exist so the distinction cannot be
+# lost by editing a report by hand or by adding a new report that forgets it.
+
+BENCHMARK_DIR = REPO_ROOT / "benchmarks" / "real_filing_v1"
+V2_REPORTS = (
+    "corpus_build_report.v2.json",
+    "execution_report.v2.json",
+    "annotation_packet_inventory.v2.json",
+)
+V1_BASELINE_REPORTS = (
+    "corpus_build_report.json",
+    "execution_report.json",
+    "annotation_packet_inventory.json",
+)
+
+#: Phrasings that cannot be part of an honest denial about this corpus, so
+#: their presence anywhere is an overclaim. Bare words like "holdout" are
+#: deliberately absent: a report must be able to say "this is NOT a holdout
+#: result", and banning the word would ban the denial along with the claim.
+OVERCLAIM_PHRASES = (
+    "unbiased",
+    "representative sample",
+    "held-out",
+    '"generalization_claim_supported": true',
+    '"extraction_holdout_evaluation": true',
+    '"corpus_role": "extraction_holdout_corpus"',
+)
+
+#: Roots that may only ever appear in a negated or forward-looking sentence.
+CLAIM_ROOTS = ("holdout", "generaliz", "generalis", "out-of-sample")
+
+#: Markers that make such a sentence a denial or a statement of future work.
+NEGATION_MARKERS = (
+    "not", "never", "no ", "cannot", "false", "requires", "is required",
+    "before any", "until", "would be", "unseen",
+)
+
+
+def _committed_report(name: str) -> dict:
+    return json.loads((BENCHMARK_DIR / name).read_text(encoding="utf-8"))
+
+
+def test_corpus_role_constants_are_closed():
+    assert rfb.REAL_FILINGS_V1_CORPUS_ROLE == (
+        rfb.CORPUS_ROLE_EXTRACTION_DEVELOPMENT
+    )
+    assert rfb.CORPUS_ROLE_EXTRACTION_DEVELOPMENT in rfb.CORPUS_ROLES
+    with pytest.raises(rfb.CorpusRoleError) as excinfo:
+        rfb.corpus_role_fields("not_a_role")
+    assert excinfo.value.code == "corpus_role_unknown"
+
+
+def test_corpus_role_block_has_the_required_meanings():
+    fields = rfb.corpus_role_fields()
+    assert fields["corpus_role"] == "extraction_development_corpus"
+    assert fields["extraction_parser_developed_using_this_corpus"] is True
+    assert fields["extraction_holdout_evaluation"] is False
+    assert fields["generalization_claim_supported"] is False
+
+
+@pytest.mark.parametrize("name", V2_REPORTS)
+def test_v2_reports_identify_a_development_corpus_not_a_holdout(name):
+    report = _committed_report(name)
+    assert report["corpus_role"] == "extraction_development_corpus"
+    assert report["extraction_parser_developed_using_this_corpus"] is True
+    assert report["extraction_holdout_evaluation"] is False
+
+
+@pytest.mark.parametrize("name", V2_REPORTS)
+def test_v2_reports_never_support_a_generalization_claim(name):
+    assert _committed_report(name)["generalization_claim_supported"] is False
+
+
+@pytest.mark.parametrize("name", V2_REPORTS)
+def test_v2_reports_do_not_overclaim_the_extraction_result(name):
+    """No report may describe 20/20 as holdout, unbiased, or generalizing.
+
+    Prose is checked as well as the structured fields, because an honest field
+    beside a dishonest sentence is still dishonest. The check is two-part:
+    phrasings that cannot appear in a denial are banned outright, and any
+    sentence invoking a generalization concept must be negated or explicitly
+    forward-looking. A bare "this result is holdout evidence" satisfies
+    neither.
+    """
+    raw = (BENCHMARK_DIR / name).read_text(encoding="utf-8").lower()
+    for phrase in OVERCLAIM_PHRASES:
+        assert phrase not in raw, f"{name} overclaims with {phrase!r}"
+
+    for sentence in re.split(r"(?<=[.;])\s+|\n", raw):
+        if not any(root in sentence for root in CLAIM_ROOTS):
+            continue
+        if sentence.strip().startswith('"extraction_holdout_evaluation"'):
+            continue
+        assert any(marker in sentence for marker in NEGATION_MARKERS), (
+            f"{name} asserts a generalization concept without denying it: "
+            f"{sentence.strip()[:160]!r}"
+        )
+
+    assert '"generalization_claim_supported": false' in raw
+
+
+def test_generated_reports_carry_the_corpus_role_block():
+    """The generators, not just the committed files, emit the block."""
+    from scripts import eval_real_filing_benchmark as evaluator
+
+    source = (
+        REPO_ROOT / "scripts" / "build_real_filing_benchmark.py"
+    ).read_text(encoding="utf-8")
+    assert "corpus_role_fields()" in source
+    assert "corpus_role_fields()" in (
+        REPO_ROOT / "scripts" / "eval_real_filing_benchmark.py"
+    ).read_text(encoding="utf-8")
+    assert hasattr(evaluator.rfb, "corpus_role_fields")
+
+
+def test_v1_null_extraction_reports_are_preserved():
+    """The before-picture must survive: it is what v2 is measured against."""
+    for name in V1_BASELINE_REPORTS:
+        assert (BENCHMARK_DIR / name).is_file(), name
+    build = _committed_report("corpus_build_report.json")
+    assert build["filing_extraction_outcomes"] == {"missing": 20}
+    assert build["pairs_evaluable"] == 0
+
+
+def test_v2_result_is_recorded_and_gold_evaluation_remains_unavailable():
+    build = _committed_report("corpus_build_report.v2.json")
+    assert build["filing_extraction_outcomes"] == {"extracted": 20}
+    assert build["pairs_evaluable"] == 10
+
+    execution = _committed_report("execution_report.v2.json")
+    assert execution["gold_metrics_available"] is False
+    assert execution["gold_metrics"] is None
+    assert execution["corpus_quality"]["pairs_human_verified"] == 0
+    assert execution["corpus_quality"]["pairs_extracted"] == 10
+
+    inventory = _committed_report("annotation_packet_inventory.v2.json")
+    assert inventory["human_verified_labels"] == 0
+    assert all(pair["human_verified"] is False for pair in inventory["pairs"])
+
+
+def test_documentation_states_the_development_corpus_limitation():
+    for doc in ("BENCHMARK.md", "README.MD"):
+        text = (REPO_ROOT / doc).read_text(encoding="utf-8")
+        lowered = text.lower()
+        assert "extraction_development_corpus" in lowered, doc
+        assert "in-sample" in lowered, doc
+        assert "holdout" in lowered, doc
+        assert "generalization_claim_supported" in lowered, doc

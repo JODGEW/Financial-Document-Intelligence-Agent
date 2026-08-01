@@ -15,6 +15,57 @@ frozen public filing manifest
   -> per-pair and aggregate report
 ```
 
+## ⚠ Corpus role: this is a DEVELOPMENT corpus, not a holdout
+
+`real_filings_v1` is machine-marked `corpus_role = extraction_development_corpus`
+in every v2 report. Read this before quoting any extraction number from it.
+
+The twenty source documents were **inspected to diagnose HTML structure while
+the SEC Item heading parser (`sec_html_item_headings.v2`) was being designed**.
+The parser was built to handle the element shapes those filings actually use.
+That is legitimate engineering, and it is also exactly what disqualifies these
+filings as an independent test of the parser.
+
+Therefore:
+
+- The frozen issuer slate and source documents were **not replaced**. Same ten
+  issuers, same twenty filings, same manifest hash, same twenty source digests.
+  Nothing was swapped after a result was seen.
+- The corpus **remains valid** for reproducibility, for diagnostic integration
+  testing, and as the artifact that exposed the ingestion gap in the first
+  place. Its v1 null-extraction reports stay committed as the before-picture.
+- Its HTML structures **were inspected during extraction v2 development**.
+- **20/20 extraction is an in-sample development result.** It measures the
+  parser's fit to documents it was built against.
+- It is **not evidence of extraction generalization** to unseen filings.
+- Downstream detector labels remain untouched, and **zero labels are
+  `human_verified`**.
+- Any accuracy evaluation over these ten pairs must be described as
+  **development or diagnostic evaluation** — never as a benchmark result, a
+  holdout measurement, or an accuracy claim.
+- **Stage 3.5 completion requires a separately frozen holdout corpus**, whose
+  issuers and filings are selected only *after* extraction v2 is frozen, and
+  which is then source-verified, extracted, annotated, and evaluated **without
+  changing extraction v2**.
+
+Machine-readable in `corpus_build_report.v2.json`, `execution_report.v2.json`,
+and `annotation_packet_inventory.v2.json`:
+
+```json
+{
+  "corpus_role": "extraction_development_corpus",
+  "extraction_parser_developed_using_this_corpus": true,
+  "extraction_holdout_evaluation": false,
+  "generalization_claim_supported": false
+}
+```
+
+The closed vocabulary lives in `real_filing_benchmark.CORPUS_ROLES`; a role
+outside it raises `CorpusRoleError`. `generalization_claim_supported` is false
+unconditionally until a holdout corpus is frozen *and* annotated.
+
+---
+
 ## Current status: not complete, and no real-filing accuracy claim exists
 
 | Stage | State |
@@ -24,51 +75,195 @@ frozen public filing manifest
 | Issuer slate | **frozen**, 10 issuers, 9 sector labels |
 | CIK / accession / date / document / digest resolution | **done** — resolved from official SEC endpoints |
 | Source verification | **done** — 20/20 filings SHA-256 verified |
-| Corpus build over real filings | **done, and it extracted nothing** — 20/20 sides `missing` |
-| Item 1A comparison workflow over real filings | **not exercised** — no pair had two extracted sections |
-| Human annotation | **not done** — zero labels are `human_verified`, zero packets exist |
+| Corpus role | **development, not holdout** — inspected while extraction v2 was written |
+| Corpus build over real filings | **done, in-sample** — 20/20 sides `extracted` (was 0/20; see below) |
+| Item 1A comparison workflow over real filings | **executed** — 10/10 pairs reached `detected` |
+| Human annotation | **not done** — zero labels are `human_verified`; 10 machine-proposed packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
+| Extraction holdout corpus | **does not exist** — required for Stage 3.5 completion |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
 approximated, because a wrong accession number in a frozen manifest is a
 fabricated fact that later readers cannot distinguish from a real one.
 
-**Stage 3 remains current.** Stage 3.5 remains in progress and stays in
-progress until this corpus is built into reviewable units, human-annotated,
-evaluated, and reviewed.
+**Stage 3 remains current.** Stage 3.5 remains in progress.
 
-### The headline result: Item 1A did not extract from any real filing
+### Next steps, in order
 
-All 20 sides recorded `missing`. Real EDGAR 10-K HTML carries **no**
-`<h1>`–`<h6>` elements — Item 1A headings are styled `<div>`/`<span>` runs —
-and the existing HTML section path derives `section_key` from
-splitter-produced headings only. So no chunk carries the canonical Item 1A key.
+1. **Human diagnostic annotation of the ten development pairs.** Verify that
+   the extracted sections and detected changes are correct on these filings.
+   This is diagnostic evaluation of the development corpus; completing it does
+   not produce a generalization claim and does not complete Stage 3.5.
+2. **Fix the separately tracked production Chroma batching defect**
+   ([ingest.py:669](ingest.py#L669), documented below).
+3. **Freeze a new unseen holdout corpus** — issuers and filings selected only
+   *after* extraction v2 is merged and frozen, under the same selection
+   protocol, with no one having inspected their HTML.
+4. **Run source verification, extraction, annotation, and evaluation on that
+   holdout without changing extraction v2.** If extraction is modified in
+   response to holdout results, the holdout becomes a development corpus too
+   and a fresh one is required.
 
-This is the failure mode pre-registered under *Known coverage limitations*
-below, and it is recorded rather than worked around. Nothing in the extraction
-path, heading recognition, alignment, validators, or governance thresholds was
-modified, and no pair was replaced after its outcome was known.
+### The prior null result, and what changed
 
-The consequence is stated plainly: **the comparison workflow has not yet been
-measured on real filings at all.** Zero pairs are annotatable, zero packets
-exist, and the unlabeled report describes a workflow that did not run. Making
-the section path recognise heading-less EDGAR HTML is a product change to be
-justified and reviewed on its own merits — never tuned against detector output
-on these pairs — after which the corpus must be rebuilt.
+The first build over these filings extracted **nothing**: 20/20 sides recorded
+`missing`. Root cause: real EDGAR 10-K HTML carries **no** `<h1>`–`<h6>`
+elements at all — Item headings are styled `<div>` / `<span>` / `<p>` /
+table-cell blocks — and the HTML loader derived `section_title` from heading
+tags only, so no chunk ever carried the canonical Item 1A key.
 
-### Committed reports from the source-verification and build phase
+That result is **preserved unchanged** as the null baseline
+(`corpus_build_report.json`, `execution_report.json`,
+`annotation_packet_inventory.json`). It was not overwritten, and it is the
+before-picture the current numbers are measured against.
+
+The ingestion gap was then closed generically (`loaders/sec_headings.py`,
+parser version `sec_html_item_headings.v2`) and the **same** frozen corpus was
+rebuilt. All 20 sides now extract and all 10 pairs reach `detected`.
+
+Stated precisely, because the distinction is the whole point of this benchmark:
+
+- **The 20/20 result is in-sample.** These filings were inspected to diagnose
+  structure while the parser was designed, so the corpus is an extraction
+  *development* corpus. See the corpus-role section at the top.
+- Extraction changed **after** the frozen source corpus revealed an ingestion
+  gap. The gap was diagnosed from HTML *structure* — which element types carry
+  Item headings — never from detector output.
+- The source corpus and issuer selection are **unchanged**: same manifest, same
+  manifest hash, same twenty filings, same twenty source digests. No pair was
+  replaced, and no issuer was swapped after seeing a result.
+- **No detector, alignment, validator, governance threshold, or benchmark label
+  was used to tune extraction**, and none of them was modified.
+- The old null-extraction results **remain recorded**.
+- Machine annotation is **not gold**. Zero labels are `human_verified`.
+- **No real-filing accuracy claim exists** and none can until human review.
+
+### Committed reports
+
+The v1 reports are the null-extraction baseline; the v2 reports describe the
+rebuild. Both are committed, and a new build never overwrites a prior report.
 
 | File | Contents |
 |---|---|
 | `source_verification_report.json` | per-filing official URL, digest, byte count, acquisition provenance |
-| `corpus_build_report.json` | per-pair build hash and per-side extraction outcome, hashes, counts |
-| `execution_report.json` | the unlabeled execution report (no accuracy metric) |
-| `annotation_packet_inventory.json` | packet inventory, review readiness, blocking reasons |
-| `HUMAN_REVIEW_CHECKLIST.md` | what a reviewer does per pair, and why none is reviewable yet |
+| `corpus_build_report.json` | **v1 baseline** — the 0-of-20 null extraction |
+| `corpus_build_report.v2.json` | per-pair build hash, per-side outcome, extraction diagnostics |
+| `execution_report.json` | **v1 baseline** — unlabeled report for a workflow that did not run |
+| `execution_report.v2.json` | unlabeled execution report for the rebuild (no accuracy metric) |
+| `annotation_packet_inventory.json` | **v1 baseline** — zero packets, all pairs blocked |
+| `annotation_packet_inventory.v2.json` | packet inventory, review readiness, blocking reasons |
+| `HUMAN_REVIEW_CHECKLIST.md` | what a reviewer does per pair |
 
-All four JSON reports carry identifiers, hashes, counts, and outcomes only — no
-filing content, no section text, no excerpt, no local path, no credential.
+Every JSON report carries identifiers, hashes, counts, version strings, and
+outcome codes only — no filing content, no section text, no excerpt, no local
+path, no credential.
+
+### Per-side outcomes, before and after
+
+| Pair | v1 prev → curr | v2 prev → curr | Changes | Units prev/curr |
+|---|---|---|---|---|
+| communication-services-01 | missing → missing | extracted → extracted | 4 | 5 / 5 |
+| consumer-discretionary-01 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| consumer-staples-01 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| energy-01 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| financials-01 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| health-care-01 | missing → missing | extracted → extracted | 2 | 2 / 1 |
+| industrials-01 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| information-technology-01 | missing → missing | extracted → extracted | 4 | 6 / 6 |
+| information-technology-02 | missing → missing | extracted → extracted | 1 | 1 / 1 |
+| utilities-01 | missing → missing | extracted → extracted | 5 | 5 / 5 |
+
+Zero sides remain `missing`, `ambiguous`, or `parse_failed`. All ten pairs are
+buildable and annotatable; ten machine-proposed packets exist and **zero** are
+verified.
+
+Change counts and unit counts are **execution mechanics, not accuracy**. In
+particular the low unit counts are a *detector* limitation, not an extraction
+one: `comparison_detector._HEADING_RE` only treats a line as a risk-factor
+heading when it ends in `Risk`/`Risks`, and most real filings write
+sentence-style risk headings, so those sections collapse to a single preamble
+unit. That is recorded here honestly and is out of scope for this change —
+touching the detector to improve these numbers is exactly what this benchmark
+forbids.
+
+### Item 1A extraction behavior
+
+`loaders/sec_headings.py` recognizes SEC Item headings structurally. No LLM, no
+embeddings, no fuzzy or semantic matching, no browser automation, no JavaScript
+execution — and no issuer, accession, filename, or hash rule anywhere.
+
+**Visible text.** `script` / `style` / `noscript` / `template`, HTML comments,
+and elements hidden by `hidden`, `display:none`, `visibility:hidden`, or
+`aria-hidden` contribute nothing. Text is assembled as a browser lays it out:
+inline runs concatenate with **no** separator, block-level elements and `<br>`
+introduce one. This matters — filings routinely split a word across adjacent
+styled spans, and joining every element with a space corrupts it. Text is then
+NFKC-normalized, stripped of non-breaking and zero-width spaces, whitespace-
+collapsed, length-bounded, and rejected outright if it carries control
+characters. The document is never flattened into one string for a global regex.
+
+**Candidate blocks.** One document-order traversal emits a non-overlapping
+stream of visible blocks, each owned by its nearest block-level ancestor, so a
+heading nested `td > div > span` is reported once — as the `td` that renders
+it. An inline `span` is never a heading on its own.
+
+**Closed heading grammar**, anchored at the start of a block:
+
+```
+HEADING := ["PART" WS ROMAN SEP] "ITEM" WS ITEM_ID [SEP TITLE]
+ROMAN   ∈ {I, II, III, IV}                                   (closed)
+ITEM_ID ∈ {1, 1A, 1B, 1C, 2, 3, 4, 5, 6, 7, 7A, 8, 9,
+           9A, 9B, 9C, 10, 11, 12, 13, 14, 15, 16}            (closed)
+SEP     ∈ { . : ; , - – — ) ] whitespace }
+TITLE   := bounded remainder, ≤ 120 chars
+```
+
+Because the designator must *open* the block, a sentence that merely mentions
+Item 1A cannot match; `Item 1Alpha` cannot match; `Item 99` is outside the
+closed set; and a bare `Risk Factors` with no Item identity is never Item 1A.
+Recognized headings are canonicalized and routed through the existing
+`ingest.section_key_for` contract.
+
+**Contents and navigation disambiguation.** Filings repeat Item headings in a
+contents table, in navigation links, and in running page headers. Each
+candidate gets exactly one classification:
+
+| Class | Rule |
+|---|---|
+| `designator_only` | the block holds the designator with no title — a contents row whose title sits in a sibling cell, or a running page header |
+| `navigation` | the block is wholly an anchor, or it sits in a dense run (≥ 6 Item headings separated by < 400 chars) *and* has no substantive content after it |
+| `insufficient_content` | titled, but < 1,000 chars of content before the next different Item |
+| `substantive` | everything else |
+
+Neither the first nor the last occurrence is privileged. Exactly one
+substantive candidate → `extracted`; none → `missing`; more than one →
+`ambiguous`. An ambiguous Item 1A is never stamped with a section key, so it
+cannot launder into an extraction. Every rejection records a bounded reason
+code.
+
+**Section boundary.** From the selected heading, the section ends at the first
+of: a titled, non-navigation Item heading whose id succeeds 1A in the closed
+sequence, or a Part **strictly later** than the Part in effect. The second half
+of that rule is load-bearing — filings repeat `Part I` as a running page header
+throughout the body, and accepting it would truncate the section at its first
+page break. A repeat of the *same* Item is likewise page furniture, not a
+boundary. The boundary heading is excluded from the section, document order and
+`chunk_seq` semantics are preserved, and contents text is never captured as
+content. With no trustworthy boundary the outcome is `ambiguous`, never
+unbounded consumption; a section over the documented 2,000,000-char safety
+bound is also `ambiguous`, never silently truncated.
+
+**Versioning.** Parser version `sec_html_item_headings.v2` (v1 was the implicit
+heading-tags-only behavior), recorded on every document the SEC path produces
+and in `parser_versions.html_parser`. Build records advance to
+`real-filing-benchmark.build.v2` for the extraction diagnostics. Source bytes
+and all twenty source hashes are unchanged; new section hashes derive only from
+newly extracted content. No annotation was invalidated, because none had ever
+been verified.
+
+Generic HTML documents are unaffected: with no substantive Item heading, the
+loader uses the pre-existing `h1`/`h2`/`h3` path exactly as before.
 
 ---
 
@@ -337,10 +532,17 @@ explicitly approved. `evaluation_config.json` carries
 ## CI
 
 The merge-blocking required check remains **`comparison-regression`**, and the
-**synthetic comparison regression suite remains the deterministic gate**. This
-commit adds one offline step to it — manifest and annotation schemas,
-mocked-HTTP acquisition, corpus build over tiny synthetic HTML fixtures, and
-evaluator refusal/metric behavior.
+**synthetic comparison regression suite remains the deterministic gate**. Its
+offline benchmark step covers manifest and annotation schemas, mocked-HTTP
+acquisition, corpus build over tiny synthetic HTML fixtures, SEC-style Item
+heading extraction (`tests/test_sec_html_item_extraction.py`), and evaluator
+refusal/metric behavior.
+
+The extraction suite is in the required check deliberately: heading recognition
+decides *which text is compared*, so a regression there would silently change
+every downstream result. Its fixtures are hand-written generic HTML structures
+— no real filing content exists in the repository, and CI never rebuilds the
+real corpus.
 
 Required CI **never contacts SEC EDGAR**, never supplies a user agent, and
 never downloads a filing. Acquisition is an explicit, manually invoked external
@@ -372,9 +574,36 @@ a number can always be traced to the exact inputs that produced it.
 
 ---
 
+## Known production ingestion issue: unbatched Chroma upsert
+
+**Not fixed in this change. It needs its own bounded commit.**
+
+`ingest.embed_and_persist` upserts every chunk in a single
+`vectorstore.add_documents(...)` call ([ingest.py:669](ingest.py#L669)). Chroma
+refuses one upsert larger than its client max batch size (~5,461), and a single
+real 10-K comfortably exceeds it — the largest filing in this corpus produces
+roughly 5.8k chunks on its own.
+
+Why it has not surfaced: the committed `docs/` corpus is four small files, and
+the benchmark builder carries its own `_add_in_batches` helper
+([scripts/build_real_filing_benchmark.py:147](scripts/build_real_filing_benchmark.py#L147)),
+so neither path reaches the limit. Anyone pointing production `python
+ingest.py` at a real-filing-sized corpus would hit it immediately.
+
+The fix is to batch the production upsert the same way the builder already
+does — same chunks, same stable ids, same order, still idempotent. It is
+deliberately excluded here to keep this change scoped to heading extraction.
+
+---
+
 ## Known coverage limitations
 
 - **No accuracy claim exists.** Zero labels are `human_verified`.
+- **No generalization claim exists, and this corpus cannot support one.** It is
+  an extraction development corpus (`corpus_role =
+  extraction_development_corpus`, `generalization_claim_supported = false`).
+  Extraction numbers over it are in-sample. A separately frozen holdout corpus
+  is required.
 - Item 1A only. No other SEC section is extracted or compared.
 - 10-K only; amendments excluded from v1.
 - 10 pairs across 10 large-cap issuers. Small, controlled, and not
@@ -382,9 +611,21 @@ a number can always be traced to the exact inputs that produced it.
   filing formats.
 - **No inter-annotator agreement.** One annotator per pair, so no agreement
   statistic exists and none is reported.
-- Extraction depends on the loader emitting Item 1A as a heading. Real EDGAR
-  HTML frequently does not, so `missing` and `ambiguous` outcomes are expected
-  and are reported rather than worked around.
+- Extraction requires a **titled** Item heading in a single block. A filing
+  whose body heading puts the designator and title in separate cells, or that
+  answers Item 1A with a short cross-reference (a smaller reporting company may
+  write "Not applicable"), records `missing` under the 1,000-char substantive
+  floor. That is an honest outcome, not a silent one — the reason code says so.
+- Two equally substantive Item 1A headings record `ambiguous` and are never
+  resolved by preference. So does a section with no trustworthy end boundary.
+- **Unit granularity is coarse on real filings.** The detector treats a line as
+  a risk-factor heading only when it ends in `Risk`/`Risks`; most real filings
+  use sentence-style headings, so most sections reduce to one preamble unit and
+  the change counts are correspondingly coarse. This is a detector limitation,
+  it is not addressed here, and it must not be "fixed" by tuning against these
+  pairs.
+- The heading grammar covers 10-K Item designators only. Other form types and
+  other sections are out of scope.
 - The detector remains exact heading/content alignment with no similarity
   stage; a reworded-and-retitled risk factor reports as added + removed.
 - Direction consistency scores a validator verdict, not a detector-emitted
