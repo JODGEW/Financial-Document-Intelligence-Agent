@@ -7,9 +7,11 @@ or a real filing — the benchmark suites must be able to run offline in CI
 without a single byte of real filing content existing in the repository.
 
 The HTML documents are small hand-written risk-factor sections. They exercise
-the EXISTING ingestion and section-identification path (the HTML loader derives
-``section_title`` from ``<h1>/<h2>/<h3>``), so the extraction outcomes the tests
-assert are the outcomes the real path produces — not a re-implementation.
+the EXISTING ingestion and section-identification path, so the extraction
+outcomes the tests assert are the outcomes the real path produces — not a
+re-implementation. Two heading shapes are covered, matching the loader's two
+strategies: ``<h1>`` headings (generic header-tag sectioning) and the styled
+``div``/``span`` form real filings use (SEC Item structure).
 """
 
 from __future__ import annotations
@@ -114,6 +116,94 @@ AMBIGUOUS_SECTION_HTML = """<html><head><title>Fictional 10-K FY2023</title></he
 <p>We experienced 5 attempted intrusion events during fiscal 2023.</p>
 </body></html>
 """
+
+
+# --- SEC-shaped HTML (no heading tags anywhere) -------------------------------
+#
+# A generic model of how a real filing renders structure: a contents table whose
+# Item designator and title sit in separate cells, then styled div/span blocks
+# for the body headings. Nothing here is copied from any filing; it is the
+# shape, not the content.
+
+_SEC_CONTENTS = "<table>" + "".join(
+    f"<tr><td><span>Item {item}.</span></td><td><span>{label}</span></td></tr>"
+    for item, label in [
+        ("1", "Business"),
+        ("1A", "Risk Factors"),
+        ("1B", "Unresolved Staff Comments"),
+        ("2", "Properties"),
+    ]
+) + "</table>"
+
+_SEC_FILLER = (
+    "This fictional disclosure exists so the section carries enough substantive "
+    "text to be treated as a section rather than a cross-reference line. It "
+    "describes no real company and states no real fact. "
+)
+
+
+def _sec_unit(heading: str, body: str) -> str:
+    return (
+        f'<div style="font-weight:700"><span>{heading}</span></div>\n'
+        f"<div><span>{body} {_SEC_FILLER * 3}</span></div>\n"
+    )
+
+
+def _sec_filing(units: list[tuple[str, str]], year: str) -> str:
+    return (
+        f"<html><head><title>Fictional 10-K FY{year}</title></head><body>\n"
+        f"{_SEC_CONTENTS}\n"
+        "<div><span>Part I</span></div>\n"
+        '<div style="font-weight:700"><span>Item 1A.</span>'
+        "<span> Risk Factors</span></div>\n"
+        "<div><span>The following risk factors should be read together with "
+        "the rest of this annual report.</span></div>\n"
+        + "".join(_sec_unit(heading, body) for heading, body in units)
+        + '<div style="font-weight:700"><span>Item 1B. Unresolved Staff '
+        "Comments</span></div>\n<div><span>None.</span></div>\n"
+        "</body></html>\n"
+    )
+
+
+SEC_STYLED_PREVIOUS_HTML = _sec_filing(
+    [
+        (
+            "Cybersecurity and Data Security Risks",
+            "We experienced 3 attempted intrusion events during fiscal 2022 and "
+            "maintained cyber insurance coverage of $35 million.",
+        ),
+        (
+            "Concentration and Customer Risks",
+            "Our top ten clients accounted for 41% of revenue in fiscal 2022.",
+        ),
+        (
+            "Reference Rate Transition Risks",
+            "The transition away from legacy reference rates may affect our "
+            "floating-rate obligations.",
+        ),
+    ],
+    "2022",
+)
+
+SEC_STYLED_CURRENT_HTML = _sec_filing(
+    [
+        (
+            "Cybersecurity and Data Security Risks",
+            "We experienced 5 attempted intrusion events during fiscal 2023 and "
+            "increased cyber insurance coverage to $50 million.",
+        ),
+        (
+            "Concentration and Customer Risks",
+            "Our top ten clients accounted for 41% of revenue in fiscal 2022.",
+        ),
+        (
+            "Artificial Intelligence and Model Risks",
+            "We began deploying machine-learning models into client-facing "
+            "workflows during fiscal 2023.",
+        ),
+    ],
+    "2023",
+)
 
 
 def sha256(text: str) -> str:

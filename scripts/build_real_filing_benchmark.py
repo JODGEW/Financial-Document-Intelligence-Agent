@@ -56,6 +56,7 @@ import comparison_store  # noqa: E402
 import filing_registry  # noqa: E402
 import ingest  # noqa: E402
 import real_filing_benchmark as rfb  # noqa: E402
+from loaders import html as loaders_html  # noqa: E402
 
 BUILD_STATUS_BUILT = "built"
 BUILD_STATUS_FAILED = "failed"
@@ -259,6 +260,44 @@ def _paragraph_count(text: str) -> int:
     return len([block for block in text.split("\n\n") if block.strip()])
 
 
+def _loader_outcome(filing_chunks: list) -> str | None:
+    """The HTML Item parser's own Item 1A outcome, when it recorded one."""
+    for chunk in filing_chunks:
+        outcome = chunk.metadata.get("sec_item1a_outcome")
+        if outcome:
+            return outcome
+    return None
+
+
+def _record_extraction_diagnostics(record: dict[str, Any], filing_chunks: list) -> None:
+    """Copy the loader's bounded diagnostics onto the build record.
+
+    Every value is a count, a code, a tag name, or a bounded heading label. No
+    section text and no excerpt reaches a build record through this path.
+    """
+    source = next(
+        (chunk for chunk in filing_chunks if chunk.metadata.get("sec_parser_version")),
+        None,
+    )
+    if source is None:
+        return
+    metadata = source.metadata
+    record["extraction_parser_version"] = metadata.get("sec_parser_version")
+    record["extraction_reason"] = metadata.get("sec_item1a_reason")
+    record["candidate_count"] = metadata.get("sec_item1a_candidate_count", 0)
+    record["substantive_candidate_count"] = metadata.get(
+        "sec_item1a_substantive_count", 0
+    )
+    record["navigation_rejected_count"] = metadata.get(
+        "sec_item1a_navigation_rejected", 0
+    )
+    record["selected_element_tag"] = metadata.get("sec_item1a_element_tag")
+    boundary = metadata.get("sec_item1a_boundary_heading")
+    record["boundary_heading"] = (
+        boundary[: rfb.MAX_HEADING_CHARS] if boundary else None
+    )
+
+
 def _extract_side(
     side: str,
     source_name: str,
@@ -288,6 +327,13 @@ def _extract_side(
         "unit_count": 0,
         "units": [],
         "extraction_detail": None,
+        "extraction_parser_version": None,
+        "extraction_reason": None,
+        "candidate_count": 0,
+        "substantive_candidate_count": 0,
+        "navigation_rejected_count": 0,
+        "selected_element_tag": None,
+        "boundary_heading": None,
         "_section_text": "",
     }
 
@@ -304,6 +350,7 @@ def _extract_side(
         if chunk.metadata.get("source_path") == source_name
     ]
     record["indexed_chunk_count"] = len(filing_chunks)
+    _record_extraction_diagnostics(record, filing_chunks)
     section_chunks = [
         chunk
         for chunk in filing_chunks
@@ -312,12 +359,23 @@ def _extract_side(
     record["section_chunk_count"] = len(section_chunks)
 
     if not section_chunks:
+        # The loader's own outcome is authoritative when it reports one: an
+        # Item 1A it refused to resolve is ambiguous, not absent, and flattening
+        # the two would hide a heading the parser actually found.
+        loader_outcome = _loader_outcome(filing_chunks)
+        if loader_outcome == rfb.EXTRACTION_AMBIGUOUS:
+            record["extraction_outcome"] = rfb.EXTRACTION_AMBIGUOUS
+            record["extraction_detail"] = (
+                "the HTML Item parser found more than one equally plausible "
+                "Item 1A heading, or could not establish a trustworthy end "
+                f"boundary (reason: {record['extraction_reason']!r})"
+            )
+            return record
         record["extraction_outcome"] = rfb.EXTRACTION_MISSING
         record["extraction_detail"] = (
-            "no chunk carries the canonical Item 1A section key. The existing "
-            "section path derives it from splitter-produced headings only, so "
-            "a filing whose Item 1A heading is not emitted as a heading by its "
-            "loader records as missing."
+            "no chunk carries the canonical Item 1A section key: no substantive "
+            "Item 1A heading was established for this filing "
+            f"(reason: {record['extraction_reason']!r})"
         )
         return record
 
@@ -575,6 +633,7 @@ def build_pair(
         "source_manifest_hash": rfb.manifest_hash(),
         "parser_versions": {
             "builder": rfb.BUILDER_VERSION,
+            "html_parser": loaders_html.HTML_PARSER_VERSION,
             "section_key": ingest.SECTION_KEY_ITEM_1A,
             "detector": comparison_detector.DETECTOR_VERSION,
             "workflow": comparison_store.WORKFLOW_VERSION,
@@ -727,6 +786,10 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "benchmark_id": manifest["benchmark_id"],
         "manifest_status": manifest["status"],
+        # Corpus validity travels with every extraction number this script
+        # emits: these filings were inspected while the extraction parser was
+        # written, so the outcomes below are in-sample.
+        **rfb.corpus_role_fields(),
         "pairs_requested": len(pairs),
         "pairs_built": len(built),
         "pairs_failed": len(failures),

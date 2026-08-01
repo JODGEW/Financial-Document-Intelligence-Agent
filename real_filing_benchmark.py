@@ -67,7 +67,11 @@ MANIFEST_SCHEMA_VERSION = "real-filing-benchmark.manifest.v1"
 ANNOTATION_SCHEMA_VERSION = "real-filing-benchmark.annotation.v1"
 ANNOTATION_PROTOCOL_VERSION = "real-filing-annotation.v1"
 SELECTION_PROTOCOL_VERSION = "real-filing-selection.v1"
-BUILD_RECORD_VERSION = "real-filing-benchmark.build.v1"
+#: v2 adds the bounded Item-extraction diagnostics produced by the SEC HTML
+#: heading parser (candidate counts, rejection counts, reason code, boundary
+#: heading, parser version). Source hashes and the manifest schema are
+#: untouched by the bump; only build records gain fields.
+BUILD_RECORD_VERSION = "real-filing-benchmark.build.v2"
 PACKET_SCHEMA_VERSION = "real-filing-benchmark.packet.v1"
 BUILDER_VERSION = "real_filing_benchmark_builder.v1"
 METRIC_DEFINITIONS_VERSION = "real-filing-benchmark-metrics.v1"
@@ -89,6 +93,35 @@ STATUS_ORDER = (
     STATUS_CORPUS_BUILT,
     STATUS_HUMAN_ANNOTATION_COMPLETE,
 )
+
+# --- Corpus role --------------------------------------------------------------
+#
+# Whether a corpus may support a generalization claim depends on one fact: was
+# it looked at while the code being evaluated was written? The twenty
+# real_filings_v1 filings were inspected to diagnose HTML structure and design
+# the SEC Item heading parser (sec_html_item_headings.v2). That makes them a
+# DEVELOPMENT corpus. Its extraction numbers are in-sample and describe the
+# parser's fit to documents it was built against — not its behavior on unseen
+# filings.
+#
+# This is recorded as machine-readable metadata rather than prose alone,
+# because a reader scanning a JSON report for "20/20 extracted" must not be
+# able to miss it.
+
+#: Inspected while the extraction parser was developed. In-sample.
+CORPUS_ROLE_EXTRACTION_DEVELOPMENT = "extraction_development_corpus"
+#: Frozen and unseen until after the extraction parser was frozen. Out-of-sample.
+CORPUS_ROLE_EXTRACTION_HOLDOUT = "extraction_holdout_corpus"
+CORPUS_ROLES = (
+    CORPUS_ROLE_EXTRACTION_DEVELOPMENT,
+    CORPUS_ROLE_EXTRACTION_HOLDOUT,
+)
+
+#: The role of the corpus committed in this repository today. Changing this
+#: requires a corpus that was genuinely unseen during parser development —
+#: not a re-description of this one.
+REAL_FILINGS_V1_CORPUS_ROLE = CORPUS_ROLE_EXTRACTION_DEVELOPMENT
+
 
 # --- Annotation vocabulary ----------------------------------------------------
 
@@ -216,6 +249,46 @@ class CorpusDriftError(BenchmarkError):
 
 class StatusTransitionError(BenchmarkError):
     """A manifest status change is not a legal single forward step."""
+
+
+class CorpusRoleError(BenchmarkError):
+    """A corpus was described with a role outside the closed set."""
+
+
+def corpus_role_fields(role: str = REAL_FILINGS_V1_CORPUS_ROLE) -> dict[str, Any]:
+    """Bounded corpus-validity block embedded in every benchmark report.
+
+    One source of truth for the build report, the evaluation report, and the
+    packet inventory, so the three cannot disagree about what the corpus is.
+    """
+    _require(
+        role in CORPUS_ROLES,
+        CorpusRoleError,
+        "corpus_role_unknown",
+        f"corpus_role must be one of {list(CORPUS_ROLES)}, got {role!r}",
+    )
+    development = role == CORPUS_ROLE_EXTRACTION_DEVELOPMENT
+    return {
+        "corpus_role": role,
+        "extraction_parser_developed_using_this_corpus": development,
+        "extraction_holdout_evaluation": not development,
+        # A generalization claim needs an out-of-sample corpus AND verified
+        # labels. Neither exists today, so this stays false until a holdout
+        # corpus is frozen, annotated, and evaluated.
+        "generalization_claim_supported": False,
+        "corpus_role_detail": (
+            "The twenty source documents in this corpus were inspected to "
+            "diagnose HTML structure while the SEC Item heading parser was "
+            "developed. Extraction results over them are IN-SAMPLE DEVELOPMENT "
+            "results and are not evidence that extraction generalizes to "
+            "unseen filings. A separately frozen holdout corpus, selected only "
+            "after the extraction parser is frozen, is required for that."
+            if development
+            else "This corpus was frozen and unseen until after the extraction "
+            "parser was frozen, so extraction results over it are "
+            "out-of-sample."
+        ),
+    }
 
 
 # --- Small validation helpers -------------------------------------------------
@@ -1136,6 +1209,16 @@ _BUILD_SIDE_KEYS = (
     "unit_count",
     "units",
     "extraction_detail",
+    # Bounded extraction diagnostics (build record v2). Counts, a reason code,
+    # an element tag, and two heading labels — never section text, never an
+    # excerpt, never a path.
+    "extraction_parser_version",
+    "extraction_reason",
+    "candidate_count",
+    "substantive_candidate_count",
+    "navigation_rejected_count",
+    "selected_element_tag",
+    "boundary_heading",
 )
 
 # ``excerpt`` is a bounded MAX_EXCERPT_CHARS slice kept so a reviewer can judge
