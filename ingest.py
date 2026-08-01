@@ -25,6 +25,7 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
 )
 
+import chroma_batching
 import config
 import filing_registry
 import loaders  # noqa: F401  (side-effect: register format handlers)
@@ -654,8 +655,22 @@ def _dedupe_by_id(chunks: list[Document]) -> tuple[list[Document], list[str]]:
     return unique_chunks, unique_ids
 
 
-def embed_and_persist(chunks):
-    """Embed chunks and upsert into Chroma using stable ids."""
+def embed_and_persist(chunks, *, batch_size: int | None = None):
+    """Embed chunks and upsert into Chroma using stable ids.
+
+    The upsert is delivered in client-sized batches through the shared helper
+    (``chroma_batching``), the same one the real-filing benchmark builder uses.
+    Chroma refuses a single write larger than its own maximum batch size, and
+    one real 10-K produces more chunks than that limit allows, so an unbounded
+    write here would fail on exactly the documents this system exists to
+    handle. Batching changes only how the write is delivered: same chunks, same
+    stable ids, same order, same metadata, still idempotent.
+
+    Batches are not one transaction. If a later batch fails, earlier ones
+    remain in the store and this raises — the caller must not record the
+    ingestion as complete. ``batch_size`` overrides client discovery; leave it
+    unset outside tests.
+    """
     embeddings = BedrockEmbeddings(
         model_id=config.EMBEDDING_MODEL_ID,
         region_name=config.AWS_REGION,
@@ -666,11 +681,18 @@ def embed_and_persist(chunks):
         embedding_function=embeddings,
     )
     unique_chunks, unique_ids = _dedupe_by_id(chunks)
-    vectorstore.add_documents(documents=unique_chunks, ids=unique_ids)
+    result = chroma_batching.add_documents_in_batches(
+        vectorstore,
+        unique_chunks,
+        unique_ids,
+        batch_size=batch_size,
+        operation="ingest.embed_and_persist",
+    )
     print(
-        f"  Upserted {len(unique_chunks)} chunks "
+        f"  Upserted {result.completed_items} chunks "
         f"(input {len(chunks)}, dedup-collapsed {len(chunks) - len(unique_chunks)}) "
-        f"to {config.CHROMA_PERSIST_DIR}"
+        f"in {result.batch_count} batch(es) of at most "
+        f"{result.effective_batch_size} to {config.CHROMA_PERSIST_DIR}"
     )
     return vectorstore
 
@@ -700,10 +722,30 @@ def run():
         rel_path = chunk.metadata.get("source_path")
         if rel_path:
             counts[rel_path] = counts.get(rel_path, 0) + 1
-    filing_registry.update_chunk_counts(counts, config.FILING_REGISTRY_PATH)
 
+    # Completion ordering. chunk_count is the registry's "this filing is fully
+    # indexed" marker, so it is cleared before the write and restored only
+    # after every batch has succeeded. Chroma batches are not one transaction:
+    # a run that dies mid-write leaves earlier batches in the store, and the
+    # registry must report that filing as incomplete rather than claim an
+    # ingestion that did not finish. An explicit rerun upserts the same
+    # deterministic ids and completes.
     print("Embedding and persisting...")
-    vectorstore = embed_and_persist(chunks)
+    filing_registry.clear_chunk_counts(counts.keys(), config.FILING_REGISTRY_PATH)
+    try:
+        vectorstore = embed_and_persist(chunks)
+    except chroma_batching.ChromaBatchError as exc:
+        # Counters and a stable code only — never the client's message, the
+        # chunk ids, the documents, or the persist path.
+        print(f"  FAILED: {exc}")
+        print(
+            "  Chroma writes are not transactional: chunks from earlier "
+            "batches may remain indexed. No filing was marked complete in the "
+            "registry. Re-run `python ingest.py` to upsert the same chunk ids "
+            "and finish — nothing is retried automatically."
+        )
+        sys.exit(1)
+    filing_registry.update_chunk_counts(counts, config.FILING_REGISTRY_PATH)
 
     print("Done. Collection:", config.CHROMA_COLLECTION)
     return vectorstore

@@ -63,7 +63,7 @@ import tempfile
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -310,7 +310,14 @@ def record_outcome(
 def update_chunk_counts(
     counts_by_source_path: dict[str, int], registry_path: str | Path
 ) -> None:
-    """Fill in chunk_count on parsed entries after splitting (post-load step)."""
+    """Fill in chunk_count on parsed entries once their chunks are indexed.
+
+    chunk_count is the completion marker, not a splitting statistic: the
+    detector treats a filing as completely indexed only when this equals the
+    number of chunks actually in the vector store. Callers must therefore write
+    it *after* every vector-store batch has succeeded, never before (see
+    clear_chunk_counts for the other half of that ordering).
+    """
     path = Path(registry_path)
     with _REGISTRY_LOCK:
         entries = _read_entries(path)
@@ -321,6 +328,38 @@ def update_chunk_counts(
             count = counts_by_source_path.get(entry.get("source_path"))
             if count is not None and entry.get("chunk_count") != count:
                 entry["chunk_count"] = count
+                changed = True
+        if changed:
+            _atomic_write_entries(path, entries)
+
+
+def clear_chunk_counts(
+    source_paths: Iterable[str], registry_path: str | Path
+) -> None:
+    """Drop the completion marker for sources about to be re-indexed.
+
+    Vector-store writes are not transactional, so a run that dies partway must
+    not leave a stale chunk_count from an earlier successful run standing as a
+    completion claim over a half-written index. Clearing first and restoring
+    only after every batch succeeds makes the incomplete state the durable one:
+    a filing with chunk_count None is reported incomplete by the detector,
+    which is the honest outcome until an explicit rerun finishes the upsert.
+
+    Only parsed entries are touched, and only their chunk_count — identity,
+    hashes, and status are untouched.
+    """
+    wanted = set(source_paths)
+    if not wanted:
+        return
+    path = Path(registry_path)
+    with _REGISTRY_LOCK:
+        entries = _read_entries(path)
+        changed = False
+        for entry in entries:
+            if entry.get("parse_status") != PARSED:
+                continue
+            if entry.get("source_path") in wanted and entry.get("chunk_count") is not None:
+                entry["chunk_count"] = None
                 changed = True
         if changed:
             _atomic_write_entries(path, entries)

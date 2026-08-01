@@ -51,6 +51,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import chroma_batching  # noqa: E402
 import comparison_detector  # noqa: E402
 import comparison_store  # noqa: E402
 import filing_registry  # noqa: E402
@@ -141,39 +142,6 @@ def _workspace_source_name(pair: dict[str, Any], side: str, payload: dict) -> st
     return f"{pair['pair_id']}-{side}-{payload['reporting_period']}{suffix}"
 
 
-# Used only if the client will not report its own bound.
-_CHROMA_FALLBACK_BATCH = 4096
-
-
-def _add_in_batches(chroma, documents: list, ids: list[str]) -> None:
-    """Upsert in client-sized batches.
-
-    Chroma refuses a single upsert larger than its own max batch size, and a
-    real 10-K comfortably exceeds it: Verizon's FY2022 filing alone produces
-    ~5.8k chunks against a 5,461 limit. The synthetic fixtures are orders of
-    magnitude too small to reach it, so this surfaces only against real
-    filings.
-
-    Batching is purely how the write is delivered — same chunks, same stable
-    ids, same order, and upsert stays idempotent. Nothing about what is indexed
-    or how a section is later identified changes.
-    """
-    limit = _CHROMA_FALLBACK_BATCH
-    getter = getattr(getattr(chroma, "_client", None), "get_max_batch_size", None)
-    if callable(getter):
-        try:
-            reported = int(getter())
-            if reported > 0:
-                limit = reported
-        except Exception:  # noqa: BLE001 - fall back to the conservative bound
-            pass
-    for start in range(0, len(documents), limit):
-        chroma.add_documents(
-            documents=documents[start : start + limit],
-            ids=ids[start : start + limit],
-        )
-
-
 def _ingest_pair(
     pair: dict[str, Any],
     verified: dict[str, dict[str, Any]],
@@ -230,16 +198,26 @@ def _ingest_pair(
             rel = chunk.metadata.get("source_path")
             if rel:
                 counts[rel] = counts.get(rel, 0) + 1
-        if counts:
-            filing_registry.update_chunk_counts(counts, registry_path)
 
         chroma = Chroma(
             collection_name="real_filing_benchmark",
             persist_directory=str(workspace / "chroma"),
             embedding_function=_BenchmarkEmbeddings(),
         )
+        # The same bounded-write helper production ingestion uses: one real
+        # 10-K produces more chunks than Chroma accepts in a single call. The
+        # completion marker (chunk_count) is written only after every batch
+        # lands, matching ingest.run()'s ordering — a failed write must not
+        # leave a filing claiming a complete index.
         if unique:
-            _add_in_batches(chroma, unique, ids)
+            chroma_batching.add_documents_in_batches(
+                chroma,
+                unique,
+                ids,
+                operation="build_real_filing_benchmark.ingest_pair",
+            )
+        if counts:
+            filing_registry.update_chunk_counts(counts, registry_path)
 
     return {
         "workspace": workspace,

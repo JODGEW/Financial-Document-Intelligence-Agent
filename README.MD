@@ -356,6 +356,7 @@ The agent retrieves local evidence first, then uses web search for clearly separ
 ReAct-RAG/
 ├── config.py        # central config (Bedrock models, chunking, paths)
 ├── ingest.py        # load → chunk → embed → persist (Chroma)
+├── chroma_batching.py  # shared bounded, deterministic Chroma upserts (all ingestion paths)
 ├── loaders/         # format-handler registry + per-format loaders
 │   ├── __init__.py        # auto-imports all handler modules
 │   ├── registry.py        # FormatHandler + register / handler_for / supported_extensions
@@ -394,10 +395,11 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 1204 tests (including SEC HTML Item extraction, the offline real-filing benchmark infrastructure suites, process-level fault injection, leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
+├── tests/           # 1258 tests (including bounded Chroma upserts, SEC HTML Item extraction, the offline real-filing benchmark infrastructure suites, process-level fault injection, leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
 │   ├── helpers/           # test-only process harness, fault actions, and child entry points
 │   ├── test_runtime_fault_injection.py
 │   ├── test_ingest.py
+│   ├── test_chroma_batching.py
 │   ├── test_tools.py
 │   ├── test_agent.py
 │   ├── test_audit.py
@@ -570,6 +572,7 @@ python -m pytest tests/ -v
 | File | Tests | What they cover |
 | --- | --- | --- |
 | `test_ingest.py` | 18 | Document loading (.txt, .md, .pdf), unsupported file skip, empty dir, chunking, metadata preservation, stable chunk-id derivation, idempotent re-splitting, markdown header-aware section titles, SEC `PART/ITEM` section detection, cross-page section carry-forward, table text formatting, document version/filter metadata, company/type inference precedence |
+| `test_chroma_batching.py` | 54 | Client batch-size discovery and fail-closed rejection of bool/zero/negative/non-integer/missing limits, explicit size override, payload-length and id validation, contiguous non-overlapping partitioning at and past the limit, byte-for-byte id/document/metadata preservation, empty input, no batch over the effective limit, over-limit payloads against the real client, first- and later-batch failure with accurate completed counts, error output free of client messages/ids/content/SQL/paths, production ingestion wiring, registry completion recorded only after the last batch, stale completion marker cleared, explicit rerun after a partial write, repeated ingestion producing no duplicates, unchanged duplicate/conflict semantics, and single-implementation/CI pinning |
 | `test_tools.py` | 13 | Local search retrieval, source metadata, metadata-filter inference, no-match handling, web search graceful degradation, markdown link output, no "date unavailable" noise, retriever documents, Chroma singleton, concurrent parallel search (thread safety), context policy admission and drop decisions reaching the report |
 | `test_agent.py` | 12 | Agent build, query output, local search routing, chat history, Result Summary format, company mismatch rejection, missing-company web fallback prompt rule, source display gating, deterministic external fallback |
 | `test_audit.py` | 7 | Retrieved chunk metadata parsing, enriched metadata header parsing, source extraction from tool traces, duplicate retrieved chunk suppression, JSONL audit record contents, synthetic fallback trace serialization, governance report nested in the audit record |
@@ -1223,13 +1226,17 @@ separately frozen holdout corpus, selected only after extraction v2 is frozen**
 and then verified, extracted, annotated, and evaluated without changing
 extraction v2.
 
-The immediate next steps are: human diagnostic annotation of the ten
-development pairs; fixing the separately tracked production Chroma batching
-defect ([ingest.py:669](ingest.py#L669), where a single unbatched
-`add_documents` call exceeds Chroma's max batch size on a real-filing-sized
-corpus); freezing a new unseen holdout corpus after extraction v2 is merged;
-and running source verification, extraction, annotation, and evaluation on that
-holdout without changing extraction v2.
+The production Chroma batching defect that this corpus exposed is now fixed:
+production and benchmark ingestion share one bounded-write helper
+([chroma_batching.py](chroma_batching.py), see
+[Bounded vector writes](#bounded-vector-writes)), so a real-filing-sized corpus
+no longer exceeds the client's max batch size.
+
+The remaining next steps, in order of dependency, are: human diagnostic
+annotation of the ten development pairs; **freezing a new unseen holdout
+corpus after extraction v2 is merged** — the single largest dependency for any
+benchmark claim; and running source verification, extraction, annotation, and
+evaluation on that holdout without changing extraction v2.
 
 What still does not exist is any completed real-filing evaluation, any
 extraction holdout corpus, any scheduler, job-processing daemon loop, automatic
@@ -1302,6 +1309,7 @@ Checked items are partially addressed in the current build. Unchecked items are 
 * [x] Durable filing identity ([filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml)): explicit per-filing `filing_id` distinct from the shared `document_family_id`, with `period_end`/`filing_date` taken only from declared manifest metadata — never inferred from filenames or mtimes
 * [x] Chunk-level idempotent re-ingestion (stable content-hash chunk IDs upsert instead of duplicating), plus registry-level exact-duplicate detection — a byte-identical file under a second name records a `duplicate` outcome and is not indexed twice
 * [x] Ingestion outcome manifest: every attempted source records `parsed` / `duplicate` / `failed` / `conflict` in the filing registry (atomic JSONL), including failed loads with a safe error code
+* [x] Bounded Chroma upserts ([chroma_batching.py](chroma_batching.py)) — production `docs/` ingestion, the real-filing benchmark builder, and the regression evaluator's fixture seeders all write through one shared helper; see [Bounded vector writes](#bounded-vector-writes) below
 * [x] Metadata filters by company, filing type, and year
 * [x] Document change impact analysis CLI (`scripts/document_impact.py`) — given a document change, reports which past queries used now-stale chunks via excerpt-fingerprint matching against the audit log; family-scoped (`--document-id`) with an explicit refusal when a family spans multiple filings, or filing-scoped (`--filing-id`)
 
@@ -1312,6 +1320,51 @@ Re-ingestion is also what stamps the new filing-identity metadata
 and populates `filing_registry/registry.jsonl` — a store ingested before this
 feature simply lacks those fields until you re-run ingestion (existing
 filters and answers keep working in the meantime).
+
+#### Bounded vector writes
+
+Chroma refuses a single write larger than the client's own maximum batch size,
+and one real 10-K produces roughly 5.8k chunks against a 5,461-item limit — so
+an unbounded upsert fails on exactly the documents this system is built for.
+Every ingestion path now writes through one shared helper,
+[chroma_batching.py](chroma_batching.py): production `ingest.embed_and_persist`,
+the real-filing benchmark builder, and the regression evaluator's fixture
+seeders. No caller invokes `add_documents` directly, and there is no second
+batching implementation.
+
+**Batch size is discovered, not guessed.** The helper asks the client
+(`get_max_batch_size`). A `bool`, a non-integer, a non-positive value, a raising
+client, or a client without the capability all fail closed with a stable
+configuration code rather than issuing an unbounded write — a guessed bound is
+not a bound, and a wrong guess reproduces the very failure this removes. Tests
+inject an explicit size; an operator can pass one too.
+
+**Partitioning is deterministic.** Batch *k* is `items[k*size:(k+1)*size]` — no
+overlap, no omission, no reordering. Chunk ids, chunk contents, metadata, and
+document order are byte-for-byte what the unbatched path produced; the helper
+does no chunking, normalization, sorting, deduplication, re-embedding, retry,
+sleeping, or parallelism. An exact multiple of the limit produces one final full
+batch, one item more produces a one-item tail, and an empty payload writes
+nothing.
+
+**Batches are not one transaction, and nothing here pretends otherwise.** If
+batch N fails, the records from batches 1..N-1 remain physically present in the
+store. What the system guarantees instead is that it never *claims* an
+ingestion it did not finish: `chunk_count` is the filing registry's completion
+marker, so it is cleared before the write and restored only after every batch
+succeeds. A failed run prints a stable code, exits non-zero, and leaves the
+filing reported incomplete by the detector.
+
+**Recovery is an explicit rerun.** Chunk ids are content-derived and stable, so
+re-running `python ingest.py` upserts the same ids over whatever landed and
+completes the rest. Nothing is retried, cleaned up, or deleted automatically.
+The supported claim is *deterministic idempotent upsert on explicit rerun* —
+**not** exactly-once vector insertion.
+
+Errors carry an operation label, a stable code, counters (total, batch index,
+batch count, completed items), and the client's exception *class name* only.
+They never carry the client's message, chunk ids, document text, metadata
+values, SQL, or filesystem paths.
 
 ### 4. Safer workflow controls
 
