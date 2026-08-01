@@ -1729,6 +1729,7 @@ def machine_proposed_annotation(
     current_section_hash: str,
     labels: list[dict[str, Any]],
     generated_by: str,
+    benchmark_id: str = BENCHMARK_ID,
 ) -> dict[str, Any]:
     """Build a MACHINE-PROPOSED annotation document.
 
@@ -1736,12 +1737,15 @@ def machine_proposed_annotation(
     is fixed to ``machine_proposed`` and identity fields are fixed to null. A
     human moves the file to ``human_verified`` by editing it and supplying
     their own identity and timestamp — which is the entire human-verification
-    boundary, expressed as a data invariant.
+    boundary, expressed as a data invariant. ``benchmark_id`` names the corpus
+    the proposal belongs to (development by default; the extraction holdout
+    passes its own id) — it changes attribution, never the machine/human
+    boundary.
     """
     document = {
         "schema_version": ANNOTATION_SCHEMA_VERSION,
         "annotation_protocol_version": ANNOTATION_PROTOCOL_VERSION,
-        "benchmark_id": BENCHMARK_ID,
+        "benchmark_id": benchmark_id,
         "pair_id": pair_id,
         "annotation_status": ANNOTATION_MACHINE_PROPOSED,
         "annotator_id": None,

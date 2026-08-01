@@ -111,17 +111,22 @@ jobs:
       # check rather than beside it. Its fixtures are hand-written generic HTML
       # structures — no real filing content exists in the repository.
       # The holdout suites validate the frozen holdout corpus
-      # (benchmarks/real_filing_holdout_v1), now at source_verified:
+      # (benchmarks/real_filing_holdout_v1), now at corpus_built:
       # deterministic selection over mocked official metadata, the frozen
-      # manifest's schema and denials (no extraction, no annotation, no
+      # manifest's schema and denials (no human-verified annotation, no
       # generalization claim), the closed metadata-endpoint allowlist that
-      # made filing bodies structurally unreachable during selection, and —
-      # since the source-verification step — mocked-transport acquisition
-      # behavior (frozen-identity drift refused, canonical official URLs
-      # only, digests over decoded bytes, one failed side blocks the
-      # transition) plus the committed manifest/report hash chain. Offline
-      # like the rest: CI never contacts SEC EDGAR, never supplies a user
-      # agent, and never downloads a filing body.
+      # made filing bodies structurally unreachable during selection,
+      # mocked-transport acquisition behavior (frozen-identity drift refused,
+      # canonical official URLs only, digests over decoded bytes, one failed
+      # side blocks the transition), and — since the blind extraction step —
+      # the blind-run pipeline over synthetic fixtures (all twenty sides
+      # attempted exactly once under byte-identical frozen code, outcomes
+      # preserved, comparison only for fully extracted pairs, packets only
+      # for detected pairs, everything machine_proposed) plus the committed
+      # blind-extraction reports and their manifest hash chain. CI validates
+      # the committed artifacts; it never rebuilds the real holdout corpus.
+      # Offline like the rest: CI never contacts SEC EDGAR, never supplies a
+      # user agent, and never downloads a filing body.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -132,7 +137,9 @@ jobs:
             tests/test_real_filing_holdout_selection.py \
             tests/test_real_filing_holdout_manifest.py \
             tests/test_real_filing_holdout_acquisition.py \
-            tests/test_real_filing_holdout_source_verification.py
+            tests/test_real_filing_holdout_source_verification.py \
+            tests/test_real_filing_holdout_blind_extraction.py \
+            tests/test_real_filing_holdout_build_report.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

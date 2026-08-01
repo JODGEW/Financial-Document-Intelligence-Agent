@@ -80,7 +80,7 @@ unconditionally until a holdout corpus is frozen *and* annotated.
 | Item 1A comparison workflow over real filings | **executed** — 10/10 pairs reached `detected` |
 | Human annotation | **not done** — zero labels are `human_verified`; 10 machine-proposed packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
-| Extraction holdout corpus | **frozen and source-verified** (`benchmarks/real_filing_holdout_v1/`, status `source_verified`) — all 20 bodies acquired from official sources and checksum-verified; the parser has **not** run over them, nothing extracted, nothing annotated |
+| Extraction holdout corpus | **frozen, source-verified, and blind-extracted** (`benchmarks/real_filing_holdout_v1/`, status `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; zero labels `human_verified`, no accuracy or generalization number exists |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -106,10 +106,18 @@ fabricated fact that later readers cannot distinguish from a real one.
    documents were acquired from official SEC sources and checksum-verified
    over decoded bytes; the holdout manifest advanced one step to
    `source_verified` (documented below). The parser has not run over them.
-5. **Run extraction, annotation, and evaluation on that holdout without
-   changing extraction v2.** If extraction is modified in response to holdout
+5. ~~Run the blind extraction on that holdout without changing extraction
+   v2.~~ **Done** — the frozen parser ran exactly once, unchanged, over all
+   twenty verified holdout sides: 18/20 extracted, 2 ambiguous (both sides of
+   one pair, preserved as observed); 9/10 pairs reached `detected` and have
+   machine-proposed packets; the holdout manifest advanced one step to
+   `corpus_built` (documented below).
+6. **Human annotation and gold evaluation of the holdout, with extraction v2
+   still unchanged.** If extraction is modified in response to holdout
    results, the holdout becomes a development corpus too and a fresh one is
-   required.
+   required. Until human-verified labels exist, holdout extraction COVERAGE
+   is not extraction CORRECTNESS and `generalization_claim_supported` stays
+   false.
 
 ### The prior null result, and what changed
 
@@ -273,11 +281,13 @@ loader uses the pre-existing `h1`/`h2`/`h3` path exactly as before.
 
 ---
 
-## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, SOURCE-VERIFIED
+## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, source-verified, BLIND-EXTRACTED
 
 `benchmarks/real_filing_holdout_v1/` holds the frozen holdout manifest
-(`real-filing-holdout.manifest.v1`, now status **`source_verified`**), its
-selection audit report, and its source-verification report. It exists because
+(`real-filing-holdout.manifest.v1`, now status **`corpus_built`**), its
+selection audit report, its source-verification report, and the three
+blind-extraction artifacts (`blind_extraction_report.json`,
+`execution_report.json`, `annotation_packet_inventory.json`). It exists because
 `real_filings_v1` is development data: its filings were inspected while
 `sec_html_item_headings.v2` was designed, so only a corpus whose exact filings
 were frozen *after* the parser was frozen and *before* anyone looked at their
@@ -328,12 +338,52 @@ bodies can ever say anything about generalization.
   sides fails, the manifest does **not** advance, the pair is **not**
   replaced, and a bounded failed report is written locally only; an explicit
   rerun reuses verified cache and continues.
-- **The parser has not run over these filings.** This commit cannot run it:
-  the acquisition module's import graph excludes `loaders`, `ingest`, Chroma,
-  and the comparison detector (a test pins this), and the parser source is
-  read only as bytes to re-verify its frozen hash. No extraction result, no
-  packet, no annotation, and no quality or generalization number exists for
-  this corpus.
+- At source verification the parser had not run over these filings: the
+  acquisition module's import graph excludes `loaders`, `ingest`, Chroma, and
+  the comparison detector (a test pins this), and the parser source is read
+  only as bytes to re-verify its frozen hash. The blind extraction below was
+  a later, separate step.
+
+**What `corpus_built` adds — the blind extraction run:**
+
+- `scripts/run_real_filing_holdout_blind_extraction.py` (offline; no network
+  code is reachable from its import graph) ran the frozen parser **exactly
+  once, unchanged**, over all twenty verified bodies, in one predeclared
+  execution: refuse on any frozen-identity drift (parser bytes, exclusions,
+  manifest hash chain), hash every frozen code file, re-verify all twenty
+  source checksums, run the EXISTING ingestion + extraction + comparison path
+  per pair in manifest order, recompute every frozen code hash, and require
+  exact equality. `blind_extraction_report.json` records the before/after
+  hashes (`frozen_code_unchanged: true`) and one bounded row per side.
+- **The blind result, preserved exactly as observed: 18/20 sides
+  `extracted`, 2 `ambiguous`, 0 `missing`, 0 `parse_failed`.** Both sides of
+  one pair (`sic-6000s-01`) are ambiguous: the parser itself found exactly
+  one substantive Item 1A heading (`single_substantive_item_heading`), but
+  the section key landed on two non-contiguous chunk runs, and which run is
+  "the" section is not deterministically decidable, so the frozen rules
+  refuse to guess. That pair **stays in the corpus, blocked and unrepaired**
+  — fixing it would require a parser change, which would convert this
+  holdout into development data, require freezing a parser v3, and require
+  selecting a NEW unseen holdout.
+- The existing comparison workflow ran for exactly the 9 fully extracted
+  pairs (never for the blocked pair — no detection attempt exists for it);
+  all 9 reached `detected`. Machine-proposed annotation packets exist for
+  those 9 pairs only; every annotation is `machine_proposed` with a null
+  annotator, and the committed inventory records packet hashes, section
+  hashes, unit counts, and the one blocked pair with its reason.
+- The manifest advanced exactly one step (`source_verified → corpus_built`):
+  status, role prose, and description — same pairs, same digests, same parser
+  version and parser-source hash, same protocol hash, same exclusions. The
+  blind-extraction report chains the source-verified manifest hash to the new
+  one, extending the freeze → verification → blind-run chain.
+- **What these artifacts may claim: blind extraction coverage only.** Exact
+  extracted / missing / ambiguous / parse-failed counts, the buildable pair
+  count, and packet availability. They claim no detector accuracy, no
+  annotation accuracy, no precision or recall of any kind, no generalization
+  of detector quality, and no Stage 3.5 completion: zero labels are
+  `human_verified`, so `extraction_holdout_evaluation` and
+  `generalization_claim_supported` remain false even at this coverage.
+  Coverage is not correctness.
 
 **Metadata-only selection protocol (`real-filing-holdout-selection.v1`).**
 Predeclared in `real_filing_holdout.selection_protocol()` and frozen by hash
@@ -378,24 +428,29 @@ and modifying parser v2 in response to holdout results converts the holdout
 into development data** — the pinned hash makes that conversion detectable,
 at which point a fresh holdout would be required.
 
-**What happens next, in order:** extraction v2 runs **unchanged** over the
-verified bodies (the blind extraction run — the first time the parser sees
-this corpus); humans annotate; the gold evaluator scores. Only after all of
-that could `extraction_holdout_evaluation` become true.
+**What happens next, in order:** humans review the nine machine-proposed
+packets (and the ambiguous pair's diagnostics) and produce `human_verified`
+annotations; the gold evaluator scores them with extraction v2 still
+unchanged. Only after all of that could `extraction_holdout_evaluation`
+become true.
 
-Holdout commands (networked, operator-run, never in CI; both require a
-descriptive `SEC_USER_AGENT`):
+Holdout commands (the first two are networked, operator-run, never in CI, and
+require a descriptive `SEC_USER_AGENT`; the third is offline and never in CI
+either — CI validates the committed artifacts and never rebuilds the real
+corpus):
 
 ```bash
 export SEC_USER_AGENT="Your Name your.email@your.org"
 python scripts/select_real_filing_holdout.py --allow-network    # done: the freeze (metadata only)
 python scripts/acquire_real_filing_holdout.py --allow-network   # done: source verification (bodies + checksums)
+python scripts/run_real_filing_holdout_blind_extraction.py      # done: the blind extraction run (offline)
 ```
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
-frozen and source-verified, but not extracted, not annotated, and not
-evaluated. The parser has not yet been run on the holdout, and no body-based
-parser change has occurred.
+frozen, source-verified, and blind-extracted, but not annotated and not
+evaluated. No body-based parser change has occurred: the parser source still
+hashes to the digest frozen before any body was seen, and the two ambiguous
+sides are preserved rather than repaired.
 
 ---
 

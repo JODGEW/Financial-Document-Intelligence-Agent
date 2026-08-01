@@ -51,29 +51,42 @@ def source_report():
 
 
 def test_manifest_advanced_exactly_one_step(manifest, source_report):
-    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
+    # The source-verification report still records ITS one step; the manifest
+    # has since taken exactly one further documented step (the blind
+    # extraction run, recorded by blind_extraction_report.json).
     assert source_report["prior_manifest_status"] == (
         rfh.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
     )
     assert source_report["new_manifest_status"] == rfb.STATUS_SOURCE_VERIFIED
-    # The step is a documented forward step on the holdout ladder.
     rfh.validate_holdout_status_transition(
         source_report["prior_manifest_status"],
         source_report["new_manifest_status"],
     )
+    rfh.validate_holdout_status_transition(
+        source_report["new_manifest_status"], manifest["status"]
+    )
+    assert manifest["status"] == rfb.STATUS_CORPUS_BUILT
     # And nothing beyond it is claimed.
-    assert manifest["status"] != rfb.STATUS_CORPUS_BUILT
     assert manifest["status"] != rfb.STATUS_HUMAN_ANNOTATION_COMPLETE
 
 
 def test_manifest_hash_chain_links_freeze_to_verification(
     selection_report, source_report
 ):
-    """selection freeze -> prior hash -> new hash -> committed bytes."""
+    """selection freeze -> source verification -> blind run -> committed
+    bytes: every link recorded by the report that performed the step."""
+    blind_report = json.loads(
+        (HOLDOUT_DIR / "blind_extraction_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert source_report["prior_manifest_sha256"] == (
         selection_report["holdout_manifest_sha256"]
     )
-    assert source_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
+    assert blind_report["prior_manifest_sha256"] == (
+        source_report["new_manifest_sha256"]
+    )
+    assert blind_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
     assert source_report["prior_manifest_sha256"] != (
         source_report["new_manifest_sha256"]
     )
@@ -93,7 +106,17 @@ def test_every_side_carries_a_real_verified_digest(manifest):
 
 
 def test_committed_manifest_still_passes_the_identity_gate(manifest):
-    rfha.verify_frozen_identity(manifest)
+    """The frozen identities still hold at corpus_built; the acquisition
+    gate itself now correctly refuses because acquisition has nothing left
+    to do beyond source verification."""
+    import real_filing_holdout_extraction as rfhe
+
+    rfhe.verify_blind_run_preconditions(
+        manifest, rfh.default_holdout_manifest_path()
+    )
+    with pytest.raises(rfha.HoldoutAcquisitionError) as excinfo:
+        rfha.verify_frozen_identity(manifest)
+    assert excinfo.value.code == rfha.FAILURE_STATUS_NOT_ACQUIRABLE
 
 
 # --- No pair was replaced -------------------------------------------------------
@@ -275,11 +298,21 @@ def test_generalization_language_appears_only_in_denials(name):
         )
 
 
-def test_prose_admits_acquisition_but_never_claims_extraction(manifest, source_report):
+def test_prose_admits_the_blind_run_but_never_claims_verification(
+    manifest, source_report
+):
     detail = manifest["corpus_role_detail"]
     assert "acquired" in detail  # the stale "never acquired" claim is gone
     assert "checksum-verified" in detail
-    assert "NOT run" in detail
+    # The stale "has NOT run" claim is gone too: the parser has now run,
+    # exactly once and unchanged, and the prose says so — while still denying
+    # everything that has not happened.
+    assert "exactly once" in detail
+    assert "blind" in detail
+    assert "No label has been human-" in detail
+    assert "no generalization claim is supported" in detail
+    # The source-verification report is a preserved historical record of ITS
+    # step, when the parser genuinely had not run.
     notes = " ".join(source_report["notes"])
     assert "NOT run" in notes
 
@@ -322,6 +355,9 @@ def test_filing_bodies_are_never_committed():
         "manifest.json",
         "selection_report.json",
         "source_verification_report.json",
+        "blind_extraction_report.json",
+        "execution_report.json",
+        "annotation_packet_inventory.json",
     }
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "benchmark_data/" in gitignore.splitlines()
