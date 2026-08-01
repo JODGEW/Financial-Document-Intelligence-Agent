@@ -95,8 +95,9 @@ fabricated fact that later readers cannot distinguish from a real one.
    the extracted sections and detected changes are correct on these filings.
    This is diagnostic evaluation of the development corpus; completing it does
    not produce a generalization claim and does not complete Stage 3.5.
-2. **Fix the separately tracked production Chroma batching defect**
-   ([ingest.py:669](ingest.py#L669), documented below).
+2. ~~Fix the production Chroma batching defect this corpus exposed.~~ **Done** —
+   production and benchmark ingestion now share one bounded-write helper
+   ([chroma_batching.py](chroma_batching.py), documented below).
 3. **Freeze a new unseen holdout corpus** — issuers and filings selected only
    *after* extraction v2 is merged and frozen, under the same selection
    protocol, with no one having inspected their HTML.
@@ -574,25 +575,41 @@ a number can always be traced to the exact inputs that produced it.
 
 ---
 
-## Known production ingestion issue: unbatched Chroma upsert
+## Bounded Chroma upserts (production and benchmark share one helper)
 
-**Not fixed in this change. It needs its own bounded commit.**
+This corpus is what exposed the defect. A single real 10-K produces roughly
+5.8k chunks, Chroma refuses one write larger than its client maximum batch size
+(5,461 on the installed client), and production `ingest.embed_and_persist` used
+to issue that write unbatched — so `python ingest.py` over a real-filing-sized
+corpus failed immediately while the four-file committed `docs/` corpus kept the
+defect latent.
 
-`ingest.embed_and_persist` upserts every chunk in a single
-`vectorstore.add_documents(...)` call ([ingest.py:669](ingest.py#L669)). Chroma
-refuses one upsert larger than its client max batch size (~5,461), and a single
-real 10-K comfortably exceeds it — the largest filing in this corpus produces
-roughly 5.8k chunks on its own.
+It is now fixed. Both paths call the same helper,
+[chroma_batching.py](chroma_batching.py); the benchmark builder's private
+`_add_in_batches` and its 4096 fallback constant are gone, and no ingestion
+caller invokes `add_documents` directly.
 
-Why it has not surfaced: the committed `docs/` corpus is four small files, and
-the benchmark builder carries its own `_add_in_batches` helper
-([scripts/build_real_filing_benchmark.py:147](scripts/build_real_filing_benchmark.py#L147)),
-so neither path reaches the limit. Anyone pointing production `python
-ingest.py` at a real-filing-sized corpus would hit it immediately.
+- **Discovered limit, not a constant.** The helper asks the client for its own
+  maximum. A `bool`, a non-integer, a non-positive value, a raising client, or
+  a client without the capability fail closed with a stable code instead of
+  issuing an unbounded write. The retired 4096 fallback was a guess, and a
+  guessed bound would not have been a bound.
+- **Deterministic partitioning.** Batch *k* is `items[k*size:(k+1)*size]`. Same
+  chunks, same stable ids, same order, same metadata as the unbatched path —
+  which is why every build hash, source hash, and section hash in this corpus
+  is unchanged by the deduplication.
+- **Not a transaction.** If a later batch fails, earlier batches remain in the
+  store. What is guaranteed is that the filing registry never *claims* an
+  ingestion that did not finish: `chunk_count` is the completion marker, so it
+  is cleared before the write and restored only after every batch succeeds.
+  Both `ingest.run()` and the benchmark builder follow that order.
+- **Explicit rerun is the recovery path.** Deterministic chunk ids upsert over
+  whatever landed. Nothing retries, cleans up, or deletes automatically. The
+  supported claim is deterministic idempotent upsert on explicit rerun, not
+  exactly-once vector insertion.
 
-The fix is to batch the production upsert the same way the builder already
-does — same chunks, same stable ids, same order, still idempotent. It is
-deliberately excluded here to keep this change scoped to heading extraction.
+Coverage is [tests/test_chroma_batching.py](tests/test_chroma_batching.py),
+which runs in the required `comparison-regression` check.
 
 ---
 

@@ -72,6 +72,16 @@ jobs:
             tests/test_api.py \
             tests/test_api_errors.py
 
+      # Bounded Chroma upserts. Ingestion is upstream of every comparison: if
+      # a write silently exceeded the client batch limit, or the filing
+      # registry claimed a complete ingestion that a failed batch never
+      # delivered, the detector would compare a partially indexed section. The
+      # suite is offline — a recording fake store plus a local Chroma with a
+      # deterministic stub embedding function, no AWS and no network — and is
+      # pinned to this list by a test inside it.
+      - name: Bounded Chroma upsert suite
+        run: python -m pytest -q tests/test_chroma_batching.py
+
       # Process-level fault injection: real OS processes, real SIGKILL, real
       # SQLite lock contention. Included in the required check rather than a
       # separate manual workflow because it is deterministic and bounded —

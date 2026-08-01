@@ -47,6 +47,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import chroma_batching  # noqa: E402
 import comparison_detector  # noqa: E402
 import comparison_export  # noqa: E402
 import comparison_governance  # noqa: E402
@@ -413,7 +414,9 @@ def _seed_chunk_fixture(fixture_path: Path, workdir: Path):
         persist_directory=str(workdir / "chroma"),
         embedding_function=_FixtureEmbeddings(),
     )
-    chroma.add_documents(documents=documents, ids=ids)
+    chroma_batching.add_documents_in_batches(
+        chroma, documents, ids, operation="eval_comparison_regression.chunk_fixture"
+    )
     return registry, chroma
 
 
@@ -433,14 +436,17 @@ def _seed_corpus_fixture(workdir: Path):
     for chunk in unique:
         rel = chunk.metadata.get("source_path")
         counts[rel] = counts.get(rel, 0) + 1
-    filing_registry.update_chunk_counts(counts, registry)
 
     chroma = Chroma(
         collection_name="regression_corpus",
         persist_directory=str(workdir / "chroma"),
         embedding_function=_FixtureEmbeddings(),
     )
-    chroma.add_documents(documents=unique, ids=ids)
+    # Bounded writes and completion-after-write, matching ingest.run().
+    chroma_batching.add_documents_in_batches(
+        chroma, unique, ids, operation="eval_comparison_regression.corpus_fixture"
+    )
+    filing_registry.update_chunk_counts(counts, registry)
     return registry, chroma
 
 

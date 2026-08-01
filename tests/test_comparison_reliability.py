@@ -3202,6 +3202,10 @@ _REQUIRED_CI_SUITES = (
     "tests/test_access_control.py",
     # Stage 3.5 process-level fault injection and restart/recovery validation
     "tests/test_runtime_fault_injection.py",
+    # Stage 3.5 bounded Chroma upserts: ingestion is upstream of every
+    # comparison, so an over-limit write or a premature completion marker
+    # would surface here as a partially indexed section.
+    "tests/test_chroma_batching.py",
     # Stage 3.5 real-filing benchmark INFRASTRUCTURE (offline; the required
     # check never acquires a filing and never contacts SEC EDGAR).
     "tests/test_real_filing_benchmark_schema.py",
