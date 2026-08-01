@@ -910,7 +910,7 @@ def test_v2_result_is_recorded_and_gold_evaluation_remains_unavailable():
 
 
 def test_documentation_states_the_development_corpus_limitation():
-    for doc in ("BENCHMARK.md", "README.md"):
+    for doc in ("BENCHMARK.md", "README.MD"):
         text = (REPO_ROOT / doc).read_text(encoding="utf-8")
         lowered = text.lower()
         assert "extraction_development_corpus" in lowered, doc
