@@ -58,8 +58,8 @@ def mutated(manifest):
 # --- The committed freeze -------------------------------------------------------
 
 
-def test_committed_manifest_validates_at_source_verified(manifest):
-    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
+def test_committed_manifest_validates_at_corpus_built(manifest):
+    assert manifest["status"] == rfb.STATUS_CORPUS_BUILT
     assert manifest["benchmark_id"] == "real_filing_holdout_v1"
     assert manifest["benchmark_id"] != rfb.BENCHMARK_ID
     assert len(manifest["pairs"]) == 10
@@ -185,16 +185,25 @@ def test_manifest_records_the_protocol_that_produced_it(manifest):
 
 def test_manifest_hash_chain_is_deterministic_and_unbroken(report):
     """The selection report froze the metadata-only bytes; the
-    source-verification report links that hash to the advanced bytes."""
+    source-verification report links that hash to the source-verified bytes;
+    the blind-extraction report links THAT hash to the corpus_built bytes."""
     source_report = json.loads(
         (HOLDOUT_DIR / "source_verification_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    blind_report = json.loads(
+        (HOLDOUT_DIR / "blind_extraction_report.json").read_text(
             encoding="utf-8"
         )
     )
     assert source_report["prior_manifest_sha256"] == (
         report["holdout_manifest_sha256"]
     )
-    assert source_report["new_manifest_sha256"] == (
+    assert blind_report["prior_manifest_sha256"] == (
+        source_report["new_manifest_sha256"]
+    )
+    assert blind_report["new_manifest_sha256"] == (
         rfh.holdout_manifest_hash(MANIFEST_PATH)
     )
     assert rfh.holdout_manifest_hash(MANIFEST_PATH) == (
@@ -453,15 +462,19 @@ def test_committed_artifacts_leak_no_credentials_paths_or_content():
 
 
 def test_holdout_corpus_stays_out_of_the_repository():
-    """Acquisition happened, so the gitignored corpus directory MAY exist
-    locally now — but filing bodies never enter the committed tree: the
-    benchmark directory holds exactly the three bounded JSON artifacts, and
+    """Acquisition and the blind run happened, so the gitignored corpus
+    directory MAY exist locally now — but filing bodies, extracted sections,
+    packets, and databases never enter the committed tree: the benchmark
+    directory holds exactly the six bounded JSON artifacts, and
     benchmark_data/ remains gitignored."""
     committed = {path.name for path in HOLDOUT_DIR.iterdir()}
     assert committed == {
         "manifest.json",
         "selection_report.json",
         "source_verification_report.json",
+        "blind_extraction_report.json",
+        "execution_report.json",
+        "annotation_packet_inventory.json",
     }
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "benchmark_data/" in gitignore.splitlines()

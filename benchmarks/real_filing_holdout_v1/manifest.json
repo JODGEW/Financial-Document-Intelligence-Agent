@@ -2,8 +2,8 @@
   "benchmark_id": "real_filing_holdout_v1",
   "benchmark_version": 1,
   "corpus_role": "extraction_holdout_corpus",
-  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was downloaded or inspected. The twenty frozen filing bodies have since been acquired from official SEC sources and checksum-verified, but the frozen parser has NOT run over them: no extraction, no annotation, and no holdout evaluation exists, and no generalization claim is supported. A selected pair is never replaced, and modifying the frozen parser in response to future holdout results would convert this corpus into development data.",
-  "description": "Extraction holdout at source_verified: exact issuers and filing pairs frozen from official SEC metadata AFTER sec_html_item_headings.v2 was frozen and BEFORE any selected filing body was observed; the twenty frozen bodies were then acquired from official SEC sources and checksum-verified over decoded canonical bytes. The frozen parser has NOT run over them: no extraction, annotation, accuracy, or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, or evaluation result.",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was observed. The twenty frozen bodies were acquired and checksum-verified, and the frozen parser has now run over them exactly once, blind and unchanged, with every extraction outcome recorded as it fell. No label has been human-verified: extraction COVERAGE on this corpus is not extraction CORRECTNESS, so no holdout evaluation exists yet and no generalization claim is supported. A selected pair is never replaced, and modifying the frozen parser in response to these results would convert this corpus into development data.",
+  "description": "Extraction holdout at corpus_built: exact issuers and filing pairs frozen from official SEC metadata AFTER sec_html_item_headings.v2 was frozen and BEFORE any selected filing body was observed; the twenty verified bodies have since been processed by the frozen parser exactly once, blind and unchanged, through the existing ingestion, extraction, and comparison path. Every outcome was recorded as observed. No human-verified label exists, so no accuracy, holdout-evaluation, or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, or evaluation result.",
   "development_exclusions": {
     "development_benchmark_id": "real_filing_v1",
     "excluded_accessions": [
@@ -378,6 +378,6 @@
   "selected_at": "2026-08-01T15:39:29.345427+00:00",
   "selection_protocol_hash": "3aa3c58229fec176d1d4198d1dc5698f2c6222047b046aec8ba16eaf083f3680",
   "selection_protocol_version": "real-filing-holdout-selection.v1",
-  "status": "source_verified",
+  "status": "corpus_built",
   "target_pair_count": 10
 }

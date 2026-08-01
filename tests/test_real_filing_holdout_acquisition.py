@@ -126,8 +126,23 @@ def run_full_acquisition(tmp_path, manifest=None):
 # --- Frozen-identity gate (drift is refused before any request) ------------------
 
 
+def source_verified_manifest() -> dict:
+    """The committed manifest rewound one step to source_verified: same
+    frozen identities and digests, the status acquisition still covers."""
+    document = copy.deepcopy(COMMITTED_MANIFEST)
+    document["status"] = rfb.STATUS_SOURCE_VERIFIED
+    rfh.validate_holdout_manifest(document)
+    return document
+
+
 def test_committed_manifest_passes_the_identity_gate():
-    rfha.verify_frozen_identity(COMMITTED_MANIFEST)
+    # The frozen identities still hold at every acquirable status; the
+    # committed manifest itself has legitimately moved one step beyond
+    # acquisition's reach (corpus_built), which the gate names precisely.
+    rfha.verify_frozen_identity(source_verified_manifest())
+    with pytest.raises(rfha.HoldoutAcquisitionError) as excinfo:
+        rfha.verify_frozen_identity(COMMITTED_MANIFEST)
+    assert excinfo.value.code == rfha.FAILURE_STATUS_NOT_ACQUIRABLE
 
 
 def test_parser_source_drift_is_rejected(tmp_path):
@@ -137,7 +152,9 @@ def test_parser_source_drift_is_rejected(tmp_path):
         "PARSER_VERSION = 'sec_html_item_headings.v3'\n", encoding="utf-8"
     )
     with pytest.raises(rfha.HoldoutAcquisitionError) as excinfo:
-        rfha.verify_frozen_identity(COMMITTED_MANIFEST, repo_root=fake_root)
+        rfha.verify_frozen_identity(
+            source_verified_manifest(), repo_root=fake_root
+        )
     assert excinfo.value.code == rfha.FAILURE_PARSER_SOURCE_DRIFT
 
 
@@ -155,7 +172,7 @@ def test_development_exclusion_drift_is_rejected():
     shrunk["pairs"] = shrunk["pairs"][:1]
     with pytest.raises(rfha.HoldoutAcquisitionError) as excinfo:
         rfha.verify_frozen_identity(
-            COMMITTED_MANIFEST, development_manifest=shrunk
+            source_verified_manifest(), development_manifest=shrunk
         )
     assert excinfo.value.code == rfha.FAILURE_EXCLUSION_DRIFT
 
@@ -447,18 +464,35 @@ def test_network_disabled_without_explicit_authorization(tmp_path):
     assert outcome["failure_code"] == rfa.FAILURE_NETWORK_DISABLED
 
 
-def test_cli_refuses_without_the_network_flag(capsys):
+def test_cli_refuses_the_already_completed_acquisition_phase(capsys):
+    """With the committed corpus_built manifest, acquisition has nothing to
+    do and says so — before any flag, agent, or transport is considered."""
     from scripts import acquire_real_filing_holdout as cli
 
     assert cli.main([]) == 2
+    assert rfha.FAILURE_STATUS_NOT_ACQUIRABLE in capsys.readouterr().err
+
+
+def test_cli_refuses_without_the_network_flag(tmp_path, capsys):
+    from scripts import acquire_real_filing_holdout as cli
+
+    manifest_path = tmp_path / "manifest.json"
+    rfb.write_json_atomic(manifest_path, source_verified_manifest())
+    assert cli.main(["--manifest", str(manifest_path)]) == 2
     assert "Network access is disabled" in capsys.readouterr().err
 
 
-def test_cli_rejects_a_placeholder_user_agent(capsys):
+def test_cli_rejects_a_placeholder_user_agent(tmp_path, capsys):
     from scripts import acquire_real_filing_holdout as cli
 
+    manifest_path = tmp_path / "manifest.json"
+    rfb.write_json_atomic(manifest_path, source_verified_manifest())
     code = cli.main(
-        ["--allow-network", "--user-agent", "Your Name your-email@example.com"]
+        [
+            "--manifest", str(manifest_path),
+            "--allow-network",
+            "--user-agent", "Your Name your-email@example.com",
+        ]
     )
     assert code == 2
     assert "Rejected SEC user agent" in capsys.readouterr().err

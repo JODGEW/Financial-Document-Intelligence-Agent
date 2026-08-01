@@ -295,6 +295,7 @@ def build_packet(
         current_section_hash=record["current"]["section_hash"] or "",
         labels=labels,
         generated_by=PACKET_GENERATOR,
+        benchmark_id=manifest["benchmark_id"],
     )
     rfb.validate_annotation_against_build(annotation, record)
     return packet, annotation
