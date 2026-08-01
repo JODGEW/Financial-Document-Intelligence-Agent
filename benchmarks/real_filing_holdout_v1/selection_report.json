@@ -1,0 +1,255 @@
+{
+  "annotation_packets": 0,
+  "benchmark_id": "real_filing_holdout_v1",
+  "benchmark_version": 1,
+  "candidate_universe_size": 8000,
+  "comparison_runs": 0,
+  "corpus_role": "extraction_holdout_corpus",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was downloaded or inspected. No filing body has been acquired and no extraction has run, so no holdout evaluation exists yet and no generalization claim is supported. Modifying the frozen parser in response to future holdout results would convert this corpus into development data.",
+  "development_exclusions_applied": {
+    "development_benchmark_id": "real_filing_v1",
+    "excluded_accession_count": 20,
+    "excluded_accessions": [
+      "0000018230-23-000011",
+      "0000018230-24-000009",
+      "0000019617-23-000231",
+      "0000019617-24-000225",
+      "0000034088-23-000020",
+      "0000034088-24-000018",
+      "0000080424-22-000064",
+      "0000080424-23-000073",
+      "0000200406-23-000016",
+      "0000200406-24-000013",
+      "0000320193-22-000108",
+      "0000320193-23-000106",
+      "0000354950-23-000059",
+      "0000354950-24-000062",
+      "0000732712-23-000012",
+      "0000732712-24-000010",
+      "0000753308-23-000019",
+      "0000753308-24-000008",
+      "0000950170-23-035122",
+      "0001564590-22-026876"
+    ],
+    "excluded_cik_count": 10,
+    "excluded_ciks": [
+      "0000018230",
+      "0000019617",
+      "0000034088",
+      "0000080424",
+      "0000200406",
+      "0000320193",
+      "0000354950",
+      "0000732712",
+      "0000753308",
+      "0000789019"
+    ]
+  },
+  "exclusion_counts": {
+    "sic_missing": 2,
+    "sic_outside_declared_strata": 4,
+    "stratum_full_deferred": 28
+  },
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": false,
+  "extraction_runs": 0,
+  "failures": [],
+  "filing_body_requests": 0,
+  "frozen_extraction_parser_version": "sec_html_item_headings.v2",
+  "frozen_parser_source_sha256": "9114365a2f40ebec4fbdff36c50dc3d31dea8dfd36a6987f08433ae9586a366a",
+  "generalization_claim_supported": false,
+  "generated_at": "2026-08-01T15:39:29.346764+00:00",
+  "holdout_manifest_sha256": "54fe4390f6ca39d51586ae1ea020896cfde36515fb7a5d4fa398e00ff1f5313e",
+  "human_verified_labels": 0,
+  "metadata_endpoints_contacted": {
+    "company_tickers": 1,
+    "companyfacts": 10,
+    "submissions": 44
+  },
+  "report_version": "real-filing-holdout.selection-report.v1",
+  "selected_pair_count": 10,
+  "selected_pairs": [
+    {
+      "cik": "0000001750",
+      "current_accession": "0001104659-24-080890",
+      "fallback_absorbed": false,
+      "issuer_name": "AAR CORP",
+      "previous_accession": "0001104659-23-082069",
+      "sic": 3720,
+      "stratum_id": "sic-3000s"
+    },
+    {
+      "cik": "0000001800",
+      "current_accession": "0001628280-25-007110",
+      "fallback_absorbed": false,
+      "issuer_name": "ABBOTT LABORATORIES",
+      "previous_accession": "0001628280-24-005348",
+      "sic": 2834,
+      "stratum_id": "sic-2000s"
+    },
+    {
+      "cik": "0000002098",
+      "current_accession": "0000950170-25-034843",
+      "fallback_absorbed": false,
+      "issuer_name": "ACME UNITED CORP",
+      "previous_accession": "0000950170-24-027907",
+      "sic": 3420,
+      "stratum_id": "sic-3000s"
+    },
+    {
+      "cik": "0000002969",
+      "current_accession": "0000002969-24-000056",
+      "fallback_absorbed": false,
+      "issuer_name": "Air Products & Chemicals, Inc.",
+      "previous_accession": "0000002969-23-000047",
+      "sic": 2810,
+      "stratum_id": "sic-2000s"
+    },
+    {
+      "cik": "0000003453",
+      "current_accession": "0001558370-25-001875",
+      "fallback_absorbed": false,
+      "issuer_name": "Matson, Inc.",
+      "previous_accession": "0001558370-24-001570",
+      "sic": 4400,
+      "stratum_id": "sic-4000s"
+    },
+    {
+      "cik": "0000003499",
+      "current_accession": "0000003499-25-000004",
+      "fallback_absorbed": false,
+      "issuer_name": "ALEXANDERS INC",
+      "previous_accession": "0000003499-24-000007",
+      "sic": 6798,
+      "stratum_id": "sic-6000s"
+    },
+    {
+      "cik": "0000003570",
+      "current_accession": "0000003570-25-000033",
+      "fallback_absorbed": false,
+      "issuer_name": "Cheniere Energy, Inc.",
+      "previous_accession": "0000003570-24-000040",
+      "sic": 4924,
+      "stratum_id": "sic-4000s"
+    },
+    {
+      "cik": "0000004962",
+      "current_accession": "0000004962-25-000016",
+      "fallback_absorbed": false,
+      "issuer_name": "AMERICAN EXPRESS CO",
+      "previous_accession": "0000004962-24-000013",
+      "sic": 6199,
+      "stratum_id": "sic-6000s"
+    },
+    {
+      "cik": "0000007536",
+      "current_accession": "0001558370-25-000781",
+      "fallback_absorbed": false,
+      "issuer_name": "ARROW ELECTRONICS, INC.",
+      "previous_accession": "0001558370-24-001018",
+      "sic": 5065,
+      "stratum_id": "sic-5000s"
+    },
+    {
+      "cik": "0000008858",
+      "current_accession": "0000008858-24-000030",
+      "fallback_absorbed": false,
+      "issuer_name": "AVNET INC",
+      "previous_accession": "0000008858-23-000029",
+      "sic": 5065,
+      "stratum_id": "sic-5000s"
+    }
+  ],
+  "selection_protocol": {
+    "body_access_rule": "Selection may contact ONLY the closed metadata endpoint allowlist. Filing primary documents, exhibits, inline XBRL documents, and every other filing-body resource are outside it and are never contacted.",
+    "candidate_universe": "Unique CIKs from the official company_tickers.json registrant list, ordered by normalized CIK ascending, then normalized legal issuer name (CIKs are unique, so the name key is a declared formality).",
+    "eligibility_check_order": [
+      "development_corpus_cik",
+      "submissions_unreadable",
+      "sic_missing",
+      "sic_outside_declared_strata",
+      "stratum_full_deferred",
+      "fiscal_year_metadata_unreadable",
+      "target_fiscal_year_missing",
+      "fiscal_year_metadata_ambiguous",
+      "paged_history_unreadable",
+      "no_10k_rows",
+      "target_row_not_form_10k",
+      "row_metadata_incomplete",
+      "development_corpus_accession",
+      "chronology_inconsistent",
+      "duplicate_selection"
+    ],
+    "fallback_rule": "Deferred candidates (stratum quota already full at probe time) are consumed in original universe order to absorb slots their home stratum could not fill; an absorbed slot is recorded under the absorbing candidate's own stratum. If fewer than target_pair_count pairs fill, or fewer than minimum_distinct_strata distinct strata result, the selection FAILS with per-stratum reason codes. The corpus size is never silently reduced and the protocol is never altered after partial resolution.",
+    "fiscal_year_rule": "A target row is the unique form 10-K accession whose official companyfacts fact rows designate fp='FY' and fy=<target year>. The filer's own XBRL designation decides the fiscal year; a period-end-year heuristic is never used.",
+    "form": "10-K",
+    "max_submissions_probes": 500,
+    "minimum_distinct_strata": 5,
+    "protocol_version": "real-filing-holdout-selection.v1",
+    "replacement_rule": "A selected issuer or filing pair is never replaced, reordered, or dropped because of later-observed filing-body structure, extraction outcome, detector output, annotation difficulty, or evaluation result.",
+    "sic_strata": [
+      {
+        "label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+        "quota": 2,
+        "sic_range": [
+          2000,
+          2999
+        ],
+        "stratum_id": "sic-2000s"
+      },
+      {
+        "label": "Manufacturing: industrial, electronic, transportation equipment",
+        "quota": 2,
+        "sic_range": [
+          3000,
+          3999
+        ],
+        "stratum_id": "sic-3000s"
+      },
+      {
+        "label": "Transportation, communications, and utilities",
+        "quota": 2,
+        "sic_range": [
+          4000,
+          4999
+        ],
+        "stratum_id": "sic-4000s"
+      },
+      {
+        "label": "Wholesale and retail trade",
+        "quota": 2,
+        "sic_range": [
+          5000,
+          5999
+        ],
+        "stratum_id": "sic-5000s"
+      },
+      {
+        "label": "Finance, insurance, and real estate",
+        "quota": 2,
+        "sic_range": [
+          6000,
+          6999
+        ],
+        "stratum_id": "sic-6000s"
+      }
+    ],
+    "target_current_fiscal_year": 2024,
+    "target_filing_count": 20,
+    "target_pair_count": 10,
+    "target_previous_fiscal_year": 2023
+  },
+  "selection_protocol_hash": "3aa3c58229fec176d1d4198d1dc5698f2c6222047b046aec8ba16eaf083f3680",
+  "selection_protocol_version": "real-filing-holdout-selection.v1",
+  "selection_succeeded": true,
+  "source_checksums_verified": 0,
+  "source_documents_downloaded": 0,
+  "stratum_distribution": {
+    "sic-2000s": 2,
+    "sic-3000s": 2,
+    "sic-4000s": 2,
+    "sic-5000s": 2,
+    "sic-6000s": 2
+  },
+  "submissions_probes": 44
+}
