@@ -94,6 +94,12 @@ REAL_FILING_BENCHMARK_DIR = os.getenv(
     "REAL_FILING_BENCHMARK_DIR",
     os.path.join(os.path.dirname(__file__), "benchmark_data", "real_filings_v1"),
 )
+# The extraction holdout's local corpus lives beside the development corpus,
+# under the same gitignored benchmark_data/ tree, and is never committed.
+REAL_FILING_HOLDOUT_DIR = os.getenv(
+    "REAL_FILING_HOLDOUT_DIR",
+    os.path.join(os.path.dirname(__file__), "benchmark_data", "real_filing_holdout_v1"),
+)
 SEC_USER_AGENT = os.getenv("SEC_USER_AGENT") or None
 
 # Document ingestion. Two-tier PII redaction dispatch:

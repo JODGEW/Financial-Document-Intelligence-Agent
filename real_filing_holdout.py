@@ -1471,6 +1471,14 @@ def _validate_holdout_side(
             f"{side_where}: a manifest beyond metadata-only must carry a "
             "real digest",
         )
+        _require(
+            payload["expected_sha256"] != rfb.PLACEHOLDER_SHA256,
+            HoldoutManifestError,
+            "holdout_side_placeholder_sha256",
+            f"{side_where}: the development schema's placeholder digest is "
+            "not a digest; a side beyond metadata-only carries the sha256 of "
+            "verified bytes or the manifest does not advance",
+        )
     return {
         "accession_number": accession,
         "filing_date": filing_date,
