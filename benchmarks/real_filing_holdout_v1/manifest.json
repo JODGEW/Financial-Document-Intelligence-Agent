@@ -1,0 +1,383 @@
+{
+  "benchmark_id": "real_filing_holdout_v1",
+  "benchmark_version": 1,
+  "corpus_role": "extraction_holdout_corpus",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was downloaded or inspected. No filing body has been acquired and no extraction has run, so no holdout evaluation exists yet and no generalization claim is supported. Modifying the frozen parser in response to future holdout results would convert this corpus into development data.",
+  "description": "Metadata-only extraction holdout: exact issuers and filing pairs frozen from official SEC metadata AFTER sec_html_item_headings.v2 was frozen and BEFORE any selected filing body was downloaded or structurally inspected. No filing body has been acquired, no checksum exists, no extraction has run, and no accuracy or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, or evaluation result.",
+  "development_exclusions": {
+    "development_benchmark_id": "real_filing_v1",
+    "excluded_accessions": [
+      "0000018230-23-000011",
+      "0000018230-24-000009",
+      "0000019617-23-000231",
+      "0000019617-24-000225",
+      "0000034088-23-000020",
+      "0000034088-24-000018",
+      "0000080424-22-000064",
+      "0000080424-23-000073",
+      "0000200406-23-000016",
+      "0000200406-24-000013",
+      "0000320193-22-000108",
+      "0000320193-23-000106",
+      "0000354950-23-000059",
+      "0000354950-24-000062",
+      "0000732712-23-000012",
+      "0000732712-24-000010",
+      "0000753308-23-000019",
+      "0000753308-24-000008",
+      "0000950170-23-035122",
+      "0001564590-22-026876"
+    ],
+    "excluded_ciks": [
+      "0000018230",
+      "0000019617",
+      "0000034088",
+      "0000080424",
+      "0000200406",
+      "0000320193",
+      "0000354950",
+      "0000732712",
+      "0000753308",
+      "0000789019"
+    ]
+  },
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": false,
+  "form": "10-K",
+  "frozen_extraction_parser_version": "sec_html_item_headings.v2",
+  "frozen_parser_source_path": "loaders/sec_headings.py",
+  "frozen_parser_source_sha256": "9114365a2f40ebec4fbdff36c50dc3d31dea8dfd36a6987f08433ae9586a366a",
+  "generalization_claim_supported": false,
+  "metadata_snapshot": {
+    "company_tickers_retrieved_at": "2026-08-01T15:38:34.618908+00:00",
+    "selected_at": "2026-08-01T15:39:29.345427+00:00"
+  },
+  "pairs": [
+    {
+      "cik": "0000001800",
+      "current": {
+        "accession_number": "0001628280-25-007110",
+        "expected_sha256": null,
+        "filing_date": "2025-02-21",
+        "form": "10-K",
+        "primary_document": "abt-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "ABBOTT LABORATORIES",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000001800.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000001800.json"
+      ],
+      "pair_id": "sic-2000s-01",
+      "previous": {
+        "accession_number": "0001628280-24-005348",
+        "expected_sha256": null,
+        "filing_date": "2024-02-16",
+        "form": "10-K",
+        "primary_document": "abt-20231231.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 2834,
+      "stratum_id": "sic-2000s",
+      "stratum_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000002969",
+      "current": {
+        "accession_number": "0000002969-24-000056",
+        "expected_sha256": null,
+        "filing_date": "2024-11-21",
+        "form": "10-K",
+        "primary_document": "apd-20240930.htm",
+        "reporting_period": "2024-09-30",
+        "source_verified": false
+      },
+      "issuer_name": "Air Products & Chemicals, Inc.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000002969.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000002969.json"
+      ],
+      "pair_id": "sic-2000s-02",
+      "previous": {
+        "accession_number": "0000002969-23-000047",
+        "expected_sha256": null,
+        "filing_date": "2023-11-16",
+        "form": "10-K",
+        "primary_document": "apd-20230930.htm",
+        "reporting_period": "2023-09-30",
+        "source_verified": false
+      },
+      "sic": 2810,
+      "stratum_id": "sic-2000s",
+      "stratum_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000001750",
+      "current": {
+        "accession_number": "0001104659-24-080890",
+        "expected_sha256": null,
+        "filing_date": "2024-07-19",
+        "form": "10-K",
+        "primary_document": "air-20240531x10k.htm",
+        "reporting_period": "2024-05-31",
+        "source_verified": false
+      },
+      "issuer_name": "AAR CORP",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000001750.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000001750.json"
+      ],
+      "pair_id": "sic-3000s-01",
+      "previous": {
+        "accession_number": "0001104659-23-082069",
+        "expected_sha256": null,
+        "filing_date": "2023-07-18",
+        "form": "10-K",
+        "primary_document": "air-20230531x10k.htm",
+        "reporting_period": "2023-05-31",
+        "source_verified": false
+      },
+      "sic": 3720,
+      "stratum_id": "sic-3000s",
+      "stratum_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000002098",
+      "current": {
+        "accession_number": "0000950170-25-034843",
+        "expected_sha256": null,
+        "filing_date": "2025-03-06",
+        "form": "10-K",
+        "primary_document": "acu-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "ACME UNITED CORP",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000002098.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000002098.json"
+      ],
+      "pair_id": "sic-3000s-02",
+      "previous": {
+        "accession_number": "0000950170-24-027907",
+        "expected_sha256": null,
+        "filing_date": "2024-03-07",
+        "form": "10-K",
+        "primary_document": "acu-20231231.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 3420,
+      "stratum_id": "sic-3000s",
+      "stratum_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000003453",
+      "current": {
+        "accession_number": "0001558370-25-001875",
+        "expected_sha256": null,
+        "filing_date": "2025-02-28",
+        "form": "10-K",
+        "primary_document": "matx-20241231x10k.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "Matson, Inc.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000003453.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000003453.json"
+      ],
+      "pair_id": "sic-4000s-01",
+      "previous": {
+        "accession_number": "0001558370-24-001570",
+        "expected_sha256": null,
+        "filing_date": "2024-02-23",
+        "form": "10-K",
+        "primary_document": "matx-20231231x10k.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 4400,
+      "stratum_id": "sic-4000s",
+      "stratum_label": "Transportation, communications, and utilities",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000003570",
+      "current": {
+        "accession_number": "0000003570-25-000033",
+        "expected_sha256": null,
+        "filing_date": "2025-02-20",
+        "form": "10-K",
+        "primary_document": "lng-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "Cheniere Energy, Inc.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000003570.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000003570.json"
+      ],
+      "pair_id": "sic-4000s-02",
+      "previous": {
+        "accession_number": "0000003570-24-000040",
+        "expected_sha256": null,
+        "filing_date": "2024-02-22",
+        "form": "10-K",
+        "primary_document": "lng-20231231.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 4924,
+      "stratum_id": "sic-4000s",
+      "stratum_label": "Transportation, communications, and utilities",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000007536",
+      "current": {
+        "accession_number": "0001558370-25-000781",
+        "expected_sha256": null,
+        "filing_date": "2025-02-11",
+        "form": "10-K",
+        "primary_document": "arw-20241231x10k.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "ARROW ELECTRONICS, INC.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000007536.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000007536.json"
+      ],
+      "pair_id": "sic-5000s-01",
+      "previous": {
+        "accession_number": "0001558370-24-001018",
+        "expected_sha256": null,
+        "filing_date": "2024-02-13",
+        "form": "10-K",
+        "primary_document": "arw-20231231x10k.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 5065,
+      "stratum_id": "sic-5000s",
+      "stratum_label": "Wholesale and retail trade",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000008858",
+      "current": {
+        "accession_number": "0000008858-24-000030",
+        "expected_sha256": null,
+        "filing_date": "2024-08-14",
+        "form": "10-K",
+        "primary_document": "avt-20240629x10k.htm",
+        "reporting_period": "2024-06-29",
+        "source_verified": false
+      },
+      "issuer_name": "AVNET INC",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000008858.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000008858.json"
+      ],
+      "pair_id": "sic-5000s-02",
+      "previous": {
+        "accession_number": "0000008858-23-000029",
+        "expected_sha256": null,
+        "filing_date": "2023-08-18",
+        "form": "10-K",
+        "primary_document": "avt-20230701x10k.htm",
+        "reporting_period": "2023-07-01",
+        "source_verified": false
+      },
+      "sic": 5065,
+      "stratum_id": "sic-5000s",
+      "stratum_label": "Wholesale and retail trade",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000003499",
+      "current": {
+        "accession_number": "0000003499-25-000004",
+        "expected_sha256": null,
+        "filing_date": "2025-02-10",
+        "form": "10-K",
+        "primary_document": "alx-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "ALEXANDERS INC",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000003499.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000003499.json"
+      ],
+      "pair_id": "sic-6000s-01",
+      "previous": {
+        "accession_number": "0000003499-24-000007",
+        "expected_sha256": null,
+        "filing_date": "2024-02-12",
+        "form": "10-K",
+        "primary_document": "alx-20231231.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 6798,
+      "stratum_id": "sic-6000s",
+      "stratum_label": "Finance, insurance, and real estate",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    },
+    {
+      "cik": "0000004962",
+      "current": {
+        "accession_number": "0000004962-25-000016",
+        "expected_sha256": null,
+        "filing_date": "2025-02-07",
+        "form": "10-K",
+        "primary_document": "axp-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "AMERICAN EXPRESS CO",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000004962.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000004962.json"
+      ],
+      "pair_id": "sic-6000s-02",
+      "previous": {
+        "accession_number": "0000004962-24-000013",
+        "expected_sha256": null,
+        "filing_date": "2024-02-09",
+        "form": "10-K",
+        "primary_document": "axp-20231231.htm",
+        "reporting_period": "2023-12-31",
+        "source_verified": false
+      },
+      "sic": 6199,
+      "stratum_id": "sic-6000s",
+      "stratum_label": "Finance, insurance, and real estate",
+      "target_current_fiscal_year": 2024,
+      "target_previous_fiscal_year": 2023
+    }
+  ],
+  "schema_version": "real-filing-holdout.manifest.v1",
+  "selected_at": "2026-08-01T15:39:29.345427+00:00",
+  "selection_protocol_hash": "3aa3c58229fec176d1d4198d1dc5698f2c6222047b046aec8ba16eaf083f3680",
+  "selection_protocol_version": "real-filing-holdout-selection.v1",
+  "status": "holdout_frozen_metadata_only",
+  "target_pair_count": 10
+}

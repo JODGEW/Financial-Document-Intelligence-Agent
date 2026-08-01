@@ -1232,11 +1232,29 @@ production and benchmark ingestion share one bounded-write helper
 [Bounded vector writes](#bounded-vector-writes)), so a real-filing-sized corpus
 no longer exceeds the client's max batch size.
 
+**That holdout corpus is now frozen — metadata-only.**
+`benchmarks/real_filing_holdout_v1/` (status `holdout_frozen_metadata_only`)
+freezes ten new issuer pairs — twenty primary 10-K filings across five closed
+SIC strata, none of them a `real_filings_v1` issuer or accession — selected by
+a predeclared deterministic protocol
+([real_filing_holdout.py](real_filing_holdout.py)) over **official SEC
+metadata only**: the registrant list, submissions history (paged), and the
+filer's own XBRL fiscal-year designations. A closed URL allowlist makes filing
+bodies structurally unreachable during selection, and the committed selection
+report records `filing_body_requests = 0`. **No filing body has been
+downloaded, no checksum exists (`expected_sha256` is null, `source_verified`
+is false), no extraction has run, and no holdout result of any kind exists** —
+`extraction_holdout_evaluation = false` and `generalization_claim_supported =
+false` remain machine-readable in the manifest. The frozen parser version and
+a hash of its source are pinned in the manifest so that modifying extraction
+v2 in response to future holdout results is detectable — doing so would
+convert the holdout into development data.
+
 The remaining next steps, in order of dependency, are: human diagnostic
-annotation of the ten development pairs; **freezing a new unseen holdout
-corpus after extraction v2 is merged** — the single largest dependency for any
-benchmark claim; and running source verification, extraction, annotation, and
-evaluation on that holdout without changing extraction v2.
+annotation of the ten development pairs; acquiring and source-verifying the
+frozen holdout's twenty bodies from official sources; and running extraction,
+annotation, and evaluation on that holdout without changing extraction v2. No
+issuer may be replaced after its body is observed.
 
 What still does not exist is any completed real-filing evaluation, any
 extraction holdout corpus, any scheduler, job-processing daemon loop, automatic

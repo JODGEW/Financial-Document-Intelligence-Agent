@@ -80,7 +80,7 @@ unconditionally until a holdout corpus is frozen *and* annotated.
 | Item 1A comparison workflow over real filings | **executed** — 10/10 pairs reached `detected` |
 | Human annotation | **not done** — zero labels are `human_verified`; 10 machine-proposed packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
-| Extraction holdout corpus | **does not exist** — required for Stage 3.5 completion |
+| Extraction holdout corpus | **frozen, metadata-only** (`benchmarks/real_filing_holdout_v1/`, status `holdout_frozen_metadata_only`) — bodies not acquired, nothing extracted, nothing annotated |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -98,9 +98,10 @@ fabricated fact that later readers cannot distinguish from a real one.
 2. ~~Fix the production Chroma batching defect this corpus exposed.~~ **Done** —
    production and benchmark ingestion now share one bounded-write helper
    ([chroma_batching.py](chroma_batching.py), documented below).
-3. **Freeze a new unseen holdout corpus** — issuers and filings selected only
-   *after* extraction v2 is merged and frozen, under the same selection
-   protocol, with no one having inspected their HTML.
+3. ~~Freeze a new unseen holdout corpus.~~ **Done, metadata-only** — ten
+   issuer pairs frozen from official SEC metadata after extraction v2 was
+   merged, with no one having inspected their HTML
+   (`benchmarks/real_filing_holdout_v1/`, documented below).
 4. **Run source verification, extraction, annotation, and evaluation on that
    holdout without changing extraction v2.** If extraction is modified in
    response to holdout results, the holdout becomes a development corpus too
@@ -265,6 +266,99 @@ been verified.
 
 Generic HTML documents are unaffected: with no substantive Item heading, the
 loader uses the pre-existing `h1`/`h2`/`h3` path exactly as before.
+
+---
+
+## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, METADATA-ONLY
+
+`benchmarks/real_filing_holdout_v1/` holds the frozen holdout manifest
+(`real-filing-holdout.manifest.v1`, status **`holdout_frozen_metadata_only`**)
+and its selection audit report. It exists because `real_filings_v1` is
+development data: its filings were inspected while `sec_html_item_headings.v2`
+was designed, so only a corpus whose exact filings were frozen *after* the
+parser was frozen and *before* anyone looked at their bodies can ever say
+anything about generalization.
+
+**What `holdout_frozen_metadata_only` means, exactly:**
+
+- Exact issuers and exact filing pairs are frozen: 10 issuer pairs, 20 primary
+  10-K filings, two consecutive annual 10-Ks per issuer, CIKs, accession
+  numbers, filing dates, reporting periods, and primary-document filenames all
+  resolved from official SEC metadata.
+- **No filing body has been downloaded or inspected.** `expected_sha256` is
+  null on every side and `source_verified` is false everywhere — no bytes
+  exist, so no checksum can. The gitignored corpus directory for this
+  benchmark does not exist yet.
+- Nothing has been extracted, compared, packeted, or annotated. The selection
+  report's counters say so: `filing_body_requests = 0`,
+  `source_documents_downloaded = 0`, `extraction_runs = 0`,
+  `comparison_runs = 0`, `annotation_packets = 0`,
+  `human_verified_labels = 0`.
+- `corpus_role = extraction_holdout_corpus`,
+  `extraction_parser_developed_using_this_corpus = false`,
+  `extraction_holdout_evaluation = false`, and
+  `generalization_claim_supported = false`. The last two stay false until
+  bodies are acquired, extraction v2 runs unchanged, and a human verifies
+  labels. Being *eligible* to support an out-of-sample claim is not the claim.
+
+**Metadata-only selection protocol (`real-filing-holdout-selection.v1`).**
+Predeclared in `real_filing_holdout.selection_protocol()` and frozen by hash
+into the manifest before any candidate was resolved:
+
+- **Universe:** unique CIKs from the official `company_tickers.json`
+  registrant list, ordered by normalized CIK ascending, then normalized legal
+  issuer name (a declared formality — CIKs are unique).
+- **Strata:** five closed, non-overlapping SIC ranges, two issuers each —
+  `sic-2000s` [2000–2999], `sic-3000s` [3000–3999], `sic-4000s` [4000–4999],
+  `sic-5000s` [5000–5999], `sic-6000s` [6000–6999].
+- **Target filings:** the issuer's FY2023 and FY2024 annual 10-Ks, where the
+  fiscal year is the **filer's own XBRL designation** (`fy`/`fp` on official
+  companyfacts fact rows), never a period-end-year heuristic. Exactly one
+  original form `10-K` per target year; `10-K/A` amendments can never match;
+  `20-F`/`40-F` are never substituted.
+- **Exclusions, in declared order:** every development-corpus CIK, every
+  development-corpus accession (both derived from the committed
+  `real_filing_v1` manifest, not retyped), missing SIC, SIC outside the
+  declared strata, unresolvable or ambiguous fiscal-year metadata, missing or
+  incomplete filing rows (paged submissions history is read when needed; an
+  unreadable page excludes the issuer rather than truncating its history),
+  inconsistent chronology, and duplicates of any already-selected issuer,
+  CIK, accession, or primary document.
+- **Fallback, predeclared:** deferred candidates (whose stratum was already
+  full) absorb unfillable slots in original universe order. If ten pairs
+  cannot fill, or fewer than five distinct strata result, the selection
+  **fails** with a committed failure report — the corpus is never silently
+  smaller and the protocol is never altered after partial resolution.
+- **Body access is structurally impossible during selection:** every URL must
+  match a closed allowlist (`company_tickers.json`, `submissions/CIK*.json`
+  and its pages, `api/xbrl/companyfacts/CIK*.json`). A
+  `www.sec.gov/Archives/...` primary-document URL has no matching pattern and
+  is refused before any transport is consulted. Tests prove the selection
+  contacts only declared metadata endpoints.
+
+**The frozen parser is part of the freeze.** The manifest records
+`frozen_extraction_parser_version = sec_html_item_headings.v2` and the SHA-256
+of `loaders/sec_headings.py` at freeze time, and a test recomputes that hash on
+every CI run. **No issuer may be replaced after any future body observation,
+and modifying parser v2 in response to holdout results converts the holdout
+into development data** — the pinned hash makes that conversion detectable,
+at which point a fresh holdout would be required.
+
+**What happens next, in order:** a later, separate acquisition step downloads
+the twenty bodies from official sources and records real digests
+(`holdout_frozen_metadata_only → source_verified`); extraction v2 runs
+**unchanged**; humans annotate; the gold evaluator scores. Only after all of
+that could `extraction_holdout_evaluation` become true.
+
+Selection command (the only new networked command; metadata endpoints only):
+
+```bash
+export SEC_USER_AGENT="Your Name your.email@your.org"
+python scripts/select_real_filing_holdout.py --allow-network
+```
+
+**Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
+frozen but not acquired, not extracted, not annotated, and not evaluated.
 
 ---
 
@@ -536,8 +630,12 @@ The merge-blocking required check remains **`comparison-regression`**, and the
 **synthetic comparison regression suite remains the deterministic gate**. Its
 offline benchmark step covers manifest and annotation schemas, mocked-HTTP
 acquisition, corpus build over tiny synthetic HTML fixtures, SEC-style Item
-heading extraction (`tests/test_sec_html_item_extraction.py`), and evaluator
-refusal/metric behavior.
+heading extraction (`tests/test_sec_html_item_extraction.py`), evaluator
+refusal/metric behavior, and the metadata-only holdout: deterministic
+selection over mocked official metadata
+(`tests/test_real_filing_holdout_selection.py`) and the frozen holdout
+manifest's schema and denials
+(`tests/test_real_filing_holdout_manifest.py`).
 
 The extraction suite is in the required check deliberately: heading recognition
 decides *which text is compared*, so a regression there would silently change
@@ -621,6 +719,15 @@ which runs in the required `comparison-regression` check.
   extraction_development_corpus`, `generalization_claim_supported = false`).
   Extraction numbers over it are in-sample. A separately frozen holdout corpus
   is required.
+- **The holdout corpus is frozen but metadata-only.** `real_filing_holdout_v1`
+  freezes exact issuers and filing pairs, but no body has been acquired, no
+  checksum exists, no extraction has run over it, and it has produced no
+  result of any kind. It cannot support any claim until it is acquired,
+  extracted unchanged, and human-annotated.
+- The holdout universe is the official registrant ticker list, scanned in
+  ascending-CIK order — a deterministic rule that skews the selection toward
+  long-registered issuers. It is controlled, not representative, exactly like
+  the development corpus.
 - Item 1A only. No other SEC section is extracted or compared.
 - 10-K only; amendments excluded from v1.
 - 10 pairs across 10 large-cap issuers. Small, controlled, and not
