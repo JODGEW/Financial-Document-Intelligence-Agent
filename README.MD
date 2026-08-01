@@ -658,7 +658,7 @@ Ten metrics are reported with explicit numerators and denominators: change preci
 
 A compact baseline lives at [eval/comparison_regression_baseline.json](eval/comparison_regression_baseline.json) — versions, per-metric values with denominators, gate configuration, and each fixture's stable detector result hash, not an opaque output snapshot. A normal run never rewrites it; it prints a human-readable diff instead. Regeneration requires `--write-baseline`, which **refuses to run in CI**, so blessing a behavior change is always an explicit human commit whose label, threshold, and metric edits appear as ordinary reviewed Git diffs. A detector or workflow version change is visible in the baseline's version block and does not automatically bless changed metrics.
 
-**These metrics are not evidence of real-world SEC filing accuracy.** They measure whether deterministic behavior over a controlled synthetic corpus has drifted. A controlled real-public-filing benchmark process now exists ([BENCHMARK.md](BENCHMARK.md)) — frozen manifest, official-source acquisition, checksum verification, Item 1A extraction, machine-proposed annotation packets, explicit human verification, and a gold evaluator that refuses to score anything a person has not verified. **Its corpus has been acquired and built but not annotated: zero labels are `human_verified`, so no real-filing accuracy number exists.** That corpus is also an extraction *development* corpus — its filings were inspected while the SEC Item heading parser was written — so its 20/20 extraction result is in-sample and is not evidence of generalization (`generalization_claim_supported = false`); a separately frozen holdout corpus is still required. Inter-annotator agreement is not implemented (one annotator per pair), and per-section metrics beyond Item 1A remain future work.
+**These metrics are not evidence of real-world SEC filing accuracy.** They measure whether deterministic behavior over a controlled synthetic corpus has drifted. A controlled real-public-filing benchmark process now exists ([BENCHMARK.md](BENCHMARK.md)) — frozen manifest, official-source acquisition, checksum verification, Item 1A extraction, machine-proposed annotation packets, explicit human verification, and a gold evaluator that refuses to score anything a person has not verified. **Its corpus has been acquired and built but not annotated: zero labels are `human_verified`, so no real-filing accuracy number exists.** That corpus is also an extraction *development* corpus — its filings were inspected while the SEC Item heading parser was written — so its 20/20 extraction result is in-sample and is not evidence of generalization (`generalization_claim_supported = false`); a separately frozen holdout corpus (`real_filing_holdout_v1`, now source-verified with all twenty bodies checksum-verified but not yet extracted or annotated) exists for that purpose. Inter-annotator agreement is not implemented (one annotator per pair), and per-section metrics beyond Item 1A remain future work.
 
 ---
 
@@ -1232,36 +1232,43 @@ production and benchmark ingestion share one bounded-write helper
 [Bounded vector writes](#bounded-vector-writes)), so a real-filing-sized corpus
 no longer exceeds the client's max batch size.
 
-**That holdout corpus is now frozen — metadata-only.**
-`benchmarks/real_filing_holdout_v1/` (status `holdout_frozen_metadata_only`)
-freezes ten new issuer pairs — twenty primary 10-K filings across five closed
-SIC strata, none of them a `real_filings_v1` issuer or accession — selected by
-a predeclared deterministic protocol
+**That holdout corpus is now frozen and source-verified.**
+`benchmarks/real_filing_holdout_v1/` (frozen at `holdout_frozen_metadata_only`,
+now status `source_verified`) freezes ten new issuer pairs — twenty primary
+10-K filings across five closed SIC strata, none of them a `real_filings_v1`
+issuer or accession — selected by a predeclared deterministic protocol
 ([real_filing_holdout.py](real_filing_holdout.py)) over **official SEC
 metadata only**: the registrant list, submissions history (paged), and the
-filer's own XBRL fiscal-year designations. A closed URL allowlist makes filing
+filer's own XBRL fiscal-year designations. A closed URL allowlist made filing
 bodies structurally unreachable during selection, and the committed selection
-report records `filing_body_requests = 0`. **No filing body has been
-downloaded, no checksum exists (`expected_sha256` is null, `source_verified`
-is false), no extraction has run, and no holdout result of any kind exists** —
+report records `filing_body_requests = 0`. The twenty frozen bodies have since
+been acquired from their canonical official EDGAR URLs and
+**checksum-verified over decoded bytes**
+([real_filing_holdout_acquisition.py](real_filing_holdout_acquisition.py),
+digests reproducible across two independent downloads, bodies gitignored under
+`benchmark_data/`), advancing the manifest exactly one step with the same
+pairs, parser hash, protocol hash, and exclusions. **The parser has not yet
+been run on the holdout: no extraction has run, no annotation exists, and no
+holdout quality or generalization result of any kind exists** —
 `extraction_holdout_evaluation = false` and `generalization_claim_supported =
 false` remain machine-readable in the manifest. The frozen parser version and
 a hash of its source are pinned in the manifest so that modifying extraction
 v2 in response to future holdout results is detectable — doing so would
-convert the holdout into development data.
+convert the holdout into development data. No body-based parser change has
+occurred.
 
 The remaining next steps, in order of dependency, are: human diagnostic
-annotation of the ten development pairs; acquiring and source-verifying the
-frozen holdout's twenty bodies from official sources; and running extraction,
-annotation, and evaluation on that holdout without changing extraction v2. No
-issuer may be replaced after its body is observed.
+annotation of the ten development pairs; and the blind extraction run —
+extraction, annotation, and evaluation on the source-verified holdout without
+changing extraction v2. No issuer may be replaced now that bodies have been
+observed.
 
-What still does not exist is any completed real-filing evaluation, any
-extraction holdout corpus, any scheduler, job-processing daemon loop, automatic
+What still does not exist is any completed real-filing evaluation, any holdout
+extraction result, any scheduler, job-processing daemon loop, automatic
 background invocation, external queue, container/cloud deployment
 infrastructure, or multi-node coordination. Maturity therefore remains **Stage
-3**. Stage 3.5 remains in progress until an unseen holdout corpus is
-source-verified, human-annotated, evaluated, and reviewed.
+3**. Stage 3.5 remains in progress until the source-verified holdout corpus is
+extracted unchanged, human-annotated, evaluated, and reviewed.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 

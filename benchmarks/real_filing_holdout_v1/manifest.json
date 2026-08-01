@@ -2,8 +2,8 @@
   "benchmark_id": "real_filing_holdout_v1",
   "benchmark_version": 1,
   "corpus_role": "extraction_holdout_corpus",
-  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was downloaded or inspected. No filing body has been acquired and no extraction has run, so no holdout evaluation exists yet and no generalization claim is supported. Modifying the frozen parser in response to future holdout results would convert this corpus into development data.",
-  "description": "Metadata-only extraction holdout: exact issuers and filing pairs frozen from official SEC metadata AFTER sec_html_item_headings.v2 was frozen and BEFORE any selected filing body was downloaded or structurally inspected. No filing body has been acquired, no checksum exists, no extraction has run, and no accuracy or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, or evaluation result.",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after the extraction parser was frozen and before any selected filing body was downloaded or inspected. The twenty frozen filing bodies have since been acquired from official SEC sources and checksum-verified, but the frozen parser has NOT run over them: no extraction, no annotation, and no holdout evaluation exists, and no generalization claim is supported. A selected pair is never replaced, and modifying the frozen parser in response to future holdout results would convert this corpus into development data.",
+  "description": "Extraction holdout at source_verified: exact issuers and filing pairs frozen from official SEC metadata AFTER sec_html_item_headings.v2 was frozen and BEFORE any selected filing body was observed; the twenty frozen bodies were then acquired from official SEC sources and checksum-verified over decoded canonical bytes. The frozen parser has NOT run over them: no extraction, annotation, accuracy, or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, or evaluation result.",
   "development_exclusions": {
     "development_benchmark_id": "real_filing_v1",
     "excluded_accessions": [
@@ -57,12 +57,12 @@
       "cik": "0000001800",
       "current": {
         "accession_number": "0001628280-25-007110",
-        "expected_sha256": null,
+        "expected_sha256": "09016178301dab675eceda362b843f1273bb2d8dd57960b69f18caa3cc2e03ce",
         "filing_date": "2025-02-21",
         "form": "10-K",
         "primary_document": "abt-20241231.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "ABBOTT LABORATORIES",
       "metadata_source_references": [
@@ -72,12 +72,12 @@
       "pair_id": "sic-2000s-01",
       "previous": {
         "accession_number": "0001628280-24-005348",
-        "expected_sha256": null,
+        "expected_sha256": "e9bc6cc293af9a87f2208597fbe5f032139c757fab95c0080d0cf00f4830a9ce",
         "filing_date": "2024-02-16",
         "form": "10-K",
         "primary_document": "abt-20231231.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 2834,
       "stratum_id": "sic-2000s",
@@ -89,12 +89,12 @@
       "cik": "0000002969",
       "current": {
         "accession_number": "0000002969-24-000056",
-        "expected_sha256": null,
+        "expected_sha256": "2405dcba4698f16b0f80acd72a533f7c4683355e4c15847ffd26e65aa52ac664",
         "filing_date": "2024-11-21",
         "form": "10-K",
         "primary_document": "apd-20240930.htm",
         "reporting_period": "2024-09-30",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "Air Products & Chemicals, Inc.",
       "metadata_source_references": [
@@ -104,12 +104,12 @@
       "pair_id": "sic-2000s-02",
       "previous": {
         "accession_number": "0000002969-23-000047",
-        "expected_sha256": null,
+        "expected_sha256": "b16bc5e2d6b1cef0b6180f26e6541f3891d54497dcba19fc931ec942321fb16e",
         "filing_date": "2023-11-16",
         "form": "10-K",
         "primary_document": "apd-20230930.htm",
         "reporting_period": "2023-09-30",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 2810,
       "stratum_id": "sic-2000s",
@@ -121,12 +121,12 @@
       "cik": "0000001750",
       "current": {
         "accession_number": "0001104659-24-080890",
-        "expected_sha256": null,
+        "expected_sha256": "e7056d88b19c33ca4bd1a309c0179911fcd190c71650c3f69c1ae5bc96c4e192",
         "filing_date": "2024-07-19",
         "form": "10-K",
         "primary_document": "air-20240531x10k.htm",
         "reporting_period": "2024-05-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "AAR CORP",
       "metadata_source_references": [
@@ -136,12 +136,12 @@
       "pair_id": "sic-3000s-01",
       "previous": {
         "accession_number": "0001104659-23-082069",
-        "expected_sha256": null,
+        "expected_sha256": "ad0ddbc83648a4c009bb9dd8751252c1cd5ba296caed38da0ffdc18d8b43065b",
         "filing_date": "2023-07-18",
         "form": "10-K",
         "primary_document": "air-20230531x10k.htm",
         "reporting_period": "2023-05-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 3720,
       "stratum_id": "sic-3000s",
@@ -153,12 +153,12 @@
       "cik": "0000002098",
       "current": {
         "accession_number": "0000950170-25-034843",
-        "expected_sha256": null,
+        "expected_sha256": "5384a7125eb0ea5527d28194b1bea9216f36a40d97ce658a0d6bbd16a427f3ea",
         "filing_date": "2025-03-06",
         "form": "10-K",
         "primary_document": "acu-20241231.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "ACME UNITED CORP",
       "metadata_source_references": [
@@ -168,12 +168,12 @@
       "pair_id": "sic-3000s-02",
       "previous": {
         "accession_number": "0000950170-24-027907",
-        "expected_sha256": null,
+        "expected_sha256": "6919005f7e319c0ca1b4dda992b65ed8ce1613a3e3ee27ab89bc00af4f5ffd1d",
         "filing_date": "2024-03-07",
         "form": "10-K",
         "primary_document": "acu-20231231.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 3420,
       "stratum_id": "sic-3000s",
@@ -185,12 +185,12 @@
       "cik": "0000003453",
       "current": {
         "accession_number": "0001558370-25-001875",
-        "expected_sha256": null,
+        "expected_sha256": "e4a507e6ecaa61414202a11eccb63ed14751814fc9b2f32086a6605e1d47258e",
         "filing_date": "2025-02-28",
         "form": "10-K",
         "primary_document": "matx-20241231x10k.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "Matson, Inc.",
       "metadata_source_references": [
@@ -200,12 +200,12 @@
       "pair_id": "sic-4000s-01",
       "previous": {
         "accession_number": "0001558370-24-001570",
-        "expected_sha256": null,
+        "expected_sha256": "5b6c9dbcda31da8ccb6879db153a3ef57660692ad1dd35293ce0ce709150ce4a",
         "filing_date": "2024-02-23",
         "form": "10-K",
         "primary_document": "matx-20231231x10k.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 4400,
       "stratum_id": "sic-4000s",
@@ -217,12 +217,12 @@
       "cik": "0000003570",
       "current": {
         "accession_number": "0000003570-25-000033",
-        "expected_sha256": null,
+        "expected_sha256": "d7b6d8d1255d1f085d483b88be81242345aa6ec6ec5a1defc1b2778bb59a593e",
         "filing_date": "2025-02-20",
         "form": "10-K",
         "primary_document": "lng-20241231.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "Cheniere Energy, Inc.",
       "metadata_source_references": [
@@ -232,12 +232,12 @@
       "pair_id": "sic-4000s-02",
       "previous": {
         "accession_number": "0000003570-24-000040",
-        "expected_sha256": null,
+        "expected_sha256": "723530e6500e40a694919d1e730d356898e68e9ea80d87e38a1710ab8475f70e",
         "filing_date": "2024-02-22",
         "form": "10-K",
         "primary_document": "lng-20231231.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 4924,
       "stratum_id": "sic-4000s",
@@ -249,12 +249,12 @@
       "cik": "0000007536",
       "current": {
         "accession_number": "0001558370-25-000781",
-        "expected_sha256": null,
+        "expected_sha256": "51f33c3263a5c3e2b5f191909b032e884e3a2c7ff133957bf0f4dc2d2206d7bc",
         "filing_date": "2025-02-11",
         "form": "10-K",
         "primary_document": "arw-20241231x10k.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "ARROW ELECTRONICS, INC.",
       "metadata_source_references": [
@@ -264,12 +264,12 @@
       "pair_id": "sic-5000s-01",
       "previous": {
         "accession_number": "0001558370-24-001018",
-        "expected_sha256": null,
+        "expected_sha256": "3cbb5467843595218cdd6c144c48e86452c387e2159051e47c3e96a0d1e146c3",
         "filing_date": "2024-02-13",
         "form": "10-K",
         "primary_document": "arw-20231231x10k.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 5065,
       "stratum_id": "sic-5000s",
@@ -281,12 +281,12 @@
       "cik": "0000008858",
       "current": {
         "accession_number": "0000008858-24-000030",
-        "expected_sha256": null,
+        "expected_sha256": "26bfd021526a3830ee214cc79606ef642032fca8a954b697d8560e1e86cbf038",
         "filing_date": "2024-08-14",
         "form": "10-K",
         "primary_document": "avt-20240629x10k.htm",
         "reporting_period": "2024-06-29",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "AVNET INC",
       "metadata_source_references": [
@@ -296,12 +296,12 @@
       "pair_id": "sic-5000s-02",
       "previous": {
         "accession_number": "0000008858-23-000029",
-        "expected_sha256": null,
+        "expected_sha256": "4efa059e582dff3d01ec68ce4678d84529fffd3c0b7747317b856cb1fa525358",
         "filing_date": "2023-08-18",
         "form": "10-K",
         "primary_document": "avt-20230701x10k.htm",
         "reporting_period": "2023-07-01",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 5065,
       "stratum_id": "sic-5000s",
@@ -313,12 +313,12 @@
       "cik": "0000003499",
       "current": {
         "accession_number": "0000003499-25-000004",
-        "expected_sha256": null,
+        "expected_sha256": "6adfbc9d041a294a498366f25825ae4c4b83fa81f22ba3fd03809bb70352a3af",
         "filing_date": "2025-02-10",
         "form": "10-K",
         "primary_document": "alx-20241231.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "ALEXANDERS INC",
       "metadata_source_references": [
@@ -328,12 +328,12 @@
       "pair_id": "sic-6000s-01",
       "previous": {
         "accession_number": "0000003499-24-000007",
-        "expected_sha256": null,
+        "expected_sha256": "d2b8a899506943a2f3617c71399a0b28357b13375caf75bdef9a111b062839ad",
         "filing_date": "2024-02-12",
         "form": "10-K",
         "primary_document": "alx-20231231.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 6798,
       "stratum_id": "sic-6000s",
@@ -345,12 +345,12 @@
       "cik": "0000004962",
       "current": {
         "accession_number": "0000004962-25-000016",
-        "expected_sha256": null,
+        "expected_sha256": "ec8f259942e5b433f9a8546e1069c6fac7042b0e4d53fbbcc1ea0338c54e2327",
         "filing_date": "2025-02-07",
         "form": "10-K",
         "primary_document": "axp-20241231.htm",
         "reporting_period": "2024-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "issuer_name": "AMERICAN EXPRESS CO",
       "metadata_source_references": [
@@ -360,12 +360,12 @@
       "pair_id": "sic-6000s-02",
       "previous": {
         "accession_number": "0000004962-24-000013",
-        "expected_sha256": null,
+        "expected_sha256": "16cd01b3fd2f8ee1146bdcbc1671303b50aa3656f411cbe6e83f41eb45f43d37",
         "filing_date": "2024-02-09",
         "form": "10-K",
         "primary_document": "axp-20231231.htm",
         "reporting_period": "2023-12-31",
-        "source_verified": false
+        "source_verified": true
       },
       "sic": 6199,
       "stratum_id": "sic-6000s",
@@ -378,6 +378,6 @@
   "selected_at": "2026-08-01T15:39:29.345427+00:00",
   "selection_protocol_hash": "3aa3c58229fec176d1d4198d1dc5698f2c6222047b046aec8ba16eaf083f3680",
   "selection_protocol_version": "real-filing-holdout-selection.v1",
-  "status": "holdout_frozen_metadata_only",
+  "status": "source_verified",
   "target_pair_count": 10
 }

@@ -80,7 +80,7 @@ unconditionally until a holdout corpus is frozen *and* annotated.
 | Item 1A comparison workflow over real filings | **executed** — 10/10 pairs reached `detected` |
 | Human annotation | **not done** — zero labels are `human_verified`; 10 machine-proposed packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
-| Extraction holdout corpus | **frozen, metadata-only** (`benchmarks/real_filing_holdout_v1/`, status `holdout_frozen_metadata_only`) — bodies not acquired, nothing extracted, nothing annotated |
+| Extraction holdout corpus | **frozen and source-verified** (`benchmarks/real_filing_holdout_v1/`, status `source_verified`) — all 20 bodies acquired from official sources and checksum-verified; the parser has **not** run over them, nothing extracted, nothing annotated |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -102,10 +102,14 @@ fabricated fact that later readers cannot distinguish from a real one.
    issuer pairs frozen from official SEC metadata after extraction v2 was
    merged, with no one having inspected their HTML
    (`benchmarks/real_filing_holdout_v1/`, documented below).
-4. **Run source verification, extraction, annotation, and evaluation on that
-   holdout without changing extraction v2.** If extraction is modified in
-   response to holdout results, the holdout becomes a development corpus too
-   and a fresh one is required.
+4. ~~Source-verify the holdout bodies.~~ **Done** — all twenty frozen primary
+   documents were acquired from official SEC sources and checksum-verified
+   over decoded bytes; the holdout manifest advanced one step to
+   `source_verified` (documented below). The parser has not run over them.
+5. **Run extraction, annotation, and evaluation on that holdout without
+   changing extraction v2.** If extraction is modified in response to holdout
+   results, the holdout becomes a development corpus too and a fresh one is
+   required.
 
 ### The prior null result, and what changed
 
@@ -269,37 +273,67 @@ loader uses the pre-existing `h1`/`h2`/`h3` path exactly as before.
 
 ---
 
-## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, METADATA-ONLY
+## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, SOURCE-VERIFIED
 
 `benchmarks/real_filing_holdout_v1/` holds the frozen holdout manifest
-(`real-filing-holdout.manifest.v1`, status **`holdout_frozen_metadata_only`**)
-and its selection audit report. It exists because `real_filings_v1` is
-development data: its filings were inspected while `sec_html_item_headings.v2`
-was designed, so only a corpus whose exact filings were frozen *after* the
-parser was frozen and *before* anyone looked at their bodies can ever say
-anything about generalization.
+(`real-filing-holdout.manifest.v1`, now status **`source_verified`**), its
+selection audit report, and its source-verification report. It exists because
+`real_filings_v1` is development data: its filings were inspected while
+`sec_html_item_headings.v2` was designed, so only a corpus whose exact filings
+were frozen *after* the parser was frozen and *before* anyone looked at their
+bodies can ever say anything about generalization.
 
-**What `holdout_frozen_metadata_only` means, exactly:**
+**The freeze (`holdout_frozen_metadata_only`, unchanged since selection):**
 
 - Exact issuers and exact filing pairs are frozen: 10 issuer pairs, 20 primary
   10-K filings, two consecutive annual 10-Ks per issuer, CIKs, accession
   numbers, filing dates, reporting periods, and primary-document filenames all
-  resolved from official SEC metadata.
-- **No filing body has been downloaded or inspected.** `expected_sha256` is
-  null on every side and `source_verified` is false everywhere — no bytes
-  exist, so no checksum can. The gitignored corpus directory for this
-  benchmark does not exist yet.
-- Nothing has been extracted, compared, packeted, or annotated. The selection
-  report's counters say so: `filing_body_requests = 0`,
-  `source_documents_downloaded = 0`, `extraction_runs = 0`,
-  `comparison_runs = 0`, `annotation_packets = 0`,
-  `human_verified_labels = 0`.
+  resolved from official SEC metadata. At freeze time no filing body had been
+  downloaded or inspected; `expected_sha256` was null on every side. The
+  selection report preserves that state (`filing_body_requests = 0`) and
+  records the SHA-256 of the metadata-only manifest bytes.
 - `corpus_role = extraction_holdout_corpus`,
   `extraction_parser_developed_using_this_corpus = false`,
   `extraction_holdout_evaluation = false`, and
   `generalization_claim_supported = false`. The last two stay false until
-  bodies are acquired, extraction v2 runs unchanged, and a human verifies
-  labels. Being *eligible* to support an out-of-sample claim is not the claim.
+  extraction v2 runs unchanged and a human verifies labels. Being *eligible*
+  to support an out-of-sample claim is not the claim.
+
+**What `source_verified` adds — and all it adds:**
+
+- The exact twenty frozen primary documents were downloaded from their
+  canonical official EDGAR URLs (`https://www.sec.gov/Archives/...`, derived
+  from the frozen CIK/accession/document fields, host `www.sec.gov` only) by
+  `scripts/acquire_real_filing_holdout.py`, using the existing acquisition
+  transport: validated `SEC_USER_AGENT`, paced requests, bounded transport
+  retry with a transient-status allowlist, `Retry-After` honored and capped,
+  and a redirect guard that refuses any redirect target off the official-host
+  allowlist.
+- Each SHA-256 is computed over the **decoded** entity bytes (never a gzip
+  transport container), written atomically, and confirmed by re-reading the
+  cached file before the digest is accepted. The checksums proved reproducible
+  across two independent downloads of all twenty documents.
+- The manifest advanced exactly one step
+  (`holdout_frozen_metadata_only → source_verified`): per-side
+  `expected_sha256` filled with the verified digests, per-side
+  `source_verified` set true, and nothing else — same pairs, same parser
+  version and parser-source hash, same selection-protocol hash, same
+  development-corpus exclusions. The source-verification report links the
+  metadata-only manifest hash to the new one, so the chain from freeze to
+  verification is checkable forever.
+- Filing bodies live only under the gitignored
+  `benchmark_data/real_filing_holdout_v1/` tree. A verified cached file is
+  reused instead of re-fetched; a cached file that disagrees with a recorded
+  digest is preserved and refused, never overwritten. If any one of the twenty
+  sides fails, the manifest does **not** advance, the pair is **not**
+  replaced, and a bounded failed report is written locally only; an explicit
+  rerun reuses verified cache and continues.
+- **The parser has not run over these filings.** This commit cannot run it:
+  the acquisition module's import graph excludes `loaders`, `ingest`, Chroma,
+  and the comparison detector (a test pins this), and the parser source is
+  read only as bytes to re-verify its frozen hash. No extraction result, no
+  packet, no annotation, and no quality or generalization number exists for
+  this corpus.
 
 **Metadata-only selection protocol (`real-filing-holdout-selection.v1`).**
 Predeclared in `real_filing_holdout.selection_protocol()` and frozen by hash
@@ -344,21 +378,24 @@ and modifying parser v2 in response to holdout results converts the holdout
 into development data** — the pinned hash makes that conversion detectable,
 at which point a fresh holdout would be required.
 
-**What happens next, in order:** a later, separate acquisition step downloads
-the twenty bodies from official sources and records real digests
-(`holdout_frozen_metadata_only → source_verified`); extraction v2 runs
-**unchanged**; humans annotate; the gold evaluator scores. Only after all of
+**What happens next, in order:** extraction v2 runs **unchanged** over the
+verified bodies (the blind extraction run — the first time the parser sees
+this corpus); humans annotate; the gold evaluator scores. Only after all of
 that could `extraction_holdout_evaluation` become true.
 
-Selection command (the only new networked command; metadata endpoints only):
+Holdout commands (networked, operator-run, never in CI; both require a
+descriptive `SEC_USER_AGENT`):
 
 ```bash
 export SEC_USER_AGENT="Your Name your.email@your.org"
-python scripts/select_real_filing_holdout.py --allow-network
+python scripts/select_real_filing_holdout.py --allow-network    # done: the freeze (metadata only)
+python scripts/acquire_real_filing_holdout.py --allow-network   # done: source verification (bodies + checksums)
 ```
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
-frozen but not acquired, not extracted, not annotated, and not evaluated.
+frozen and source-verified, but not extracted, not annotated, and not
+evaluated. The parser has not yet been run on the holdout, and no body-based
+parser change has occurred.
 
 ---
 
@@ -389,6 +426,11 @@ benchmark_data/real_filings_v1/
   annotations/<pair_id>.json                    the completed human file
   results/                                      local run outputs
 ```
+
+The holdout's local corpus mirrors the `sources/` half of this layout under
+`benchmark_data/real_filing_holdout_v1/` (same gitignore, same
+`acquisition.json` sidecars); it has no `build/`, `packets/`, or
+`annotations/` because nothing downstream of bytes-on-disk has run.
 
 `docs/` is the indexed corpus and **nothing from this benchmark goes there**.
 
@@ -631,11 +673,13 @@ The merge-blocking required check remains **`comparison-regression`**, and the
 offline benchmark step covers manifest and annotation schemas, mocked-HTTP
 acquisition, corpus build over tiny synthetic HTML fixtures, SEC-style Item
 heading extraction (`tests/test_sec_html_item_extraction.py`), evaluator
-refusal/metric behavior, and the metadata-only holdout: deterministic
-selection over mocked official metadata
-(`tests/test_real_filing_holdout_selection.py`) and the frozen holdout
-manifest's schema and denials
-(`tests/test_real_filing_holdout_manifest.py`).
+refusal/metric behavior, and the holdout: deterministic selection over mocked
+official metadata (`tests/test_real_filing_holdout_selection.py`), the frozen
+holdout manifest's schema and denials
+(`tests/test_real_filing_holdout_manifest.py`), mocked-transport holdout
+acquisition behavior (`tests/test_real_filing_holdout_acquisition.py`), and
+the committed source-verified artifacts' hash chain and claims
+(`tests/test_real_filing_holdout_source_verification.py`).
 
 The extraction suite is in the required check deliberately: heading recognition
 decides *which text is compared*, so a regression there would silently change
@@ -719,11 +763,12 @@ which runs in the required `comparison-regression` check.
   extraction_development_corpus`, `generalization_claim_supported = false`).
   Extraction numbers over it are in-sample. A separately frozen holdout corpus
   is required.
-- **The holdout corpus is frozen but metadata-only.** `real_filing_holdout_v1`
-  freezes exact issuers and filing pairs, but no body has been acquired, no
-  checksum exists, no extraction has run over it, and it has produced no
-  result of any kind. It cannot support any claim until it is acquired,
-  extracted unchanged, and human-annotated.
+- **The holdout corpus is source-verified but nothing more.**
+  `real_filing_holdout_v1` freezes exact issuers and filing pairs (initially
+  `holdout_frozen_metadata_only`), and its twenty bodies have now been
+  acquired from official sources and checksum-verified — but no extraction has
+  run over it and it has produced no result of any kind. It cannot support any
+  claim until it is extracted unchanged and human-annotated.
 - The holdout universe is the official registrant ticker list, scanned in
   ascending-CIK order — a deterministic rule that skews the selection toward
   long-registered issuers. It is controlled, not representative, exactly like

@@ -3,9 +3,11 @@
 The committed artifacts under ``benchmarks/real_filing_holdout_v1/`` are the
 pre-registration of the extraction holdout: exact issuers and filing pairs,
 frozen from official metadata AFTER ``sec_html_item_headings.v2`` was frozen
-and BEFORE any selected filing body was downloaded. These tests pin what those
-artifacts may and may not claim — most importantly that nothing anywhere says
-a body was verified, an extraction ran, or a generalization claim exists.
+and BEFORE any selected filing body was downloaded. The manifest has since
+advanced one step to ``source_verified`` (bodies acquired and checksummed —
+see ``test_real_filing_holdout_source_verification.py``), but these tests
+still pin what the artifacts may and may not claim — most importantly that
+nothing anywhere says an extraction ran or a generalization claim exists.
 
 Schema-mutation tests use a deep copy of the committed manifest rather than a
 synthetic one, so the validator is exercised against the exact document shape
@@ -34,6 +36,8 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "comparison-regression.yml
 HOLDOUT_SUITES = (
     "tests/test_real_filing_holdout_selection.py",
     "tests/test_real_filing_holdout_manifest.py",
+    "tests/test_real_filing_holdout_acquisition.py",
+    "tests/test_real_filing_holdout_source_verification.py",
 )
 
 
@@ -54,8 +58,8 @@ def mutated(manifest):
 # --- The committed freeze -------------------------------------------------------
 
 
-def test_committed_manifest_validates_and_is_metadata_only(manifest):
-    assert manifest["status"] == rfh.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
+def test_committed_manifest_validates_at_source_verified(manifest):
+    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
     assert manifest["benchmark_id"] == "real_filing_holdout_v1"
     assert manifest["benchmark_id"] != rfb.BENCHMARK_ID
     assert len(manifest["pairs"]) == 10
@@ -124,11 +128,13 @@ def test_committed_manifest_is_disjoint_from_the_development_corpus(manifest):
     }
 
 
-def test_no_source_hash_and_no_verification_exists_anywhere(manifest):
+def test_every_side_is_source_verified_with_a_real_digest(manifest):
     for pair in manifest["pairs"]:
         for side in ("previous", "current"):
-            assert pair[side]["expected_sha256"] is None
-            assert pair[side]["source_verified"] is False
+            digest = pair[side]["expected_sha256"]
+            assert isinstance(digest, str) and rfb._SHA256_RE.match(digest)
+            assert digest != rfb.PLACEHOLDER_SHA256
+            assert pair[side]["source_verified"] is True
 
 
 def test_metadata_source_references_are_metadata_endpoints_only(manifest):
@@ -177,9 +183,19 @@ def test_manifest_records_the_protocol_that_produced_it(manifest):
     assert manifest["selection_protocol_hash"] == rfh.selection_protocol_hash()
 
 
-def test_manifest_hash_is_deterministic_and_matches_the_report(report):
-    assert rfh.holdout_manifest_hash(MANIFEST_PATH) == (
+def test_manifest_hash_chain_is_deterministic_and_unbroken(report):
+    """The selection report froze the metadata-only bytes; the
+    source-verification report links that hash to the advanced bytes."""
+    source_report = json.loads(
+        (HOLDOUT_DIR / "source_verification_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert source_report["prior_manifest_sha256"] == (
         report["holdout_manifest_sha256"]
+    )
+    assert source_report["new_manifest_sha256"] == (
+        rfh.holdout_manifest_hash(MANIFEST_PATH)
     )
     assert rfh.holdout_manifest_hash(MANIFEST_PATH) == (
         rfb.sha256_file(MANIFEST_PATH)
@@ -232,8 +248,10 @@ def test_unknown_pair_key_is_rejected(manifest):
 
 
 def test_a_digest_cannot_appear_while_metadata_only(manifest):
+    """Rewinding the status alone is not enough: the metadata-only state
+    denies digests, so the committed digests make it invalid."""
     document = mutated(manifest)
-    document["pairs"][0]["previous"]["expected_sha256"] = "a" * 64
+    document["status"] = rfh.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
     with pytest.raises(rfh.HoldoutManifestError) as excinfo:
         rfh.validate_holdout_manifest(document)
     assert excinfo.value.code == "holdout_side_unexpected_sha256"
@@ -241,10 +259,23 @@ def test_a_digest_cannot_appear_while_metadata_only(manifest):
 
 def test_source_verified_cannot_be_claimed_while_metadata_only(manifest):
     document = mutated(manifest)
-    document["pairs"][0]["current"]["source_verified"] = True
+    document["status"] = rfh.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
+    for pair in document["pairs"]:
+        for side in ("previous", "current"):
+            pair[side]["expected_sha256"] = None
+    # Digests denied, but one side still claims verification.
+    document["pairs"][0]["previous"]["source_verified"] = True
     with pytest.raises(rfh.HoldoutManifestError) as excinfo:
         rfh.validate_holdout_manifest(document)
     assert excinfo.value.code == "holdout_side_claims_verification"
+
+
+def test_a_placeholder_digest_can_never_be_source_verified(manifest):
+    document = mutated(manifest)
+    document["pairs"][0]["previous"]["expected_sha256"] = "0" * 64
+    with pytest.raises(rfh.HoldoutManifestError) as excinfo:
+        rfh.validate_holdout_manifest(document)
+    assert excinfo.value.code == "holdout_side_placeholder_sha256"
 
 
 def test_an_amendment_can_never_be_frozen(manifest):
@@ -421,10 +452,19 @@ def test_committed_artifacts_leak_no_credentials_paths_or_content():
         assert "risk factors" not in lowered, path.name  # no filing prose
 
 
-def test_no_holdout_corpus_directory_exists():
-    """Selection acquires nothing: the gitignored corpus directory for the
-    holdout must not exist until the later, separate acquisition step."""
-    assert not (REPO_ROOT / "benchmark_data" / "real_filing_holdout_v1").exists()
+def test_holdout_corpus_stays_out_of_the_repository():
+    """Acquisition happened, so the gitignored corpus directory MAY exist
+    locally now — but filing bodies never enter the committed tree: the
+    benchmark directory holds exactly the three bounded JSON artifacts, and
+    benchmark_data/ remains gitignored."""
+    committed = {path.name for path in HOLDOUT_DIR.iterdir()}
+    assert committed == {
+        "manifest.json",
+        "selection_report.json",
+        "source_verification_report.json",
+    }
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "benchmark_data/" in gitignore.splitlines()
 
 
 # --- Development corpus is untouched --------------------------------------------
@@ -485,6 +525,7 @@ def test_required_check_remains_offline_and_credential_free():
     raw = WORKFLOW_PATH.read_text(encoding="utf-8")
     for forbidden in (
         "select_real_filing_holdout",
+        "acquire_real_filing_holdout",
         "--allow-network",
         "SEC_USER_AGENT",
         "secrets.",
