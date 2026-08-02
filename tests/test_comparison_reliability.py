@@ -3211,6 +3211,9 @@ _REQUIRED_CI_SUITES = (
     "tests/test_real_filing_benchmark_schema.py",
     "tests/test_real_filing_benchmark_tools.py",
     "tests/test_real_filing_benchmark_evaluator.py",
+    # Stage 3.5 holdout human-annotation admission contract: the validator
+    # that decides whether human-completed files may enter the gold corpus.
+    "tests/test_holdout_human_annotation_validation.py",
     # offline API
     "tests/test_api.py",
     "tests/test_api_errors.py",

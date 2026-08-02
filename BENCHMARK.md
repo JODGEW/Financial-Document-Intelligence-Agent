@@ -434,8 +434,43 @@ annotations; the gold evaluator scores them with extraction v2 still
 unchanged. Only after all of that could `extraction_holdout_evaluation`
 become true.
 
+**Human-review validation (`scripts/validate_holdout_human_annotations.py`).**
+The admission gate between human review and gold evaluation, offline and
+strictly read-only in both modes:
+
+- `--workspace` validates pre-review integrity: the **nine review-ready
+  pairs** (`sic-2000s-01/02`, `sic-3000s-01/02`, `sic-4000s-01/02`,
+  `sic-5000s-01/02`, `sic-6000s-02`) must match their committed inventory
+  packet hashes and bind the recorded source checksums, section hashes,
+  result hashes, parser/detector/workflow versions, and the manifest hash
+  chain; the **one extraction-blocked pair** (`sic-6000s-01`,
+  `extraction_ambiguous`) must have no packet, no template, and no annotation
+  file at all.
+- The default (completed) mode additionally requires, for every review-ready
+  pair, a completed annotation that is **explicitly `human_verified`** with a
+  bounded annotator id, an explicit-UTC verification timestamp postdating
+  packet generation, canonical label ids, **exactly-once closure over every
+  previous and current unit id** (a filing that repeats a normalized heading
+  needs an explicit label per unit id — key-level coverage is not closure),
+  and bounded notes carrying no filing excerpts, no absolute paths, and no
+  credential material.
+- The empty human-completion templates under
+  `benchmark_data/real_filing_holdout_v1/annotations/<pair_id>.json` are
+  **local preparation artifacts, not annotations**: every decision field is
+  null, and the validator treats them as "not completed", never as labels.
+- Only explicitly completed `human_verified` files may enter the gold corpus.
+  **Validator acceptance is necessary but does not itself establish label
+  correctness** — it proves identity, closure, and hygiene, not that a
+  human's judgement is right. The blocked pair is excluded from every
+  count: never detector-correct, detector-incorrect, unchanged, or
+  annotation-missing.
+- No gold evaluation has run: zero labels are `human_verified`, and the
+  validator computes no metric. The contract is frozen by
+  `tests/test_holdout_human_annotation_validation.py` in the required
+  merge-blocking CI check, entirely over synthetic fixtures.
+
 Holdout commands (the first two are networked, operator-run, never in CI, and
-require a descriptive `SEC_USER_AGENT`; the third is offline and never in CI
+require a descriptive `SEC_USER_AGENT`; the rest are offline and never in CI
 either — CI validates the committed artifacts and never rebuilds the real
 corpus):
 
@@ -444,6 +479,8 @@ export SEC_USER_AGENT="Your Name your.email@your.org"
 python scripts/select_real_filing_holdout.py --allow-network    # done: the freeze (metadata only)
 python scripts/acquire_real_filing_holdout.py --allow-network   # done: source verification (bodies + checksums)
 python scripts/run_real_filing_holdout_blind_extraction.py      # done: the blind extraction run (offline)
+python scripts/validate_holdout_human_annotations.py --workspace  # pre-review integrity (read-only)
+python scripts/validate_holdout_human_annotations.py              # after human review: gold-admission check
 ```
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
@@ -732,9 +769,13 @@ refusal/metric behavior, and the holdout: deterministic selection over mocked
 official metadata (`tests/test_real_filing_holdout_selection.py`), the frozen
 holdout manifest's schema and denials
 (`tests/test_real_filing_holdout_manifest.py`), mocked-transport holdout
-acquisition behavior (`tests/test_real_filing_holdout_acquisition.py`), and
-the committed source-verified artifacts' hash chain and claims
-(`tests/test_real_filing_holdout_source_verification.py`).
+acquisition behavior (`tests/test_real_filing_holdout_acquisition.py`), the
+committed source-verified artifacts' hash chain and claims
+(`tests/test_real_filing_holdout_source_verification.py`), and the
+human-annotation admission contract — frozen pair sets, identity and hash
+bindings, exactly-once unit closure, read-only behavior
+(`tests/test_holdout_human_annotation_validation.py`, entirely over synthetic
+fixtures).
 
 The extraction suite is in the required check deliberately: heading recognition
 decides *which text is compared*, so a regression there would silently change
