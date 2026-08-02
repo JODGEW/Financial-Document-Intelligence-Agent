@@ -1268,6 +1268,25 @@ exists, and `extraction_holdout_evaluation = false` and
 manifest and in every committed blind-run report.** No body-based parser
 change has occurred.
 
+**The human-review admission gate now exists as a tested, merge-blocking
+contract** (`scripts/validate_holdout_human_annotations.py`, frozen by
+`tests/test_holdout_human_annotation_validation.py` in required CI over
+synthetic fixtures only). It is offline and strictly read-only: `--workspace`
+verifies the **nine review-ready pairs** against their committed inventory
+hashes and recorded source/section/result/parser/detector/workflow/manifest-
+chain identities, and requires that the **one extraction-blocked pair**
+(`sic-6000s-01`, `extraction_ambiguous`) has no packet, template, or
+annotation file at all; the default mode additionally requires every
+review-ready pair to be **explicitly `human_verified`** with a bounded
+annotator id, an explicit-UTC timestamp, canonical label ids, exactly-once
+closure over every unit id (repeated normalized headings need one label per
+unit id), and bounded notes free of filing excerpts, absolute paths, and
+credential material. The empty completion templates in the gitignored
+workspace are **local preparation artifacts, not annotations**; only
+explicitly completed `human_verified` files may enter the gold corpus, and
+**validator acceptance is necessary but does not itself establish label
+correctness**. No gold evaluation has run.
+
 The remaining next steps, in order of dependency, are: human diagnostic
 annotation of the ten development pairs; human verification of the nine
 holdout packets; and the gold holdout evaluation — all without changing

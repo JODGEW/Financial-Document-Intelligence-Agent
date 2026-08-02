@@ -34,6 +34,7 @@ BENCHMARK_SUITES = (
     "tests/test_real_filing_benchmark_tools.py",
     "tests/test_real_filing_benchmark_evaluator.py",
     "tests/test_sec_html_item_extraction.py",
+    "tests/test_holdout_human_annotation_validation.py",
 )
 
 

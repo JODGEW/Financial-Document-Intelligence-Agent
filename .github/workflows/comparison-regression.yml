@@ -127,6 +127,12 @@ jobs:
       # the committed artifacts; it never rebuilds the real holdout corpus.
       # Offline like the rest: CI never contacts SEC EDGAR, never supplies a
       # user agent, and never downloads a filing body.
+      # test_holdout_human_annotation_validation.py freezes the human-review
+      # admission contract (scripts/validate_holdout_human_annotations.py):
+      # the nine review-ready pairs, the one extraction-ambiguous pair, every
+      # recorded identity and hash chain, exactly-once unit-id closure, and
+      # read-only behavior — entirely over synthetic fixtures, before any
+      # human label exists.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -139,7 +145,8 @@ jobs:
             tests/test_real_filing_holdout_acquisition.py \
             tests/test_real_filing_holdout_source_verification.py \
             tests/test_real_filing_holdout_blind_extraction.py \
-            tests/test_real_filing_holdout_build_report.py
+            tests/test_real_filing_holdout_build_report.py \
+            tests/test_holdout_human_annotation_validation.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

@@ -406,6 +406,7 @@ def test_ci_runs_the_new_suites_offline_with_no_sec_access():
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "tests/test_real_filing_holdout_blind_extraction.py" in text
     assert "tests/test_real_filing_holdout_build_report.py" in text
+    assert "tests/test_holdout_human_annotation_validation.py" in text
     assert "SEC_USER_AGENT" not in text
     assert "secrets." not in text
     assert "AWS_ACCESS_KEY" not in text
