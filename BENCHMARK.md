@@ -66,7 +66,22 @@ unconditionally until a holdout corpus is frozen *and* annotated.
 
 ---
 
-## Current status: not complete, and no real-filing accuracy claim exists
+## Current status: a holdout gold evaluation exists; generalization remains unsigned
+
+Two different claims, kept apart throughout this document:
+
+1. **A human-verified real-filing gold evaluation now exists** — over the
+   *holdout* corpus (`real_filing_holdout_v1`), committed at
+   [`benchmarks/real_filing_holdout_v1/gold_evaluation_report.json`](benchmarks/real_filing_holdout_v1/gold_evaluation_report.json),
+   which is the **source of truth for every metric**. The source-anchored
+   narrative and error analysis is [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md).
+2. **`generalization_claim_supported` is `false`** — and the reason is the
+   absence of an explicit admitted generalization sign-off, *not* the absence
+   of human labels or of an evaluation. See
+   [Generalization sign-off](#7-generalization-sign-off-not-performed).
+
+The **development** corpus (`real_filing_v1`) is a separate corpus and is still
+unannotated; the table below describes it unless a row names the holdout.
 
 | Stage | State |
 |---|---|
@@ -78,9 +93,11 @@ unconditionally until a holdout corpus is frozen *and* annotated.
 | Corpus role | **development, not holdout** — inspected while extraction v2 was written |
 | Corpus build over real filings | **done, in-sample** — 20/20 sides `extracted` (was 0/20; see below) |
 | Item 1A comparison workflow over real filings | **executed** — 10/10 pairs reached `detected` |
-| Human annotation | **not done** — zero labels are `human_verified`; 10 machine-proposed packets exist |
+| Human annotation (development corpus) | **not done** — zero labels are `human_verified` on this development corpus; 10 machine-proposed packets exist |
 | Gold evaluation | **not done, and the evaluator refuses to produce one** |
-| Extraction holdout corpus | **frozen, source-verified, and blind-extracted** (`benchmarks/real_filing_holdout_v1/`, status `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; zero labels `human_verified`, no accuracy or generalization number exists |
+| Extraction holdout corpus | **frozen, source-verified, blind-extracted, human-annotated, and gold-evaluated** (`benchmarks/real_filing_holdout_v1/`, manifest status still `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; those 9 pairs are now `human_verified` and scored. See the holdout section below |
+| Holdout gold evaluation | **done** — 9 of 10 pairs scored, 28 human-verified labels, metrics in `gold_evaluation_report.json`, writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) |
+| Holdout generalization sign-off | **not done** — `generalization_claim_supported` is `false` because no sign-off exists, not because labels or an evaluation are missing |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -112,12 +129,23 @@ fabricated fact that later readers cannot distinguish from a real one.
    one pair, preserved as observed); 9/10 pairs reached `detected` and have
    machine-proposed packets; the holdout manifest advanced one step to
    `corpus_built` (documented below).
-6. **Human annotation and gold evaluation of the holdout, with extraction v2
-   still unchanged.** If extraction is modified in response to holdout
-   results, the holdout becomes a development corpus too and a fresh one is
-   required. Until human-verified labels exist, holdout extraction COVERAGE
-   is not extraction CORRECTNESS and `generalization_claim_supported` stays
-   false.
+6. ~~Human annotation and gold evaluation of the holdout, with extraction v2
+   still unchanged.~~ **Done** — the nine review-ready pairs were reviewed and
+   admitted as `human_verified`, and the gold evaluator scored them with
+   extraction v2 unchanged
+   (`benchmarks/real_filing_holdout_v1/gold_evaluation_report.json`,
+   writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md)). Extraction was
+   **not** modified in response to the results.
+7. **An explicit generalization sign-off, if one is ever to be made.** The
+   evaluation is complete and unsigned:
+   `generalization_claim_supported` is `false` because no sign-off exists.
+   Human-verified labels and evaluator completion are **not** a sign-off.
+8. **Parser v3 and a newly frozen unseen holdout, if extraction is to be
+   improved.** The current holdout's failures have already been observed, so
+   changing the parser in response would convert this holdout into
+   development data and make any subsequent number post-hoc. Improving
+   extraction requires a new development cycle *and* a fresh holdout frozen
+   before anyone looks at its bodies.
 
 ### The prior null result, and what changed
 
@@ -150,8 +178,10 @@ Stated precisely, because the distinction is the whole point of this benchmark:
 - **No detector, alignment, validator, governance threshold, or benchmark label
   was used to tune extraction**, and none of them was modified.
 - The old null-extraction results **remain recorded**.
-- Machine annotation is **not gold**. Zero labels are `human_verified`.
-- **No real-filing accuracy claim exists** and none can until human review.
+- Machine annotation is **not gold**. Zero labels are `human_verified` **on
+  this development corpus**, so no accuracy claim exists for it and none can
+  until human review. (The separate *holdout* corpus has since been
+  human-annotated and gold-evaluated; see below.)
 
 ### Committed reports
 
@@ -281,7 +311,7 @@ loader uses the pre-existing `h1`/`h2`/`h3` path exactly as before.
 
 ---
 
-## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, source-verified, BLIND-EXTRACTED
+## Extraction holdout corpus (`real_filing_holdout_v1`) — frozen, source-verified, blind-extracted, GOLD-EVALUATED
 
 `benchmarks/real_filing_holdout_v1/` holds the frozen holdout manifest
 (`real-filing-holdout.manifest.v1`, now status **`corpus_built`**), its
@@ -367,23 +397,26 @@ bodies can ever say anything about generalization.
   selecting a NEW unseen holdout.
 - The existing comparison workflow ran for exactly the 9 fully extracted
   pairs (never for the blocked pair — no detection attempt exists for it);
-  all 9 reached `detected`. Machine-proposed annotation packets exist for
-  those 9 pairs only; every annotation is `machine_proposed` with a null
-  annotator, and the committed inventory records packet hashes, section
-  hashes, unit counts, and the one blocked pair with its reason.
+  all 9 reached `detected`. Machine-proposed annotation packets were
+  generated for those 9 pairs only; **at the blind-extraction commit** every
+  annotation was `machine_proposed` with a null annotator, and the committed
+  inventory records packet hashes, section hashes, unit counts, and the one
+  blocked pair with its reason. Those nine have since been human-reviewed and
+  admitted as `human_verified` — see the gold evaluation below.
 - The manifest advanced exactly one step (`source_verified → corpus_built`):
   status, role prose, and description — same pairs, same digests, same parser
   version and parser-source hash, same protocol hash, same exclusions. The
   blind-extraction report chains the source-verified manifest hash to the new
   one, extending the freeze → verification → blind-run chain.
-- **What these artifacts may claim: blind extraction coverage only.** Exact
-  extracted / missing / ambiguous / parse-failed counts, the buildable pair
-  count, and packet availability. They claim no detector accuracy, no
-  annotation accuracy, no precision or recall of any kind, no generalization
-  of detector quality, and no Stage 3.5 completion: zero labels are
-  `human_verified`, so `extraction_holdout_evaluation` and
-  `generalization_claim_supported` remain false even at this coverage.
-  Coverage is not correctness.
+- **What the blind-extraction artifacts may claim: extraction coverage only.**
+  Exact extracted / missing / ambiguous / parse-failed counts, the buildable
+  pair count, and packet availability. They claim no detector accuracy, no
+  annotation accuracy, no precision or recall of any kind, and no
+  generalization of detector quality. Coverage is not correctness, and those
+  three reports carry `extraction_holdout_evaluation = false` because **at
+  that commit** no label was `human_verified`. Accuracy numbers come only
+  from the gold evaluation below, whose report carries
+  `extraction_holdout_evaluation = true`.
 
 **Metadata-only selection protocol (`real-filing-holdout-selection.v1`).**
 Predeclared in `real_filing_holdout.selection_protocol()` and frozen by hash
@@ -428,11 +461,12 @@ and modifying parser v2 in response to holdout results converts the holdout
 into development data** — the pinned hash makes that conversion detectable,
 at which point a fresh holdout would be required.
 
-**What happens next, in order:** humans review the nine machine-proposed
-packets (and the ambiguous pair's diagnostics) and produce `human_verified`
-annotations; the gold evaluator scores them with extraction v2 still
-unchanged. Only after all of that could `extraction_holdout_evaluation`
-become true.
+**That review and evaluation have since happened.** Humans reviewed the nine
+machine-proposed packets and produced `human_verified` annotations; the gold
+evaluator scored them with extraction v2 still unchanged, and
+`extraction_holdout_evaluation` is now `true` in the resulting report. See
+[What the gold evaluation found](#what-the-gold-evaluation-found) below. What
+has *not* happened is a generalization sign-off.
 
 **Human-review validation (`scripts/validate_holdout_human_annotations.py`).**
 The admission gate between human review and gold evaluation, offline and
@@ -464,10 +498,68 @@ strictly read-only in both modes:
   human's judgement is right. The blocked pair is excluded from every
   count: never detector-correct, detector-incorrect, unchanged, or
   annotation-missing.
-- No gold evaluation has run: zero labels are `human_verified`, and the
-  validator computes no metric. The contract is frozen by
+- The validator computes no metric — it is an admission gate, not an
+  evaluator. The contract is frozen by
   `tests/test_holdout_human_annotation_validation.py` in the required
-  merge-blocking CI check, entirely over synthetic fixtures.
+  merge-blocking CI check, entirely over synthetic fixtures. All nine
+  review-ready pairs have since passed this gate and been admitted as
+  `human_verified`.
+
+### What the gold evaluation found
+
+The nine admitted pairs were scored by `scripts/eval_real_filing_benchmark.py`
+with extraction v2 unchanged. **The committed report
+[`benchmarks/real_filing_holdout_v1/gold_evaluation_report.json`](benchmarks/real_filing_holdout_v1/gold_evaluation_report.json)
+is the source of truth for every metric**; the source-anchored narrative and
+error analysis is [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md). The numbers
+are not repeated here — one authoritative copy, plus the writeup.
+
+**Annotation and scoring state** (`$.corpus_quality`, `$.scoring_scope`,
+`$.label_statistics`):
+
+- 9 of the 10 frozen pairs were scored (`pairs_scored: 9`,
+  `pairs_in_manifest: 10`, `coverage_complete: false`).
+- The one extraction-blocked pair (`sic-6000s-01`, ambiguous on both sides) is
+  recorded as an explicit exclusion with code `extraction_blocked` and is
+  **never silently included in a detector-quality denominator** — every gold
+  numerator and denominator counts the scored pairs only.
+- 28 labels are `human_verified` across those nine pairs
+  (`human_verified_label_count: 28`), by a single annotator.
+- The report declares `extraction_holdout_evaluation: true`, `corpus_role:
+  extraction_holdout_corpus`, `detector_version: item1a_detector.v2`,
+  `workflow_version: comparison_workflow.v2`, and `manifest_status:
+  corpus_built` — the evaluation did **not** advance the manifest.
+
+**What these metrics are, and what they are not.** They are real out-of-sample
+holdout metrics **at the frozen v2 unit granularity** — the unit boundaries the
+system under test produced. They are **not** risk-factor-item-level accuracy,
+because the frozen segmentation frequently did not operate at that granularity:
+`comparison_detector._HEADING_RE` treats a line as a risk heading only when it
+ends in `Risk`/`Risks`, so many sections collapse toward a single preamble unit
+and some pairs are scored over units that span the whole Item 1A section.
+Describing these figures as per-risk-factor accuracy would misstate what was
+measured. HOLDOUT_EVALUATION.md counts the affected headings and pairs against
+their sources.
+
+**The principal observed limitation is segmentation and unit-boundary quality,
+not evidence resolution** — evidence references resolved at
+`$.gold_metrics.evidence_resolution_rate` while the change-level metrics did
+not, so the weakness is in *where the units were cut*, not in whether evidence
+pointed at the right indexed chunks. The labelling was also not blind (the
+packet shows the machine proposal before the reviewer decides), and there is a
+single annotator with no agreement statistic.
+
+**The parser was not changed in response.** These failures have already been
+observed on this holdout, so a fix would convert it into development data and
+make any subsequent number post-hoc. Improving extraction requires a parser v3
+developed in a new cycle **and** a newly frozen unseen holdout.
+
+**`generalization_claim_supported` is `false`** (`$.generalization_claim_supported`),
+and `$.generalization_claim.signoff_present` is `false`. The claim is blocked
+by the absence of an explicit admitted sign-off — not by the absence of human
+labels, not by the metric values, and not by coverage. Human-verified labels
+and evaluator completion are **not** themselves a generalization sign-off. The
+contract is in [Generalization sign-off](#7-generalization-sign-off-not-performed).
 
 Holdout commands (the first two are networked, operator-run, never in CI, and
 require a descriptive `SEC_USER_AGENT`; the rest are offline and never in CI
@@ -714,6 +806,71 @@ run). Every applicable reason is reported, not just the first.
 Exit codes: `0` report produced · `1` refused or a pair failed · `2` invalid
 configuration or arguments.
 
+### 7. Generalization sign-off (not performed)
+
+A completed gold evaluation and a generalization claim are two different
+things, and this repository keeps them apart structurally.
+
+`generalization_claim_supported` is **false** for the holdout evaluation of
+record, and the reason is not a metric value, a coverage gap, or a corpus role
+— it is that **no human has signed it**. Coverage, out-of-sample corpus role,
+and human-verified labels are all necessary context for that judgement, and
+none of them is the judgement. `evaluate_generalization_claim` is not even
+passed a metric, so no number can grant or block the claim.
+
+The claim is gated on `generalization_claim_signoff` in `evaluation_config.json`,
+which is `null` in both committed configs. **No tool in this repository writes
+it**, and a test asserts the absence of any writer — the same contract as
+`human_verified` on an annotation. To be affirmative, a sign-off must carry
+*all* of:
+
+| Field | Requirement |
+|---|---|
+| `signer_id` | Identifies a person; a placeholder (`TBD`, `unknown`, `anonymous`, …) is rejected |
+| `signed_at_utc` | ISO-8601 with an explicit UTC offset; a naive timestamp is rejected |
+| `manifest_sha256` | Must equal the manifest hash **this run** evaluated |
+| `acknowledged_pairs_scored` | Must equal the pair count **this run** scored |
+| `statement` | An explicit, non-empty, bounded sentence the signer wrote |
+
+`statement` is required, and that requirement is the strict part. It must be a
+`str` — never `null`, a boolean, a number, a list, a mapping, or bytes — and it
+must carry visible text: whitespace-only, non-breaking-space-only, and
+zero-width-only values are all rejected. Leading and trailing whitespace is
+trimmed and the trimmed value is what is persisted, following the repository's
+existing convention for bounded human text; interior spacing, punctuation, and
+newlines are preserved exactly. The bound is **2,000 Unicode code points**,
+unchanged from what the field already carried. Stable error codes:
+`generalization_signoff_statement_required`, `..._invalid_type`, `..._empty`,
+`..._too_long`.
+
+Three things this deliberately does **not** do:
+
+- **No statement is ever generated.** There is no default, no template, and no
+  derivation from the signer id, the timestamp, the annotator, the metrics, the
+  command-line user, or the environment. A claim nobody wrote a sentence for is
+  a claim nobody made.
+- **A statement alone is never sufficient.** Every condition above still
+  applies; the statement is additive and can rescue nothing.
+- **Verified annotations are not a sign-off.** That the holdout labels are
+  `human_verified` by a named annotator, and that the gold evaluator ran to
+  completion, are facts about *labels* and *execution*. Neither is a claim
+  about generalization, and nothing promotes one into the other — the
+  annotation and sign-off schemas share no field.
+
+Validator acceptance means a bounded sentence exists, nothing more. It is not
+agreement with any particular claim, and it is **not** an electronic signature,
+a cryptographic attestation, or a compliance certification.
+
+An unsigned completed evaluation is a legitimate, permanent state: the
+committed report is exactly that, and it remains valid historical evidence with
+`generalization_claim_supported = false`.
+
+There is no sign-off command, and this repository does not provide one. The
+validator (`validate_signoff_statement`) is the seam a future one must use.
+Invalid input is refused before any metric is computed or any file is written —
+the CLI exits `2` with a stable code and produces no report, so no partial
+affirmative state can survive a rejection.
+
 ---
 
 ## Metric definitions
@@ -775,7 +932,11 @@ committed source-verified artifacts' hash chain and claims
 human-annotation admission contract — frozen pair sets, identity and hash
 bindings, exactly-once unit closure, read-only behavior
 (`tests/test_holdout_human_annotation_validation.py`, entirely over synthetic
-fixtures).
+fixtures), and the generalization sign-off admission contract — the strict
+non-empty bounded `statement`, every gate a statement cannot rescue, and the
+committed gold evaluation pinned byte-identical, unsigned, and
+`generalization_claim_supported = false`
+(`tests/test_gold_evaluation_signoff.py`).
 
 The extraction suite is in the required check deliberately: heading recognition
 decides *which text is compared*, so a regression there would silently change
@@ -853,18 +1014,36 @@ which runs in the required `comparison-regression` check.
 
 ## Known coverage limitations
 
-- **No accuracy claim exists.** Zero labels are `human_verified`.
-- **No generalization claim exists, and this corpus cannot support one.** It is
-  an extraction development corpus (`corpus_role =
+- **No accuracy claim exists for the *development* corpus.** Zero of its
+  labels are `human_verified`. The *holdout* corpus has been evaluated; see
+  the next two entries.
+- **No generalization claim exists, and the development corpus cannot support
+  one.** It is an extraction development corpus (`corpus_role =
   extraction_development_corpus`, `generalization_claim_supported = false`).
-  Extraction numbers over it are in-sample. A separately frozen holdout corpus
-  is required.
-- **The holdout corpus is source-verified but nothing more.**
-  `real_filing_holdout_v1` freezes exact issuers and filing pairs (initially
-  `holdout_frozen_metadata_only`), and its twenty bodies have now been
-  acquired from official sources and checksum-verified — but no extraction has
-  run over it and it has produced no result of any kind. It cannot support any
-  claim until it is extracted unchanged and human-annotated.
+  Extraction numbers over it are in-sample.
+- **The holdout evaluation is complete but unsigned.**
+  `real_filing_holdout_v1` has been frozen, source-verified, blind-extracted,
+  human-annotated, and gold-evaluated, and its report is the source of truth
+  for every real-filing metric. `generalization_claim_supported` remains
+  `false` because no explicit generalization sign-off has been admitted —
+  human-verified labels and evaluator completion are not a sign-off.
+- **Holdout metrics are at the frozen v2 unit granularity, not
+  risk-factor-item level.** Unit boundaries came from the system under test,
+  and the frozen heading rule frequently did not cut at individual risk
+  factors. The principal observed limitation is segmentation and unit-boundary
+  quality rather than evidence resolution. Improving it requires a parser v3
+  and a newly frozen unseen holdout, because the current holdout's failures
+  have already been observed.
+- **Holdout labelling was not blind.** The review packet renders the
+  machine-proposed change type before the reviewer decides, so the anchoring
+  pressure is toward agreement with the detector — these metrics are more
+  likely too generous than too harsh.
+- **Holdout selection is auditable in outcome but not fully replayable in
+  process.** The filing bodies are pinned by SHA-256 and the selection *rules*
+  are pinned by `selection_protocol_hash`, so which filings were used is
+  provable. The SEC metadata responses that led to choosing them are not
+  archived, and a later metadata snapshot is **not** claimed to reproduce the
+  original selection byte-for-byte.
 - The holdout universe is the official registrant ticker list, scanned in
   ascending-CIK order — a deterministic rule that skews the selection toward
   long-registered issuers. It is controlled, not representative, exactly like
