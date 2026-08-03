@@ -766,8 +766,14 @@ def main(argv: list[str] | None = None) -> int:
         "manifest_status": manifest["status"],
         # Corpus validity travels with every extraction number this script
         # emits: these filings were inspected while the extraction parser was
-        # written, so the outcomes below are in-sample.
-        **rfb.corpus_role_fields(),
+        # written, so the outcomes below are in-sample. This builder only ever
+        # builds the development corpus, and building is not evaluating, so
+        # both lifecycle facts are false and are stated rather than defaulted.
+        **rfb.corpus_role_fields(
+            rfb.REAL_FILINGS_V1_CORPUS_ROLE,
+            holdout_evaluation_performed=False,
+            generalization_claim_supported=False,
+        ),
         "pairs_requested": len(pairs),
         "pairs_built": len(built),
         "pairs_failed": len(failures),

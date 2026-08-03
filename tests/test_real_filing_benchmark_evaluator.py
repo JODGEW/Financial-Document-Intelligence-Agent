@@ -35,12 +35,27 @@ BENCHMARK_SUITES = (
     "tests/test_real_filing_benchmark_evaluator.py",
     "tests/test_sec_html_item_extraction.py",
     "tests/test_holdout_human_annotation_validation.py",
+    "tests/test_real_filing_holdout_gold_evaluation.py",
 )
 
 
 @pytest.fixture(scope="module")
 def evaluation_config():
     return evaluator.load_evaluation_config()
+
+
+def _write_matching_config(tmp_path, benchmark_id):
+    """The real evaluation config, renamed to the corpus under test.
+
+    A config describes exactly one corpus and the evaluator refuses one whose
+    benchmark_id is not the manifest's. These synthetic corpora are not
+    real_filing_v1, so they carry their own config rather than borrowing it.
+    """
+    document = dict(evaluator.load_evaluation_config())
+    document["benchmark_id"] = benchmark_id
+    path = tmp_path / "evaluation_config.json"
+    path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
+    return path
 
 
 @pytest.fixture
@@ -62,6 +77,7 @@ def corpus(tmp_path):
     return {
         "manifest": document,
         "manifest_path": manifest_path,
+        "config_path": _write_matching_config(tmp_path, document["benchmark_id"]),
         "layout": layout,
         "record": record,
         "machine_annotation": annotation,
@@ -567,6 +583,8 @@ def test_cli_exits_nonzero_when_gold_evaluation_is_refused(corpus, capsys):
             str(corpus["manifest_path"]),
             "--corpus-dir",
             str(corpus["layout"].root),
+            "--evaluation-config",
+            str(corpus["config_path"]),
         ]
     )
     assert code == 1
@@ -581,6 +599,8 @@ def test_cli_exits_zero_on_a_human_verified_corpus(corpus, capsys):
             str(corpus["manifest_path"]),
             "--corpus-dir",
             str(corpus["layout"].root),
+            "--evaluation-config",
+            str(corpus["config_path"]),
         ]
     )
     assert code == 0
@@ -597,6 +617,8 @@ def test_cli_output_contains_no_absolute_paths_or_filing_content(corpus, capsys)
             str(corpus["manifest_path"]),
             "--corpus-dir",
             str(corpus["layout"].root),
+            "--evaluation-config",
+            str(corpus["config_path"]),
             "--json",
         ]
     )
@@ -641,6 +663,8 @@ def test_cli_rejects_unknown_pair_ids(corpus, capsys):
             str(corpus["manifest_path"]),
             "--corpus-dir",
             str(corpus["layout"].root),
+            "--evaluation-config",
+            str(corpus["config_path"]),
             "--pair-id",
             "pair-99",
         ]
@@ -818,16 +842,74 @@ def test_corpus_role_constants_are_closed():
     )
     assert rfb.CORPUS_ROLE_EXTRACTION_DEVELOPMENT in rfb.CORPUS_ROLES
     with pytest.raises(rfb.CorpusRoleError) as excinfo:
-        rfb.corpus_role_fields("not_a_role")
+        rfb.corpus_role_fields(
+            "not_a_role",
+            holdout_evaluation_performed=False,
+            generalization_claim_supported=False,
+        )
     assert excinfo.value.code == "corpus_role_unknown"
 
 
 def test_corpus_role_block_has_the_required_meanings():
-    fields = rfb.corpus_role_fields()
+    fields = rfb.corpus_role_fields(
+        rfb.REAL_FILINGS_V1_CORPUS_ROLE,
+        holdout_evaluation_performed=False,
+        generalization_claim_supported=False,
+    )
     assert fields["corpus_role"] == "extraction_development_corpus"
     assert fields["extraction_parser_developed_using_this_corpus"] is True
     assert fields["extraction_holdout_evaluation"] is False
     assert fields["generalization_claim_supported"] is False
+
+
+def test_corpus_role_fields_requires_every_field_explicitly():
+    """No default may reintroduce an implied corpus role or lifecycle.
+
+    The old signature defaulted the role to the development corpus and derived
+    the holdout flag from it, so naming a holdout corpus was enough to publish
+    the claim that a holdout evaluation had happened.
+    """
+    import inspect
+
+    signature = inspect.signature(rfb.corpus_role_fields)
+    for name in (
+        "role",
+        "holdout_evaluation_performed",
+        "generalization_claim_supported",
+    ):
+        assert signature.parameters[name].default is inspect.Parameter.empty, name
+
+
+def test_corpus_role_fields_rejects_impossible_combinations():
+    with pytest.raises(rfb.CorpusRoleError) as excinfo:
+        rfb.corpus_role_fields(
+            rfb.CORPUS_ROLE_EXTRACTION_DEVELOPMENT,
+            holdout_evaluation_performed=True,
+            generalization_claim_supported=False,
+        )
+    assert excinfo.value.code == (
+        "corpus_role_development_cannot_be_holdout_evaluation"
+    )
+
+    # A holdout corpus that this run did not evaluate cannot support a claim.
+    with pytest.raises(rfb.CorpusRoleError) as excinfo:
+        rfb.corpus_role_fields(
+            rfb.CORPUS_ROLE_EXTRACTION_HOLDOUT,
+            holdout_evaluation_performed=False,
+            generalization_claim_supported=True,
+        )
+    assert excinfo.value.code == "corpus_role_generalization_claim_unsupported"
+
+
+def test_holdout_corpus_role_is_not_a_holdout_evaluation_by_itself():
+    """Being out-of-sample is not the same as having been evaluated."""
+    fields = rfb.corpus_role_fields(
+        rfb.CORPUS_ROLE_EXTRACTION_HOLDOUT,
+        holdout_evaluation_performed=False,
+        generalization_claim_supported=False,
+    )
+    assert fields["extraction_parser_developed_using_this_corpus"] is False
+    assert fields["extraction_holdout_evaluation"] is False
 
 
 @pytest.mark.parametrize("name", V2_REPORTS)
@@ -878,8 +960,11 @@ def test_generated_reports_carry_the_corpus_role_block():
     source = (
         REPO_ROOT / "scripts" / "build_real_filing_benchmark.py"
     ).read_text(encoding="utf-8")
-    assert "corpus_role_fields()" in source
-    assert "corpus_role_fields()" in (
+    # The call is now explicit about role and lifecycle, so the assertion is
+    # that each generator calls it at all, not that it calls it bare.
+    assert "rfb.corpus_role_fields(" in source
+    assert "holdout_evaluation_performed=" in source
+    assert "rfb.corpus_role_fields(" in (
         REPO_ROOT / "scripts" / "eval_real_filing_benchmark.py"
     ).read_text(encoding="utf-8")
     assert hasattr(evaluator.rfb, "corpus_role_fields")

@@ -358,6 +358,10 @@ def test_filing_bodies_are_never_committed():
         "blind_extraction_report.json",
         "execution_report.json",
         "annotation_packet_inventory.json",
+        # Declares how this corpus is scored. Bounded config, no filing content.
+        "evaluation_config.json",
+        # The gold evaluation's artifact of record. Metrics, counts, hashes.
+        "gold_evaluation_report.json",
     }
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "benchmark_data/" in gitignore.splitlines()

@@ -1,0 +1,21 @@
+{
+  "config_version": "real-filing-benchmark.evaluation.v1",
+  "benchmark_id": "real_filing_holdout_v1",
+  "metric_definitions_version": "real-filing-benchmark-metrics.v1",
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "declared_detector_version": "item1a_detector.v2",
+  "declared_workflow_version": "comparison_workflow.v2",
+  "declared_section_key": "item_1a_risk_factors",
+  "gold_status_required": "human_verified",
+  "pass_fail_thresholds": null,
+  "generalization_claim_signoff": null,
+  "notes": [
+    "This config describes the extraction holdout corpus (real_filing_holdout_v1) and no other. The evaluator checks benchmark_id against the manifest it was given and refuses a mismatch, so the development corpus's config cannot be used to score this one, or the reverse.",
+    "The declared versions pin the workflow this evaluation run describes. They are identical to the development corpus's declared versions on purpose: the same frozen detector and workflow are being measured, and the corpus is the only thing that differs. If the live detector or workflow version differs, the evaluator REFUSES rather than silently reporting metrics under a version the config does not describe.",
+    "pass_fail_thresholds is null on purpose. No gate exists for real-filing metrics and none may be introduced until an initial human-verified baseline exists and has been explicitly approved. The synthetic comparison-regression suite remains the merge-blocking deterministic gate.",
+    "Only pairs whose annotation file is human_verified enter gold numerators and denominators. Machine-proposed labels are never mixed in, and the machine-proposed packets alongside them in the corpus are not read by the evaluator at all.",
+    "Coverage of this corpus is partial: one frozen pair (sic-6000s-01) was left ambiguous by the blind extraction run and carries no review packet, so it cannot be annotated and cannot be scored. The evaluator reports it as an explicit scoring-scope exclusion rather than dropping it from the denominator.",
+    "generalization_claim_signoff is null, so generalization_claim_supported is false. That claim is a human judgement and is never derived from coverage, corpus role, or metric values: setting it requires a person to record signer_id, signed_at_utc, the manifest_sha256 they signed, and the acknowledged_pairs_scored they saw. No tool in this repository writes that block, and a stale sign-off naming a different manifest or a different scored-pair count does not authorize the claim.",
+    "Repairing that pair means changing the frozen parser, which would convert this corpus into development data. It must instead be left unrepaired and a new holdout frozen."
+  ]
+}

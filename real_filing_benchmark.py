@@ -255,11 +255,36 @@ class CorpusRoleError(BenchmarkError):
     """A corpus was described with a role outside the closed set."""
 
 
-def corpus_role_fields(role: str = REAL_FILINGS_V1_CORPUS_ROLE) -> dict[str, Any]:
+def corpus_role_fields(
+    role: str,
+    *,
+    holdout_evaluation_performed: bool,
+    generalization_claim_supported: bool,
+) -> dict[str, Any]:
     """Bounded corpus-validity block embedded in every benchmark report.
 
     One source of truth for the build report, the evaluation report, and the
     packet inventory, so the three cannot disagree about what the corpus is.
+
+    Two different kinds of fact live in this block and must not be conflated,
+    which is why every one of them is now passed explicitly:
+
+    * ``role`` is the corpus's IMMUTABLE IDENTITY — was this corpus seen while
+      the extraction parser was written? That is a property of how the corpus
+      was frozen, it is decided once, and a report reads it rather than
+      choosing it. ``extraction_parser_developed_using_this_corpus`` follows
+      from it directly.
+    * ``holdout_evaluation_performed`` and ``generalization_claim_supported``
+      are LIFECYCLE facts about THE RUN EMITTING THIS REPORT. Being an
+      out-of-sample corpus is not the same as having evaluated one, and having
+      evaluated one is not the same as being able to claim generalization.
+
+    There is deliberately no default for any of the three. The previous
+    signature defaulted ``role`` to the development corpus and derived
+    ``extraction_holdout_evaluation`` as ``not development``, which meant any
+    caller that merely named a holdout corpus silently published the claim
+    that a holdout evaluation had happened. A caller must now say what its run
+    actually did.
     """
     _require(
         role in CORPUS_ROLES,
@@ -268,26 +293,57 @@ def corpus_role_fields(role: str = REAL_FILINGS_V1_CORPUS_ROLE) -> dict[str, Any
         f"corpus_role must be one of {list(CORPUS_ROLES)}, got {role!r}",
     )
     development = role == CORPUS_ROLE_EXTRACTION_DEVELOPMENT
-    return {
-        "corpus_role": role,
-        "extraction_parser_developed_using_this_corpus": development,
-        "extraction_holdout_evaluation": not development,
-        # A generalization claim needs an out-of-sample corpus AND verified
-        # labels. Neither exists today, so this stays false until a holdout
-        # corpus is frozen, annotated, and evaluated.
-        "generalization_claim_supported": False,
-        "corpus_role_detail": (
+    _require(
+        not (development and holdout_evaluation_performed),
+        CorpusRoleError,
+        "corpus_role_development_cannot_be_holdout_evaluation",
+        "a development corpus cannot host a holdout evaluation: the filings "
+        "were inspected while the parser was written, so results over them "
+        "are in-sample by construction",
+    )
+    # A generalization claim needs BOTH an out-of-sample corpus AND an
+    # evaluation that actually ran over it. Neither the role alone nor the run
+    # alone is sufficient, so the claim cannot be switched on by a caller that
+    # only has one of them.
+    _require(
+        not generalization_claim_supported
+        or (holdout_evaluation_performed and not development),
+        CorpusRoleError,
+        "corpus_role_generalization_claim_unsupported",
+        "generalization_claim_supported requires an out-of-sample corpus that "
+        "this run actually evaluated",
+    )
+    if development:
+        detail = (
             "The twenty source documents in this corpus were inspected to "
             "diagnose HTML structure while the SEC Item heading parser was "
             "developed. Extraction results over them are IN-SAMPLE DEVELOPMENT "
             "results and are not evidence that extraction generalizes to "
             "unseen filings. A separately frozen holdout corpus, selected only "
             "after the extraction parser is frozen, is required for that."
-            if development
-            else "This corpus was frozen and unseen until after the extraction "
+        )
+    elif not holdout_evaluation_performed:
+        detail = (
+            "This corpus was frozen and unseen until after the extraction "
             "parser was frozen, so extraction results over it are "
-            "out-of-sample."
-        ),
+            "out-of-sample. This report is not itself a holdout evaluation: "
+            "no gold metric was computed by the run that produced it."
+        )
+    else:
+        detail = (
+            "This corpus was frozen and unseen until after the extraction "
+            "parser was frozen, and this run scored it against human-verified "
+            "labels, so the metrics in this report are out-of-sample. "
+            "Coverage is stated separately in scoring_scope and is not "
+            "implied by this field: a generalization claim is supported only "
+            "when generalization_claim_supported is true."
+        )
+    return {
+        "corpus_role": role,
+        "extraction_parser_developed_using_this_corpus": development,
+        "extraction_holdout_evaluation": holdout_evaluation_performed,
+        "generalization_claim_supported": generalization_claim_supported,
+        "corpus_role_detail": detail,
     }
 
 
