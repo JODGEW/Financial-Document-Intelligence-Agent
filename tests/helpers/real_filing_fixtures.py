@@ -576,8 +576,17 @@ def build_synthetic_holdout_corpus(
 def write_holdout_evaluation_config(
     tmp_path: Path, *, signoff: dict[str, Any] | None = None
 ) -> Path:
-    """The committed holdout config, optionally carrying a sign-off block."""
+    """The committed holdout config's shape, redeclared for the LIVE workflow,
+    optionally carrying a sign-off block.
+
+    The committed file itself stays frozen at the v2 identity it evaluated;
+    synthetic holdout corpora in the tests are built by the live workflow, so
+    this fixture declares the live versions or every run would refuse on the
+    version gate instead of exercising the contract under test.
+    """
     import config as app_config  # noqa: F401  (kept for path symmetry)
+    import comparison_detector
+    import comparison_store
 
     source = (
         Path(__file__).resolve().parent.parent.parent
@@ -586,6 +595,8 @@ def write_holdout_evaluation_config(
         / "evaluation_config.json"
     )
     document = json.loads(source.read_text(encoding="utf-8"))
+    document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
+    document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
     document["generalization_claim_signoff"] = signoff
     path = tmp_path / "evaluation_config.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")

@@ -98,6 +98,7 @@ unannotated; the table below describes it unless a row names the holdout.
 | Extraction holdout corpus | **frozen, source-verified, blind-extracted, human-annotated, and gold-evaluated** (`benchmarks/real_filing_holdout_v1/`, manifest status still `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; those 9 pairs are now `human_verified` and scored. See the holdout section below |
 | Holdout gold evaluation | **done** — 9 of 10 pairs scored, 28 human-verified labels, metrics in `gold_evaluation_report.json`, writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) |
 | Holdout generalization sign-off | **not done** — `generalization_claim_supported` is `false` because no sign-off exists, not because labels or an evaluation are missing |
+| Unit-segmentation grammar v3 | **implemented, unevaluated** — `item1a_detector.v3` / `comparison_workflow.v3` add the generic heading classes the v2 evaluation showed were missing; the v2 evidence is frozen and byte-identical, the old holdout is now v3 *development* data, and **no v3 evaluation, holdout, or generalization claim exists** (see [Unit grammar v3](#unit-grammar-v3)) |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -140,12 +141,22 @@ fabricated fact that later readers cannot distinguish from a real one.
    evaluation is complete and unsigned:
    `generalization_claim_supported` is `false` because no sign-off exists.
    Human-verified labels and evaluator completion are **not** a sign-off.
-8. **Parser v3 and a newly frozen unseen holdout, if extraction is to be
-   improved.** The current holdout's failures have already been observed, so
-   changing the parser in response would convert this holdout into
-   development data and make any subsequent number post-hoc. Improving
-   extraction requires a new development cycle *and* a fresh holdout frozen
-   before anyone looks at its bodies.
+8. **Version the unit-segmentation grammar as v3.** ~~Pending~~ **Done** —
+   the defect the evaluation exposed was in *unit segmentation*
+   (`comparison_detector`'s heading grammar), not in SEC Item 1A section
+   extraction (`sec_html_item_headings.v2`, which is unchanged). The unit
+   grammar is now versioned and advanced: `item1a_detector.v3` /
+   `comparison_workflow.v3` recognize the generic heading classes the v2
+   suffix rule could not express (see [Unit grammar v3](#unit-grammar-v3)
+   below). The v2 evaluation stays frozen under its v2 identity, and the
+   current holdout is now **v3 development data** — its failure modes were
+   observed, so it can never serve as unseen v3 evidence.
+9. **A newly frozen unseen holdout for v3.** Not started, deliberately not in
+   the v3 development commit: a new metadata-only holdout selection (same
+   protocol discipline as `real_filing_holdout_v1`) may be frozen only
+   *after* v3 is merged and frozen, and before anyone looks at the selected
+   bodies. Until it is annotated and evaluated, **no v3 accuracy or
+   generalization claim exists**.
 
 ### The prior null result, and what changed
 
@@ -224,12 +235,15 @@ verified.
 
 Change counts and unit counts are **execution mechanics, not accuracy**. In
 particular the low unit counts are a *detector* limitation, not an extraction
-one: `comparison_detector._HEADING_RE` only treats a line as a risk-factor
-heading when it ends in `Risk`/`Risks`, and most real filings write
-sentence-style risk headings, so those sections collapse to a single preamble
-unit. That is recorded here honestly and is out of scope for this change —
-touching the detector to improve these numbers is exactly what this benchmark
-forbids.
+one: at the recorded `item1a_detector.v2`, `comparison_detector._HEADING_RE`
+only treated a line as a risk-factor heading when it ends in `Risk`/`Risks`,
+and most real filings write sentence-style risk headings, so those sections
+collapse to a single preamble unit. That is recorded here honestly and was out
+of scope for this change — touching the detector to improve these numbers is
+exactly what this benchmark forbids. (The unit grammar has since been
+versioned to `item1a_detector.v3` in a new development cycle — see
+[Unit grammar v3](#unit-grammar-v3) — without altering any number recorded
+here.)
 
 ### Item 1A extraction behavior
 
@@ -549,10 +563,17 @@ pointed at the right indexed chunks. The labelling was also not blind (the
 packet shows the machine proposal before the reviewer decides), and there is a
 single annotator with no agreement statistic.
 
-**The parser was not changed in response.** These failures have already been
-observed on this holdout, so a fix would convert it into development data and
-make any subsequent number post-hoc. Improving extraction requires a parser v3
-developed in a new cycle **and** a newly frozen unseen holdout.
+**The parser was not changed in response — and when the unit grammar later
+was, it advanced under a new version.** These failures had already been
+observed on this holdout, so any fix converts it into development data and
+makes any subsequent number on it post-hoc. The v3 development cycle
+([Unit grammar v3](#unit-grammar-v3)) therefore treats this corpus as
+development/diagnostic data only, leaves every artifact above byte-identical,
+and requires a newly frozen unseen holdout before any v3 evaluation exists.
+The live workflow now *refuses* to gold-score this corpus at all: its config
+declares `item1a_detector.v2` / `comparison_workflow.v2`, and the evaluator's
+version gate refuses the mismatch rather than recomputing metrics under an
+identity the config does not describe.
 
 **`generalization_claim_supported` is `false`** (`$.generalization_claim_supported`),
 and `$.generalization_claim.signoff_present` is `false`. The claim is blocked
@@ -576,10 +597,77 @@ python scripts/validate_holdout_human_annotations.py              # after human 
 ```
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
-frozen, source-verified, and blind-extracted, but not annotated and not
-evaluated. No body-based parser change has occurred: the parser source still
-hashes to the digest frozen before any body was seen, and the two ambiguous
-sides are preserved rather than repaired.
+frozen, source-verified, blind-extracted, human-annotated on its nine
+review-ready pairs, and gold-evaluated at the v2 unit granularity, with no
+generalization sign-off. The SEC HTML extraction parser is unchanged: its
+source still hashes to the digest frozen before any body was seen, and the two
+ambiguous sides are preserved rather than repaired. The *unit grammar* has
+since advanced to v3 as a new development cycle (see
+[Unit grammar v3](#unit-grammar-v3)); no v3 evaluation of any kind exists.
+
+---
+
+## Unit grammar v3
+
+The v2 gold evaluation exposed a *unit-segmentation* limitation — the
+detector's heading grammar, not SEC Item 1A section extraction
+(`sec_html_item_headings.v2` is byte-identical and stays frozen). Unit
+segmentation is owned by `comparison_detector` and is now explicitly
+versioned there:
+
+- **Identities.** `item1a_detector.v3` / `comparison_workflow.v3` (the
+  workflow version is part of the comparison identity key, so the same filing
+  pair re-compares as a *new* comparison; stored v2 results are never
+  overwritten, and stale replay still answers `detector_version_superseded`).
+  Internally the heading grammar is dispatched by version: `item1a_units.v2`
+  (frozen, byte-identical to the grammar behind every committed v2 artifact,
+  callable via `extract_units(grammar_version=...)`) and `item1a_units.v3`
+  (the default). An unknown grammar version is refused with a stable code.
+- **Generic grammar classes added in v3** — closed, deterministic, line-
+  anchored regex classes; no LLM, no embeddings, no fuzzy matching, no
+  issuer/CIK/accession/filename/hash rule, and CI tests assert that absence:
+  1. the existing v2 suffix form (`... Risk` / `... Risks`), unchanged;
+  2. prefix category headings — `Risks Related to ...` / `Risk Related to ...`
+     / `Risks Relating to ...` with a capitalized connector (lowercase
+     "risks related to ..." is prose and stays rejected);
+  3. the `General Risk Factors` / `General Risk Factor` category heading;
+  4. `/` added to the closed punctuation set (compound category headings);
+     sentence terminals stay outside every class, so prose keeps its period
+     and fails, and length bounds are enforced exactly.
+- **Repeated normalized headings never collapse.** Two units whose headings
+  normalize to the same key keep distinct canonical sequence-aware identities
+  (`side:sequence:unit_key`). Ambiguous duplicate-heading units serialize one
+  undetermined change **per unit** (v2 collapsed them to one change per key),
+  annotation packets emit one row and one machine label per occurrence bound
+  to its own unit id, and the synthetic regression labels match those changes
+  by identity. The unit id, not the normalized heading, is the primary key at
+  every seam.
+- **The v2 evidence is untouched.** Every committed v2 artifact — the holdout
+  manifest, the nine human-verified annotations (28 labels), the gold
+  evaluation report and its metrics, both evaluation configs, all
+  blind-extraction and verification reports, and HOLDOUT_EVALUATION.md — is
+  byte-identical and keeps its recorded v2 identity. The live evaluator now
+  *refuses* to gold-score either frozen corpus (version gate), so the v2
+  numbers cannot be silently recomputed under v3.
+- **v2 and v3 unit labels are not comparable.** v3 changes unit boundaries
+  and unit identities, so the label universe differs; no v2 label-level
+  metric may be set beside a future v3 metric as though the units were the
+  same thing.
+- **The old holdout is v3 development data.** Its failure modes were observed
+  before v3 was written, so it can never serve as unseen v3 evidence. Local
+  v3 diagnostics over it are structural only (unit counts, recognized
+  headings, repeated-heading preservation), gitignored, and are **not** a
+  holdout evaluation.
+- **What does not exist yet:** no v3 gold evaluation, no v3 unseen holdout,
+  no v3 accuracy number, no generalization claim (`generalization_claim_supported`
+  remains `false` and unsigned). The next step is a new metadata-only holdout
+  selection, frozen only after v3 is merged and frozen.
+
+Tests: `tests/test_item1a_unit_parser_v3.py` (generic synthetic fixtures for
+every positive and negative grammar class, determinism, sequence-aware
+identity, v2 byte-compatibility, packet-seam preservation, and CI pinning),
+plus the updated detector/regression suites — all in the required
+`comparison-regression` check.
 
 ---
 

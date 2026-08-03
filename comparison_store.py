@@ -84,8 +84,10 @@ from governance.comparison_schema import (
 # the logical identity key: a new workflow version legitimately re-compares
 # the same pair under a NEW comparison id, which is exactly how results
 # produced by an older detector version get re-detected without ever being
-# overwritten (v2: detector gained the citation/numeric/direction validators).
-WORKFLOW_VERSION = "comparison_workflow.v2"
+# overwritten (v2: detector gained the citation/numeric/direction validators;
+# v3: the detector's unit-heading grammar is item1a_units.v3 and ambiguous
+# duplicate-heading units serialize one change per unit).
+WORKFLOW_VERSION = "comparison_workflow.v3"
 
 STATUS_READY_FOR_DETECTION = "ready_for_detection"
 STATUS_QUEUED_FOR_DETECTION = "queued_for_detection"

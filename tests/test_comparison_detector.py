@@ -277,8 +277,24 @@ def test_ambiguous_alignment_produces_undetermined():
         chunks=unit_chunks("curr-f", "y.pdf:1:bbb", "Cyber Risks\nNew body."),
     )
     changes = detect_changes(prev_load, curr_load, "prev-f", "curr-f")
-    assert [c["change_type"] for c in changes] == ["undetermined"]
-    assert changes[0]["undetermined_reason"].startswith("ambiguous_unit_alignment")
+    # v3: one undetermined change PER affected unit (two previous occurrences
+    # plus the current unit that cannot align to them), each under its own
+    # sequence-aware identity — never one collapsed change per heading key.
+    assert [c["change_type"] for c in changes] == ["undetermined"] * 3
+    assert all(
+        c["undetermined_reason"].startswith("ambiguous_unit_alignment")
+        for c in changes
+    )
+    assert len({c["change_id"] for c in changes}) == 3
+    occurrences = [
+        c["undetermined_reason"].rsplit("occurrence ", 1)[1].rstrip(")")
+        for c in changes
+    ]
+    assert occurrences == [
+        "previous:000:cyber-risks",
+        "previous:001:cyber-risks",
+        "current:000:cyber-risks",
+    ]
 
 
 # --- Change semantics on the controlled pair (tests 6-8) ---------------------

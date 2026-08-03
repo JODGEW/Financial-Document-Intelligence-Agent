@@ -280,15 +280,18 @@ def test_missing_section_never_becomes_mass_added_or_removed(
 
 
 def test_ambiguous_heading_reason_is_exact(labels, chunk_outcomes):
-    """Test 7: the duplicate-heading fixture yields exactly one undetermined
-    change carrying the ambiguous_unit_alignment reason."""
+    """Test 7: the duplicate-heading fixture yields one undetermined change
+    PER affected unit occurrence (v3 serialization: one previous unit plus two
+    current units share the key), every one carrying the
+    ambiguous_unit_alignment reason under a distinct sequence-aware change id."""
     outcome = chunk_outcomes["ambiguous-heading-pair"]
-    assert len(outcome["changes"]) == 1
-    change = outcome["changes"][0]
-    assert change["change_type"] == "undetermined"
-    assert change["undetermined_reason"].startswith("ambiguous_unit_alignment")
+    assert len(outcome["changes"]) == 3
+    assert len({change["change_id"] for change in outcome["changes"]}) == 3
+    for change in outcome["changes"]:
+        assert change["change_type"] == "undetermined"
+        assert change["undetermined_reason"].startswith("ambiguous_unit_alignment")
     score = _score(labels, "ambiguous-heading-pair", chunk_outcomes)
-    assert score["undetermined_reason_correct"] == score["undetermined_reason_total"] == 1
+    assert score["undetermined_reason_correct"] == score["undetermined_reason_total"] == 3
     assert score["unchanged_false_positives"] == []
 
 
@@ -395,7 +398,7 @@ def test_wrong_undetermined_code_reduces_reason_accuracy(labels, chunk_outcomes)
         "previous_section_missing"
     )
     score = ecr.score_fixture(mutated, chunk_outcomes["ambiguous-heading-pair"])
-    assert score["undetermined_reason_total"] == 1
+    assert score["undetermined_reason_total"] == 3
     assert score["undetermined_reason_correct"] == 0
     metrics = ecr.aggregate_metrics([score], {"x": True})
     assert metrics["undetermined_reason_accuracy"]["value"] == 0.0
@@ -542,11 +545,11 @@ def test_report_carries_required_provenance(report):
     """E.12: schema/detector/workflow/validator versions, fixture hashes,
     denominators, and gate results all present."""
     versions = report["versions"]
-    assert versions["label_schema_version"] == "comparison-regression.v1"
+    assert versions["label_schema_version"] == "comparison-regression.v2"
     assert versions["comparison_schema_version"] == "comparison.v1"
     assert versions["export_schema_version"] == "comparison.export.v1"
-    assert versions["detector_version"] == "item1a_detector.v2"
-    assert versions["workflow_version"] == "comparison_workflow.v2"
+    assert versions["detector_version"] == "item1a_detector.v3"
+    assert versions["workflow_version"] == "comparison_workflow.v3"
     assert set(versions["validator_versions"]) == {
         "citation_support", "numeric_consistency", "direction_consistency"
     }

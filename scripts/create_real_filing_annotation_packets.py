@@ -83,19 +83,22 @@ def _unit_index(record: dict[str, Any], side: str) -> dict[str, dict[str, Any]]:
 
 
 def _evidence_pointers(
-    result: dict[str, Any] | None, unit_keys: set[str]
+    result: dict[str, Any] | None, candidates: set[str]
 ) -> dict[str, dict[str, list[str]]]:
-    """change unit_key -> {side: [chunk_id]} recovered from detector output.
+    """change label -> {side: [chunk_id]} recovered from detector output.
 
-    The unit key is recovered by recomputing the detector's deterministic
+    The label is recovered by recomputing the detector's deterministic
     ``change_id``, the same technique the synthetic regression evaluator uses,
     so a packet never has to guess which change belongs to which unit.
+    ``candidates`` holds both bare unit keys (added/removed/modified changes)
+    and sequence-aware unit identities (v3 per-unit ambiguous changes, whose
+    identity is exactly the build record's ``unit_id``).
     """
     pointers: dict[str, dict[str, list[str]]] = {}
     if not result:
         return pointers
     for change in result.get("changes", []):
-        key = _unit_key_of(change["change_id"], unit_keys)
+        key = _unit_key_of(change["change_id"], candidates)
         if key is None:
             continue
         pointers.setdefault(key, {"previous": [], "current": []})
@@ -106,21 +109,21 @@ def _evidence_pointers(
     return pointers
 
 
-def _unit_key_of(change_id: str, candidate_keys: set[str]) -> str | None:
-    for key in sorted(candidate_keys):
+def _unit_key_of(change_id: str, candidates: set[str]) -> str | None:
+    for key in sorted(candidates):
         for change_type in ("added", "removed", "modified", "undetermined"):
             if change_id == comparison_detector._change_id(change_type, key):  # noqa: SLF001
                 return key
     return None
 
 
-def _proposed_changes(result: dict[str, Any] | None, unit_keys: set[str]):
-    """[(unit_key, change_type, undetermined_reason)] from detector output."""
+def _proposed_changes(result: dict[str, Any] | None, candidates: set[str]):
+    """[(label, change_type, undetermined_reason)] from detector output."""
     proposed = []
     if not result:
         return proposed
     for change in result.get("changes", []):
-        key = _unit_key_of(change["change_id"], unit_keys)
+        key = _unit_key_of(change["change_id"], candidates)
         proposed.append(
             (
                 key,
@@ -163,10 +166,19 @@ def build_packet(
     previous_index = _unit_index(record, "previous")
     current_index = _unit_index(record, "current")
     unit_keys = set(previous_index) | set(current_index)
-    pointers = _evidence_pointers(result, unit_keys)
+    # v3 ambiguous changes are identified per unit by the sequence-aware
+    # identity, which is byte-identical to the build record's unit_id — so
+    # unit ids are candidate labels alongside bare keys.
+    unit_ids = {
+        unit["unit_id"]
+        for side in ("previous", "current")
+        for unit in record[side]["units"]
+    }
+    candidates = unit_keys | unit_ids
+    pointers = _evidence_pointers(result, candidates)
     detected_by_key = {
         key: (change_type, reason)
-        for key, change_type, reason, _cid in _proposed_changes(result, unit_keys)
+        for key, change_type, reason, _cid in _proposed_changes(result, candidates)
         if key is not None
     }
 
@@ -179,8 +191,15 @@ def build_packet(
         current_unit: dict[str, Any] | None,
         unit_key: str,
         alignment_basis: str,
+        detected_lookup: str | None = None,
     ) -> None:
-        detected = detected_by_key.get(unit_key)
+        lookup = detected_lookup or unit_key
+        detected = detected_by_key.get(lookup)
+        if detected is None and detected_lookup is not None:
+            # Historical v2-shaped results carry one collapsed change per
+            # ambiguous key; fall back so old records stay readable.
+            detected = detected_by_key.get(unit_key)
+            lookup = unit_key
         if detected is not None:
             proposed_type, reason = detected
         elif previous_unit is not None and current_unit is not None:
@@ -213,7 +232,7 @@ def build_packet(
                 "current_excerpt": current_unit["excerpt"] if current_unit else None,
                 "machine_proposed_change_type": proposed_type,
                 "machine_proposed_undetermined_reason": reason,
-                "evidence_chunk_ids": pointers.get(unit_key, {"previous": [], "current": []}),
+                "evidence_chunk_ids": pointers.get(lookup, {"previous": [], "current": []}),
                 "proposal_source": rfb.ANNOTATION_MACHINE_PROPOSED,
             }
         )
@@ -260,13 +279,23 @@ def build_packet(
             unit_key=unit.unit_key,
             alignment_basis="unmatched_current",
         )
-    for key in ambiguous:
-        _emit(
-            previous_unit=previous_index.get(key),
-            current_unit=current_index.get(key),
-            unit_key=key,
-            alignment_basis="ambiguous_heading",
-        )
+    # One row PER UNIT whose heading key is ambiguous, bound to that unit's
+    # own unit_id — never one collapsed row per heading key, so a filing that
+    # repeats a heading gets every occurrence in front of the reviewer and
+    # every unit id is labeled exactly once (the closure the annotation
+    # validator enforces).
+    ambiguous_keys = set(ambiguous)
+    for side in ("previous", "current"):
+        for unit in record[side]["units"]:
+            if unit["unit_key"] not in ambiguous_keys:
+                continue
+            _emit(
+                previous_unit=unit if side == "previous" else None,
+                current_unit=unit if side == "current" else None,
+                unit_key=unit["unit_key"],
+                alignment_basis="ambiguous_heading",
+                detected_lookup=unit["unit_id"],
+            )
 
     packet = {
         "schema_version": rfb.PACKET_SCHEMA_VERSION,

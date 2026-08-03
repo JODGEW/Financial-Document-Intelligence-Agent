@@ -2,7 +2,7 @@
   "fixture_id": "ambiguous-heading-pair",
   "synthetic": true,
   "notice": "CONTROLLED SYNTHETIC FIXTURE. Dunmore Energy is a fictional company invented for this repository's regression suite. These are pre-parsed chunk fixtures (the shape ingestion would produce), not real SEC filings, and metrics computed over them say nothing about real-filing accuracy.",
-  "scenario": "The current filing repeats the normalized heading 'Supply Chain Risks' twice. Alignment for that key is ambiguous, so the detector must emit one undetermined change with the ambiguous_unit_alignment reason instead of guessing which unit pairs.",
+  "scenario": "The current filing repeats the normalized heading 'Supply Chain Risks' twice. Alignment for that key is ambiguous, so the detector must emit one undetermined change per affected unit occurrence (sequence-aware identity) with the ambiguous_unit_alignment reason instead of guessing which unit pairs.",
   "company_key": "dunmore energy",
   "company_name": "Dunmore Energy",
   "form_type": "10-K",

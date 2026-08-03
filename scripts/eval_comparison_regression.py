@@ -64,7 +64,10 @@ from governance.comparison_schema import (  # noqa: E402
     SECTION_ITEM_1A,
 )
 
-LABEL_SCHEMA_VERSION = "comparison-regression.v1"
+# v2: expected changes may carry sequence-aware ``unit_identities``
+# (side:sequence:unit_key) for changes the v3 detector serializes per unit —
+# ambiguous duplicate-heading occurrences. Matching stays change_id-exact.
+LABEL_SCHEMA_VERSION = "comparison-regression.v2"
 LABELS_PATH = _REPO_ROOT / "tests" / "fixtures" / "comparison_regression_labels.json"
 FIXTURES_DIR = _REPO_ROOT / "tests" / "fixtures" / "comparison_regression"
 DEFAULT_BASELINE = _REPO_ROOT / "eval" / "comparison_regression_baseline.json"
@@ -231,6 +234,30 @@ def validate_labels(labels: dict[str, Any]) -> None:
                     f"{fixture_id}/{unit_key}: undetermined changes require an "
                     "undetermined_reason_code",
                 )
+
+            identities = change.get("unit_identities")
+            if identities is not None:
+                _require(
+                    isinstance(identities, list)
+                    and bool(identities)
+                    and all(
+                        isinstance(identity, str) and bool(identity.strip())
+                        for identity in identities
+                    )
+                    and len(set(identities)) == len(identities),
+                    f"{fixture_id}/{unit_key}: unit_identities must be a "
+                    "non-empty list of unique non-empty strings",
+                )
+                for identity in identities:
+                    parts = identity.split(":", 2)
+                    _require(
+                        len(parts) == 3
+                        and parts[0] in ("previous", "current")
+                        and parts[1].isdigit()
+                        and parts[2] == unit_key,
+                        f"{fixture_id}/{unit_key}: unit identity {identity!r} "
+                        "must be side:sequence:unit_key for this unit_key",
+                    )
 
         unchanged_keys: set[str] = set()
         for unit in fixture.get("expected_unchanged_units") or []:
@@ -762,13 +789,21 @@ def score_fixture(fixture: dict[str, Any], outcome: dict[str, Any]) -> dict[str,
     unchanged_keys = {
         unit["unit_key"] for unit in fixture.get("expected_unchanged_units") or []
     }
-    candidate_keys = set(expected_by_key) | unchanged_keys
+    # Sequence-aware identities (v3 per-unit ambiguous changes) are candidate
+    # labels too; a recovered identity scores under its label's unit_key.
+    identity_to_key = {
+        identity: change["unit_key"]
+        for change in fixture.get("expected_changes") or []
+        for identity in change.get("unit_identities") or []
+    }
+    candidate_keys = set(expected_by_key) | unchanged_keys | set(identity_to_key)
 
     detected: set[tuple[str, str]] = set()
     detected_keys: set[str] = set()
     reason_results: list[bool] = []
     for change in outcome["changes"]:
-        key = _unit_key_of(change["change_id"], candidate_keys)
+        recovered = _unit_key_of(change["change_id"], candidate_keys)
+        key = identity_to_key.get(recovered, recovered)
         label = key if key is not None else f"unlabeled:{change['change_id']}"
         detected.add((label, change["change_type"]))
         detected_keys.add(label)
@@ -789,7 +824,8 @@ def score_fixture(fixture: dict[str, Any], outcome: dict[str, Any]) -> dict[str,
     # Evidence-side requirements are asserted per matched expected change.
     side_ok = True
     for change in outcome["changes"]:
-        key = _unit_key_of(change["change_id"], candidate_keys)
+        recovered = _unit_key_of(change["change_id"], candidate_keys)
+        key = identity_to_key.get(recovered, recovered)
         if key is None or key not in expected_by_key:
             continue
         wanted = set(expected_by_key[key]["evidence_sides"])

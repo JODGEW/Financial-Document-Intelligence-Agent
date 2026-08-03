@@ -42,17 +42,30 @@ BENCHMARK_SUITES = (
 
 @pytest.fixture(scope="module")
 def evaluation_config():
-    return evaluator.load_evaluation_config()
+    """The committed config's shape, redeclared for the LIVE workflow.
+
+    The committed file stays frozen at the v2 identity it evaluated (asserted
+    separately below); synthetic corpora in this suite are built by the live
+    v3 workflow, so their config must declare the live versions or every gold
+    run would refuse on the version gate instead of exercising the behavior
+    under test.
+    """
+    document = dict(evaluator.load_evaluation_config())
+    document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
+    document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
+    return document
 
 
 def _write_matching_config(tmp_path, benchmark_id):
-    """The real evaluation config, renamed to the corpus under test.
+    """The live-version evaluation config, renamed to the corpus under test.
 
     A config describes exactly one corpus and the evaluator refuses one whose
     benchmark_id is not the manifest's. These synthetic corpora are not
     real_filing_v1, so they carry their own config rather than borrowing it.
     """
     document = dict(evaluator.load_evaluation_config())
+    document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
+    document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
     document["benchmark_id"] = benchmark_id
     path = tmp_path / "evaluation_config.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
@@ -223,17 +236,17 @@ def test_explicit_new_run_accepts_a_version_change(corpus, evaluation_config):
     assert report["gold_metrics_available"] is True
 
 
-def test_committed_evaluation_config_matches_the_live_versions(evaluation_config):
-    assert (
-        evaluation_config["declared_detector_version"]
-        == comparison_detector.DETECTOR_VERSION
-    )
-    assert (
-        evaluation_config["declared_workflow_version"]
-        == comparison_store.WORKFLOW_VERSION
-    )
-    assert evaluation_config["pass_fail_thresholds"] is None
-    assert evaluation_config["gold_status_required"] == rfb.GOLD_STATUS
+def test_committed_evaluation_config_stays_frozen_at_its_v2_identity():
+    """The committed dev-corpus config describes the frozen v2 evaluation and
+    must never silently advance with the live code: the corpus it names is v2
+    development data, and the live v3 workflow refuses to gold-score it."""
+    committed = evaluator.load_evaluation_config()
+    assert committed["declared_detector_version"] == "item1a_detector.v2"
+    assert committed["declared_workflow_version"] == "comparison_workflow.v2"
+    assert committed["declared_detector_version"] != comparison_detector.DETECTOR_VERSION
+    assert committed["declared_workflow_version"] != comparison_store.WORKFLOW_VERSION
+    assert committed["pass_fail_thresholds"] is None
+    assert committed["gold_status_required"] == rfb.GOLD_STATUS
 
 
 def test_refusal_collects_every_reason_not_just_the_first(corpus, evaluation_config):
@@ -771,7 +784,7 @@ def test_synthetic_regression_labels_and_baseline_are_untouched():
             REPO_ROOT / "tests" / "fixtures" / "comparison_regression_labels.json"
         ).read_text(encoding="utf-8")
     )
-    assert labels["label_schema_version"] == "comparison-regression.v1"
+    assert labels["label_schema_version"] == "comparison-regression.v2"
     assert len(labels["fixtures"]) == 5
     baseline = json.loads(
         (

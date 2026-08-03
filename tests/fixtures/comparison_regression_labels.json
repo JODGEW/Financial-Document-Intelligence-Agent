@@ -1,8 +1,8 @@
 {
-  "label_schema_version": "comparison-regression.v1",
+  "label_schema_version": "comparison-regression.v2",
   "description": "Expected behavior of the controlled Item 1A comparison workflow across five CONTROLLED SYNTHETIC fixture pairs. Every company here is fictional and every document is written or hand-assembled for this repository. This is a controlled regression suite that protects deterministic behavior from silent drift — it is NOT a real-filing benchmark, and no metric computed against it is evidence of accuracy on real SEC filings.",
   "section_key": "item_1a_risk_factors",
-  "matching_semantics": "A detected change matches an expected change iff (unit_key, change_type) are both equal, where unit_key is the detector's normalized heading slug (comparison_detector._slug) and the match is verified by recomputing the deterministic change_id. Undetermined and unlabeled detected changes count in the detected set and lower precision; they are never silently excluded. Aligned units whose content is identical emit no change (comparison.v1 has no 'unchanged' change type), so expected_unchanged_units assert ABSENCE.",
+  "matching_semantics": "A detected change matches an expected change iff (unit_key, change_type) are both equal, where unit_key is the detector's normalized heading slug (comparison_detector._slug) and the match is verified by recomputing the deterministic change_id. Changes the v3 detector serializes per unit under a sequence-aware identity (ambiguous duplicate-heading occurrences, identified as side:sequence:unit_key) are matched by listing those identities in the expected change's unit_identities and score under its unit_key. Undetermined and unlabeled detected changes count in the detected set and lower precision; they are never silently excluded. Aligned units whose content is identical emit no change (comparison.v1 has no 'unchanged' change type), so expected_unchanged_units assert ABSENCE.",
   "fixtures": [
     {
       "fixture_id": "standard-pair",
@@ -27,35 +27,48 @@
         {
           "unit_key": "cybersecurity-and-data-security-risks",
           "change_type": "modified",
-          "evidence_sides": ["previous", "current"],
+          "evidence_sides": [
+            "previous",
+            "current"
+          ],
           "undetermined_reason_code": null,
           "why": "FY2025 adds two attempted intrusion events, raises cyber insurance from $35M to $50M, and reports zero-trust rollout complete."
         },
         {
           "unit_key": "regulatory-and-compliance-risks",
           "change_type": "modified",
-          "evidence_sides": ["previous", "current"],
+          "evidence_sides": [
+            "previous",
+            "current"
+          ],
           "undetermined_reason_code": null,
           "why": "FY2025 adds the December 2025 SEC AI-rule proposal and the March 2025 deficiency letter."
         },
         {
           "unit_key": "concentration-and-customer-risks",
           "change_type": "modified",
-          "evidence_sides": ["previous", "current"],
+          "evidence_sides": [
+            "previous",
+            "current"
+          ],
           "undetermined_reason_code": null,
           "why": "Top-ten concentration moves 41% -> 38%; largest client 8.1% -> 7.2%."
         },
         {
           "unit_key": "artificial-intelligence-and-model-risk",
           "change_type": "added",
-          "evidence_sides": ["current"],
+          "evidence_sides": [
+            "current"
+          ],
           "undetermined_reason_code": null,
           "why": "The AI and model risk factor exists only in the FY2025 filing, and both sections are proven complete."
         },
         {
           "unit_key": "reference-rate-transition-risks",
           "change_type": "removed",
-          "evidence_sides": ["previous"],
+          "evidence_sides": [
+            "previous"
+          ],
           "undetermined_reason_code": null,
           "why": "The reference-rate transition risk factor exists only in the FY2024 filing, and both sections are proven complete."
         }
@@ -161,7 +174,7 @@
       "kind": "chunks",
       "synthetic": true,
       "source": "tests/fixtures/comparison_regression/ambiguous_heading_pair.json",
-      "scenario": "The current filing repeats a normalized risk-factor heading. Alignment for that key is ambiguous and must stay undetermined rather than guessing a pairing.",
+      "scenario": "The current filing repeats a normalized risk-factor heading. Alignment for that key is ambiguous and must stay undetermined rather than guessing a pairing; every occurrence of the repeated heading is serialized as its own undetermined change under a sequence-aware unit identity, never collapsed into one change per heading key.",
       "previous_filing": {
         "filing_id": "dunmore-energy:10-k:2024-12-31",
         "company_key": "dunmore energy",
@@ -181,7 +194,12 @@
           "change_type": "undetermined",
           "evidence_sides": [],
           "undetermined_reason_code": "ambiguous_unit_alignment",
-          "why": "The heading key is not unique within the current filing, so both of its units are excluded from pairing and reported once as ambiguous."
+          "why": "The heading key is not unique within the current filing, so all three of its units (one previous, two current) are excluded from pairing and each is reported as its own undetermined change under its sequence-aware unit identity.",
+          "unit_identities": [
+            "previous:001:supply-chain-risks",
+            "current:001:supply-chain-risks",
+            "current:002:supply-chain-risks"
+          ]
         }
       ],
       "expected_unchanged_units": [
@@ -222,14 +240,18 @@
         {
           "unit_key": "legacy-interest-rate-risks",
           "change_type": "removed",
-          "evidence_sides": ["previous"],
+          "evidence_sides": [
+            "previous"
+          ],
           "undetermined_reason_code": null,
           "why": "Documented v1 limitation: heading alignment is exact and the content-hash fallback requires an EXACT normalized content match, so a retitled-and-reworded unit does not pair."
         },
         {
           "unit_key": "benchmark-interest-rate-risks",
           "change_type": "added",
-          "evidence_sides": ["current"],
+          "evidence_sides": [
+            "current"
+          ],
           "undetermined_reason_code": null,
           "why": "The other half of the same documented limitation: the retitled unit surfaces as added rather than modified."
         }

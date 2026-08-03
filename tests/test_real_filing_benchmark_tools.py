@@ -848,7 +848,7 @@ def test_build_runs_the_existing_comparison_workflow(built_pair):
     execution = built_pair["record"]["execution"]
     assert execution["executed"] is True
     assert execution["lifecycle"] == "detected"
-    assert execution["detector_version"] == "item1a_detector.v2"
+    assert execution["detector_version"] == "item1a_detector.v3"
     assert execution["change_count"] >= 1
     assert execution["evidence_total"] >= 1
     assert execution["evidence_unresolved"] == 0

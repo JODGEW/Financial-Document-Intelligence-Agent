@@ -10,7 +10,9 @@ ComparisonResult that is persisted through comparison_store.
 Determinism contract
 --------------------
 Everything is rule-based: section reconstruction is ordered by the ingestion
-``chunk_seq``, unit boundaries come from a conservative heading regex, and
+``chunk_seq``, unit boundaries come from a conservative VERSIONED heading
+grammar (UNIT_GRAMMAR_V2 frozen, UNIT_GRAMMAR_V3 current — closed regex
+classes, no fuzzy matching, no embeddings, no LLM, no filing identity), and
 alignment is (1) exact normalized heading match then (2) exact normalized
 content match. There is deliberately NO similarity stage in v1 — the
 controlled fixtures do not justify one, so unmatched units stay unmatched
@@ -96,7 +98,15 @@ logger = logging.getLogger("comparison_detector")
 # stored under v1 remain readable; re-detection of the same pair happens as a
 # NEW comparison under the bumped workflow version (comparison_store), never
 # by overwriting the v1 result.
-DETECTOR_VERSION = "item1a_detector.v2"
+# v3: the unit-heading grammar is versioned (see UNIT_GRAMMAR_* below). The
+# v3 grammar adds three generic heading classes the v2 suffix rule could not
+# express (prefix "Risks Related/Relating to ...", the "General Risk Factors"
+# category, and slash punctuation), and ambiguous duplicate-heading units are
+# serialized one change per unit under a sequence-aware identity instead of
+# one change per collapsed heading key. Results stored under v2 remain
+# readable under their recorded v2 identity; the frozen v2 grammar stays
+# callable via extract_units(grammar_version=UNIT_GRAMMAR_V2).
+DETECTOR_VERSION = "item1a_detector.v3"
 
 # Stable reason codes. Section/data codes appear as the prefix of a change's
 # undetermined_reason; lifecycle codes surface through typed errors -> API.
@@ -167,12 +177,66 @@ def _safe_failure_summary(failure_code: str) -> str:
     )
     return summary[: comparison_store.MAX_FAILURE_SUMMARY_CHARS]
 
-# Conservative risk-factor heading rule for v1: a standalone title-case line
-# ending in "Risk"/"Risks" (as the controlled fixtures use). The SEC section
-# heading itself ("ITEM 1A. RISK FACTORS") never matches (ends in FACTORS),
-# and body sentences never match (must be a full line, capital start, no
-# terminal period). ALL-CAPS heading styles are a documented v1 limitation.
+# --- Versioned unit-heading grammars -----------------------------------------
+#
+# Unit segmentation is owned by this module and versioned explicitly. The
+# grammar version is bound 1:1 to DETECTOR_VERSION (v2 grammar ↔
+# item1a_detector.v2, v3 grammar ↔ item1a_detector.v3); no separate field is
+# serialized. The v2 grammar is FROZEN — it exists so the historical behavior
+# behind the committed v2 artifacts stays reproducible in-repo, and its regex
+# must never change.
+
+UNIT_GRAMMAR_V2 = "item1a_units.v2"
+UNIT_GRAMMAR_V3 = "item1a_units.v3"
+DEFAULT_UNIT_GRAMMAR = UNIT_GRAMMAR_V3
+
+# Stable code for an unknown grammar version (a caller error, not a data
+# condition — deliberately NOT in DOMAIN_FAILURE_CODES, so it could never be
+# persisted verbatim even if misused).
+REASON_UNIT_GRAMMAR_UNKNOWN = "unit_grammar_version_unknown"
+
+# v2 grammar (frozen): a standalone title-case line ending in "Risk"/"Risks"
+# (as the controlled fixtures use). The SEC section heading itself
+# ("ITEM 1A. RISK FACTORS") never matches (ends in FACTORS), and body
+# sentences never match (must be a full line, capital start, no terminal
+# period). ALL-CAPS heading styles are a documented limitation, as are the
+# prefix/category forms v3 adds.
 _HEADING_RE = re.compile(r"^[A-Z][A-Za-z0-9 ,&()'’-]{2,79}Risks?$")
+
+# v3 grammar: three generic, closed heading classes over the same stripped
+# complete lines. The punctuation class is v2's plus "/" only — the one
+# addition generic category-heading syntax justifies (e.g. a
+# "Compliance/Legal" compound). Sentence terminals (. ! ? ; :) stay outside
+# every class, so prose keeps its period and fails; the capitalized
+# "Related"/"Relating" connector is the structural control that rejects
+# wrapped prose ("risks related to ..."), which uses a lowercase connector.
+# Bounds: suffix ≤ 85 chars (v2's budget unchanged), prefix ≤ 98, general is
+# a closed literal. No issuer, filename, accession, hash, or fuzzy rule.
+_V3_SUFFIX_HEADING_RE = re.compile(r"^[A-Z][A-Za-z0-9 ,&()'’/-]{2,79}Risks?$")
+_V3_PREFIX_HEADING_RE = re.compile(
+    r"^Risks? (?:Related|Relating) to [A-Z][A-Za-z0-9 ,&()'’/-]{0,79}$"
+)
+_V3_GENERAL_HEADING_RE = re.compile(r"^General Risk Factors?$")
+
+
+def _is_v2_heading(line: str) -> bool:
+    return bool(_HEADING_RE.match(line))
+
+
+def _is_v3_heading(line: str) -> bool:
+    return bool(
+        _V3_SUFFIX_HEADING_RE.match(line)
+        or _V3_PREFIX_HEADING_RE.match(line)
+        or _V3_GENERAL_HEADING_RE.match(line)
+    )
+
+
+# Closed dispatch: version string -> heading predicate. Deterministic, no
+# fallback — an unknown version is refused, never silently defaulted.
+_UNIT_GRAMMARS = {
+    UNIT_GRAMMAR_V2: _is_v2_heading,
+    UNIT_GRAMMAR_V3: _is_v3_heading,
+}
 
 # Reconstruction: consecutive chunks may share splitter overlap. We dedupe by
 # the largest suffix-of-previous == prefix-of-next match in this window.
@@ -276,7 +340,14 @@ class SectionLoad:
 
 @dataclass
 class RiskFactorUnit:
-    """A deterministic comparison unit: heading + its following paragraphs."""
+    """A deterministic comparison unit: heading + its following paragraphs.
+
+    ``sequence`` is the unit's 0-based position in its side's extracted unit
+    list (source order, preamble included). It exists so two units whose
+    headings normalize to the same ``unit_key`` keep distinct canonical
+    identities — see ``unit_identity``. It defaults to 0 only for callers that
+    rebuild units for alignment (which reads unit_key/content_hash alone).
+    """
 
     unit_key: str
     heading: str
@@ -284,6 +355,20 @@ class RiskFactorUnit:
     text: str
     content_hash: str
     chunks: list[SectionChunk]
+    sequence: int = 0
+
+
+def unit_identity(side: str, unit: RiskFactorUnit) -> str:
+    """Canonical sequence-aware unit identity: ``side:sequence:unit_key``.
+
+    Deliberately the same shape as real_filing_benchmark.unit_id (which
+    enumerates this module's unit list in order, so ``sequence`` there equals
+    ``sequence`` here). Deterministic — no wall clock, paths, database ids,
+    or randomness — and unique per side by construction (sequence is a list
+    position). This, not the normalized heading key, is the primary key for
+    anything that must survive repeated normalized headings.
+    """
+    return f"{side}:{unit.sequence:03d}:{unit.unit_key}"
 
 
 class _UnitParseFailure(Exception):
@@ -419,7 +504,10 @@ def _reconstruct(
 
 
 def extract_units(
-    chunks: list[SectionChunk], filing_id: str
+    chunks: list[SectionChunk],
+    filing_id: str,
+    *,
+    grammar_version: str = DEFAULT_UNIT_GRAMMAR,
 ) -> list[RiskFactorUnit]:
     """Deterministic risk-factor units from a loaded section.
 
@@ -428,7 +516,20 @@ def extract_units(
     maps back to the chunks whose spans intersect it — no synthesized,
     untraceable evidence text. Raises _UnitParseFailure when nothing usable
     can be extracted.
+
+    ``grammar_version`` selects the closed heading grammar (UNIT_GRAMMAR_V2 /
+    UNIT_GRAMMAR_V3). Everything outside heading recognition — reconstruction,
+    boundary creation, preamble handling, keying, ordering, chunk mapping —
+    is identical across versions; an unknown version is refused with a stable
+    code.
     """
+    is_heading = _UNIT_GRAMMARS.get(grammar_version)
+    if is_heading is None:
+        raise DetectionError(
+            REASON_UNIT_GRAMMAR_UNKNOWN,
+            f"unknown unit grammar version '{grammar_version}'",
+        )
+
     text, spans = _reconstruct(chunks)
     if not _normalize(text):
         raise _UnitParseFailure("section text is empty after reconstruction")
@@ -437,7 +538,7 @@ def extract_units(
     offset = 0
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
-        if _HEADING_RE.match(stripped):
+        if is_heading(stripped):
             headings.append((offset, offset + len(line), stripped))
         offset += len(line)
 
@@ -471,6 +572,7 @@ def extract_units(
                 text=unit_text,
                 content_hash=_content_hash(unit_text),
                 chunks=unit_chunks,
+                sequence=len(units),
             )
         )
     if not units:
@@ -879,24 +981,39 @@ def detect_changes(
             )
         )
 
-    for key in ambiguous:
-        keyed_changes.append(
-            (
-                key,
-                _change(
-                    "undetermined",
-                    key,
-                    f"Risk-factor heading '{key}' appears more than once in a "
-                    "filing; alignment is ambiguous.",
-                    undetermined_reason=(
-                        f"{REASON_AMBIGUOUS_UNIT_ALIGNMENT}: heading key "
-                        f"'{key}' is not unique within a filing"
+    # v3: one undetermined change PER UNIT whose heading key is ambiguous,
+    # identified by the sequence-aware unit identity — two units that share a
+    # normalized heading must never collapse into one serialized change. The
+    # per-side sequence order below is deterministic, and the stable sort at
+    # the end preserves it among changes with an equal (key, type).
+    ambiguous_keys = set(ambiguous)
+    for side, side_units in (
+        ("previous", previous_units),
+        ("current", current_units),
+    ):
+        for unit in side_units:
+            if unit.unit_key not in ambiguous_keys:
+                continue
+            identity = unit_identity(side, unit)
+            keyed_changes.append(
+                (
+                    unit.unit_key,
+                    _change(
+                        "undetermined",
+                        identity,
+                        f"Risk-factor heading '{unit.heading}' is repeated "
+                        "within a filing, so this occurrence cannot be "
+                        "aligned deterministically.",
+                        undetermined_reason=(
+                            f"{REASON_AMBIGUOUS_UNIT_ALIGNMENT}: heading key "
+                            f"'{unit.unit_key}' is not unique within a "
+                            f"filing (occurrence {identity})"
+                        ),
+                        previous_filing_id=previous_filing_id,
+                        current_filing_id=current_filing_id,
                     ),
-                    previous_filing_id=previous_filing_id,
-                    current_filing_id=current_filing_id,
-                ),
+                )
             )
-        )
 
     for unit in unmatched_current:
         if both_complete:
