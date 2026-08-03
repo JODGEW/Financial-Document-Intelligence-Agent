@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -60,6 +61,10 @@ import real_filing_holdout as rfh  # noqa: E402
 from scripts import build_real_filing_benchmark as builder  # noqa: E402
 
 EVALUATION_REPORT_VERSION = "real-filing-benchmark.report.v1"
+#: v2 reports add the explicit evaluation-contract block (contract version,
+#: unit-identity contract, subject-matching mode). Only gold runs under the v2
+#: contract produce them; v1-contract and unlabeled reports keep the v1 shape.
+EVALUATION_REPORT_VERSION_V2 = "real-filing-benchmark.report.v2"
 
 #: The two manifest schemas this evaluator can read. They are validated by
 #: their own modules and are never cross-read: see ``load_manifest_dispatch``.
@@ -136,6 +141,65 @@ METRIC_NOTES = {
         "change_type) set equals the human-verified non-unchanged label set AND "
         "no unchanged-labelled unit was emitted as a change. Denominator is "
         "human-verified pairs."
+    ),
+}
+
+
+#: Contract-v2 metric documentation. The formulas are contract v1's; the
+#: subject identity is the change. Every denominator counts OCCURRENCES under
+#: the canonical sequence-aware identity, never distinct normalized headings.
+METRIC_NOTES_V2 = {
+    "change_precision": (
+        "Denominator: every evaluable predicted change subject, where a "
+        "subject is the exact canonical (previous unit identity, current unit "
+        "identity) pair the change binds. Numerator: predicted subjects that "
+        "exactly match an eligible gold subject with the same change type. "
+        "No unit_key fallback: a change that names no single occurrence is "
+        "invalid input and refuses the run rather than entering either count."
+    ),
+    "change_recall": (
+        "Denominator: every gold change subject whose expected_change_type is "
+        "not 'unchanged', counted per occurrence. Numerator: gold subjects "
+        "matched by an exact-subject prediction with the same change type."
+    ),
+    "change_type_accuracy": (
+        "Denominator: gold change subjects whose exact canonical subject was "
+        "detected at all — a missed occurrence is a recall failure, not a "
+        "type error, and is not double-counted here. Numerator: those whose "
+        "detected change type equals the expected type."
+    ),
+    "unchanged_false_positive_rate": (
+        "Denominator: gold 'unchanged' subjects, one per labelled occurrence "
+        "pair. Numerator: unchanged subjects either of whose canonical unit "
+        "identities appears in any detected change subject. comparison.v1 has "
+        "no 'unchanged' change type, so an 'unchanged' label asserts ABSENCE."
+    ),
+    "evidence_resolution_rate": (
+        "Unchanged from contract v1 and independent of subject matching: "
+        "evidence references that resolve to an indexed chunk of the correct "
+        "filing, over all evidence references, from the execution counters."
+    ),
+    "undetermined_reason_accuracy": (
+        "DENOMINATOR DIFFERS ON REAL FILINGS, as in contract v1: it counts "
+        "gold subjects carrying an expected_reason_code whose exact canonical "
+        "subject the detector actually reported as undetermined. Numerator: "
+        "those whose stored undetermined_reason starts with the expected code."
+    ),
+    "direction_consistency_accuracy": (
+        "DEFINITION DIFFERS FROM THE SYNTHETIC SUITE, as in contract v1: "
+        "comparison.v1 carries no direction field, so this scores the "
+        "detector's direction_consistency VALIDATOR against a human's "
+        "directional claim, over exact-subject matches with a labelled "
+        "direction only."
+    ),
+    "pair_exact_match_rate": (
+        "A pair matches exactly iff the detected set of canonical "
+        "(subject, change type) pairs EQUALS the gold non-unchanged set — no "
+        "missing subject, no extra subject, no wrong type — and no unchanged-"
+        "labelled unit identity was emitted in any detected change. Ordering "
+        "is irrelevant; a duplicate canonical subject on either side is an "
+        "invalid state that refuses the run rather than collapsing in a set. "
+        "Denominator is scored (human-verified) pairs."
     ),
 }
 
@@ -346,6 +410,198 @@ def load_evaluation_config(path: str | Path | None = None) -> dict[str, Any]:
             f"evaluation config not found: {target.name}",
         )
     return json.loads(target.read_text(encoding="utf-8"))
+
+
+# --- Evaluation contract ------------------------------------------------------
+#
+# The v2 holdout evaluation exposed an evaluator defect the detector had
+# already outgrown: gold matching keyed everything by the NORMALIZED unit_key,
+# so two units whose headings normalize identically collapsed into one metric
+# subject even though the v3 detector, the packet generator, and the annotation
+# admission validator all preserve each occurrence under the canonical
+# sequence-aware identity ``side:sequence:unit_key`` (``rfb.unit_id``, the same
+# shape as ``comparison_detector.unit_identity``).
+#
+# Fixing that changes metric SEMANTICS, and changed semantics may not hide
+# behind an unchanged version string. So the evaluation contract is explicit
+# and versioned:
+#
+#   contract v1  (evaluation.v1 + metrics.v1)  — the frozen historical
+#     semantics behind the committed v2-detector evaluations. unit_key-keyed
+#     matching, unchanged, byte-for-byte. It scores v2-detector artifacts ONLY.
+#   contract v2  (evaluation.v2 + metrics.v2)  — canonical-unit-identity
+#     matching. Required for v3-detector artifacts, refused for anything else.
+#
+# The pairing is closed: an unknown or mixed config/metrics version pairing
+# fails with a stable code, nothing is inferred from whichever report happens
+# to exist, and no legacy config is silently upgraded. The frozen v2
+# evaluation (benchmarks/real_filing_holdout_v1/gold_evaluation_report.json)
+# remains the only evaluation of record for that corpus and is never
+# recomputed: its config stays contract v1, and the live-version gate in
+# ``refusal_reasons`` refuses to rescore it under the v3 workflow.
+
+EVALUATION_CONFIG_VERSION_V1 = "real-filing-benchmark.evaluation.v1"
+EVALUATION_CONFIG_VERSION_V2 = "real-filing-benchmark.evaluation.v2"
+METRIC_DEFINITIONS_VERSION_V1 = rfb.METRIC_DEFINITIONS_VERSION
+METRIC_DEFINITIONS_VERSION_V2 = "real-filing-benchmark-metrics.v2"
+
+#: The artifact versions each contract may score. A contract describes the
+#: matching semantics that are valid for artifacts a specific detector and
+#: workflow produced; scoring any other artifact under it fails closed.
+CONTRACT_V1_DETECTOR = "item1a_detector.v2"
+CONTRACT_V1_WORKFLOW = "comparison_workflow.v2"
+CONTRACT_V2_DETECTOR = "item1a_detector.v3"
+CONTRACT_V2_WORKFLOW = "comparison_workflow.v3"
+#: The unit-identity grammar the v2 contract requires a config to declare.
+CONTRACT_V2_UNIT_GRAMMAR = comparison_detector.UNIT_GRAMMAR_V3
+
+SUBJECT_MATCHING_V1 = "normalized_unit_key"
+SUBJECT_MATCHING_V2 = "canonical_unit_identity"
+
+# Stable refusal codes for the contract seam.
+CONTRACT_VERSION_UNKNOWN = "evaluation_contract_version_unknown"
+CONTRACT_INCOMPATIBLE_DETECTOR = "evaluation_contract_incompatible_detector"
+CONTRACT_INCOMPATIBLE_WORKFLOW = "evaluation_contract_incompatible_workflow"
+CONTRACT_INCOMPATIBLE_UNIT_IDENTITY = (
+    "evaluation_contract_incompatible_unit_identity"
+)
+GOLD_SUBJECT_MISSING_UNIT_IDENTITY = "gold_subject_missing_unit_identity"
+GOLD_SUBJECT_UNKNOWN_UNIT_IDENTITY = "gold_subject_unknown_unit_identity"
+GOLD_SUBJECT_SIDE_MISMATCH = "gold_subject_side_mismatch"
+GOLD_SUBJECT_METADATA_MISMATCH = "gold_subject_metadata_mismatch"
+GOLD_SUBJECT_DUPLICATE = "gold_subject_duplicate"
+PREDICTION_SUBJECT_MISSING_UNIT_IDENTITY = (
+    "prediction_subject_missing_unit_identity"
+)
+PREDICTION_SUBJECT_UNKNOWN_UNIT_IDENTITY = (
+    "prediction_subject_unknown_unit_identity"
+)
+PREDICTION_SUBJECT_DUPLICATE = "prediction_subject_duplicate"
+UNIT_INVENTORY_NOT_CLOSED = "evaluation_unit_inventory_not_closed"
+SUBJECT_SHAPE_INVALID = "evaluation_subject_shape_invalid"
+
+
+@dataclass(frozen=True)
+class EvaluationContract:
+    """One resolved, closed pairing of config, metric, and identity semantics."""
+
+    contract_version: str
+    metric_definitions_version: str
+    report_version: str
+    scored_detector_version: str
+    scored_workflow_version: str
+    subject_matching: str
+
+
+_CONTRACT_V1 = EvaluationContract(
+    contract_version=EVALUATION_CONFIG_VERSION_V1,
+    metric_definitions_version=METRIC_DEFINITIONS_VERSION_V1,
+    report_version=EVALUATION_REPORT_VERSION,
+    scored_detector_version=CONTRACT_V1_DETECTOR,
+    scored_workflow_version=CONTRACT_V1_WORKFLOW,
+    subject_matching=SUBJECT_MATCHING_V1,
+)
+_CONTRACT_V2 = EvaluationContract(
+    contract_version=EVALUATION_CONFIG_VERSION_V2,
+    metric_definitions_version=METRIC_DEFINITIONS_VERSION_V2,
+    report_version=EVALUATION_REPORT_VERSION_V2,
+    scored_detector_version=CONTRACT_V2_DETECTOR,
+    scored_workflow_version=CONTRACT_V2_WORKFLOW,
+    subject_matching=SUBJECT_MATCHING_V2,
+)
+
+
+def resolve_evaluation_contract(
+    config_document: Mapping[str, Any]
+) -> EvaluationContract:
+    """Resolve the config's declared contract, refusing anything not closed.
+
+    The version comes from the config and only the config — never from the
+    live modules, an existing report, or a guess. A config that names no
+    contract, a partial one, or a mixed pairing refuses with a stable code
+    rather than being upgraded or defaulted.
+    """
+    declared_config = config_document.get("config_version")
+    declared_metrics = config_document.get("metric_definitions_version")
+    declared_grammar = config_document.get("declared_unit_grammar_version")
+    pairing = (declared_config, declared_metrics)
+    if pairing == (EVALUATION_CONFIG_VERSION_V1, METRIC_DEFINITIONS_VERSION_V1):
+        if declared_grammar is not None:
+            raise EvaluationRefused(
+                CONTRACT_INCOMPATIBLE_UNIT_IDENTITY,
+                "a contract-v1 evaluation config predates unit-identity "
+                f"declarations and cannot declare {declared_grammar!r}; the v1 "
+                "contract is frozen at normalized-unit-key matching",
+            )
+        return _CONTRACT_V1
+    if pairing == (EVALUATION_CONFIG_VERSION_V2, METRIC_DEFINITIONS_VERSION_V2):
+        if declared_grammar != CONTRACT_V2_UNIT_GRAMMAR:
+            raise EvaluationRefused(
+                CONTRACT_INCOMPATIBLE_UNIT_IDENTITY,
+                "a contract-v2 evaluation config must declare "
+                f"declared_unit_grammar_version={CONTRACT_V2_UNIT_GRAMMAR!r} "
+                f"(got {declared_grammar!r}); canonical subject matching is "
+                "defined over that grammar's sequence-aware unit identities",
+            )
+        return _CONTRACT_V2
+    raise EvaluationRefused(
+        CONTRACT_VERSION_UNKNOWN,
+        f"no evaluation contract pairs config_version={declared_config!r} "
+        f"with metric_definitions_version={declared_metrics!r}. Known "
+        f"contracts: v1 ({EVALUATION_CONFIG_VERSION_V1} + "
+        f"{METRIC_DEFINITIONS_VERSION_V1}) and v2 "
+        f"({EVALUATION_CONFIG_VERSION_V2} + {METRIC_DEFINITIONS_VERSION_V2}). "
+        "Nothing is inferred and no legacy config is silently upgraded.",
+    )
+
+
+def contract_artifact_reasons(
+    contract: EvaluationContract, states: list[dict[str, Any]]
+) -> tuple[list[dict[str, str]], frozenset[str]]:
+    """Refuse pairs whose built artifacts the contract may not score.
+
+    Build records stamp the detector and workflow versions that produced them
+    (``parser_versions``). Scoring artifacts one contract's semantics were
+    never defined for — v3 artifacts under unit-key matching, or v2 artifacts
+    under canonical matching — is exactly the silent cross-acceptance this
+    boundary exists to prevent, so both directions fail with stable codes.
+    Returns the reasons plus the ids of incompatible pairs, so downstream
+    subject validation skips artifacts it cannot describe.
+    """
+    reasons: list[dict[str, str]] = []
+    incompatible: set[str] = set()
+    for state in states:
+        record = state["build_record"]
+        if not record:
+            continue  # already reported as a per-pair problem
+        versions = record.get("parser_versions") or {}
+        detector = versions.get("detector")
+        workflow = versions.get("workflow")
+        if detector != contract.scored_detector_version:
+            incompatible.add(state["pair_id"])
+            reasons.append(
+                {
+                    "code": CONTRACT_INCOMPATIBLE_DETECTOR,
+                    "detail": (
+                        f"{state['pair_id']}: built by detector {detector!r}; "
+                        f"contract {contract.contract_version} scores "
+                        f"{contract.scored_detector_version!r} artifacts only"
+                    ),
+                }
+            )
+        if workflow != contract.scored_workflow_version:
+            incompatible.add(state["pair_id"])
+            reasons.append(
+                {
+                    "code": CONTRACT_INCOMPATIBLE_WORKFLOW,
+                    "detail": (
+                        f"{state['pair_id']}: built by workflow {workflow!r}; "
+                        f"contract {contract.contract_version} scores "
+                        f"{contract.scored_workflow_version!r} artifacts only"
+                    ),
+                }
+            )
+    return reasons, frozenset(incompatible)
 
 
 # --- Generalization claim sign-off --------------------------------------------
@@ -946,6 +1202,532 @@ def label_unit_key(label: dict[str, Any]) -> str:
     return _unit_key_from_unit_id(reference)
 
 
+# --- Contract-v2 canonical subjects -------------------------------------------
+#
+# Under the v2 contract the primary key of every evaluable thing — a predicted
+# change, a gold label, an alignment side, duplicate detection, closure, exact
+# match — is the complete canonical unit identity ``side:sequence:unit_key``.
+# ``unit_key`` stays as descriptive metadata inside that identity; it is never
+# a key on its own, so repeated normalized headings can no longer collapse.
+#
+# A SUBJECT is the ordered pair (previous identity | None, current identity |
+# None) a change or label binds, with the change type carried beside it, never
+# inside it. Gold and predicted subjects use the same constructor rules and
+# the same shape table, and matching is exact subject-key equality — no
+# heading similarity, no unit_key fallback, no order dependence, no
+# first-duplicate selection.
+
+#: Which sides each change shape must bind. ``True`` = required, ``False`` =
+#: forbidden, ``None`` = the existing annotation schema leaves it open
+#: (undetermined labels may bind either or both sides, never neither).
+_SUBJECT_SHAPES = {
+    "added": (False, True),
+    "removed": (True, False),
+    "modified": (True, True),
+    "unchanged": (True, True),
+    "undetermined": (None, None),
+}
+
+
+def _subject_shape_ok(
+    change_type: str, previous: str | None, current: str | None
+) -> bool:
+    shape = _SUBJECT_SHAPES.get(change_type)
+    if shape is None:
+        return False
+    for required, value in zip(shape, (previous, current)):
+        if required is True and value is None:
+            return False
+        if required is False and value is not None:
+            return False
+    return previous is not None or current is not None
+
+
+def _subject_display(key: tuple[str | None, str | None]) -> str:
+    """Deterministic, path-free rendering of a subject key for reports."""
+    previous, current = key
+    return f"{previous or '-'}|{current or '-'}"
+
+
+def _v2_unit_inventory(
+    build_record: dict[str, Any]
+) -> tuple[
+    dict[str, tuple[str, int, str]],
+    dict[str, dict[str, list[str]]],
+    list[dict[str, str]],
+]:
+    """The pair's closed canonical-unit inventory, from the build record.
+
+    Every admitted unit id must be exactly ``rfb.unit_id(side, index, key)``
+    for its recorded position — the id is authoritative and is never
+    reconstructed from heading text, but a record whose id disagrees with its
+    own metadata is invalid input, not a unit.
+    """
+    inventory: dict[str, tuple[str, int, str]] = {}
+    by_side_key: dict[str, dict[str, list[str]]] = {"previous": {}, "current": {}}
+    problems: list[dict[str, str]] = []
+    pair_id = build_record["pair_id"]
+    for side in ("previous", "current"):
+        for index, unit in enumerate(build_record[side]["units"]):
+            declared = unit["unit_id"]
+            canonical = rfb.unit_id(side, index, unit["unit_key"])
+            if declared != canonical:
+                problems.append(
+                    {
+                        "code": SUBJECT_SHAPE_INVALID,
+                        "detail": (
+                            f"{pair_id}: build-record unit {side}[{index}] "
+                            "carries a unit_id that disagrees with its own "
+                            "side, sequence, or unit_key metadata"
+                        ),
+                    }
+                )
+                continue
+            inventory[declared] = (side, index, unit["unit_key"])
+            by_side_key[side].setdefault(unit["unit_key"], []).append(declared)
+    return inventory, by_side_key, problems
+
+
+def _classify_unknown_reference(
+    pair_id: str,
+    where: str,
+    value: str,
+    expected_side: str,
+    inventory: Mapping[str, tuple[str, int, str]],
+    *,
+    missing_code: str,
+    unknown_code: str,
+    side_code: str | None,
+    metadata_code: str,
+) -> dict[str, str]:
+    """The one classifier for a reference that is not an admitted identity.
+
+    Order: not a canonical id at all → missing; wrong side → side mismatch;
+    the named side:sequence position exists under a different unit_key →
+    metadata mismatch; otherwise → unknown. Deterministic, and never falls
+    back to unit_key matching.
+    """
+    parts = value.split(":", 2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        return {
+            "code": missing_code,
+            "detail": (
+                f"{pair_id}: {where} is not a canonical "
+                "side:sequence:unit_key identity; a normalized unit key alone "
+                "does not identify an occurrence"
+            ),
+        }
+    side, sequence_text, _key = parts
+    if side_code is not None and side != expected_side:
+        return {
+            "code": side_code,
+            "detail": (
+                f"{pair_id}: {where} names side {side!r} where a "
+                f"{expected_side}-side identity is required"
+            ),
+        }
+    position_prefix = f"{side}:{sequence_text}:"
+    if any(unit_id.startswith(position_prefix) for unit_id in inventory):
+        return {
+            "code": metadata_code,
+            "detail": (
+                f"{pair_id}: {where} names position {side}:{sequence_text} "
+                "but its unit_key metadata does not match the built unit at "
+                "that position"
+            ),
+        }
+    return {
+        "code": unknown_code,
+        "detail": (
+            f"{pair_id}: {where} is not a unit identity in this corpus build"
+        ),
+    }
+
+
+def v2_gold_subjects(
+    pair_id: str,
+    annotation: Mapping[str, Any],
+    inventory: Mapping[str, tuple[str, int, str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Canonical gold subjects for one pair, with every defect collected.
+
+    Beyond per-label validity the gold set must CLOSE over the admitted
+    inventory: every built unit identity is bound by exactly one label. An
+    uncovered occurrence or a multiply-covered one is an invalid gold set,
+    not a scoring outcome. Label ids and label ordering play no part in the
+    subject key.
+    """
+    reasons: list[dict[str, str]] = []
+    subjects: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str | None, str | None]] = set()
+    coverage: Counter[str] = Counter()
+
+    for label in annotation["labels"]:
+        previous = label["previous_unit_id"]
+        current = label["current_unit_id"]
+        label_ok = True
+        for field, value, expected_side in (
+            ("previous_unit_id", previous, "previous"),
+            ("current_unit_id", current, "current"),
+        ):
+            if value is None:
+                continue
+            if value in inventory:
+                if inventory[value][0] != expected_side:
+                    # Unreachable for build-produced ids (the id embeds its
+                    # side); kept so the seam stands alone.
+                    reasons.append(
+                        {
+                            "code": GOLD_SUBJECT_SIDE_MISMATCH,
+                            "detail": (
+                                f"{pair_id}: label {label['label_id']!r} "
+                                f"{field} binds a unit from the wrong side"
+                            ),
+                        }
+                    )
+                    label_ok = False
+                continue
+            reasons.append(
+                _classify_unknown_reference(
+                    pair_id,
+                    f"label {label['label_id']!r} {field}",
+                    value,
+                    expected_side,
+                    inventory,
+                    missing_code=GOLD_SUBJECT_MISSING_UNIT_IDENTITY,
+                    unknown_code=GOLD_SUBJECT_UNKNOWN_UNIT_IDENTITY,
+                    side_code=GOLD_SUBJECT_SIDE_MISMATCH,
+                    metadata_code=GOLD_SUBJECT_METADATA_MISMATCH,
+                )
+            )
+            label_ok = False
+        change_type = label["expected_change_type"]
+        if not _subject_shape_ok(change_type, previous, current):
+            reasons.append(
+                {
+                    "code": SUBJECT_SHAPE_INVALID,
+                    "detail": (
+                        f"{pair_id}: label {label['label_id']!r} binds sides "
+                        f"a {change_type!r} label may not bind"
+                    ),
+                }
+            )
+            label_ok = False
+        if not label_ok:
+            continue
+        key = (previous, current)
+        if key in seen_keys:
+            reasons.append(
+                {
+                    "code": GOLD_SUBJECT_DUPLICATE,
+                    "detail": (
+                        f"{pair_id}: a second label binds the canonical "
+                        f"subject {_subject_display(key)}"
+                    ),
+                }
+            )
+            continue
+        seen_keys.add(key)
+        for unit_id in key:
+            if unit_id is not None:
+                coverage[unit_id] += 1
+        subjects.append({"key": key, "change_type": change_type, "label": label})
+
+    uncovered = sorted(unit for unit in inventory if coverage[unit] == 0)
+    if uncovered:
+        reasons.append(
+            {
+                "code": UNIT_INVENTORY_NOT_CLOSED,
+                "detail": (
+                    f"{pair_id}: {len(uncovered)} built unit identities carry "
+                    f"no label (first: {uncovered[:3]})"
+                ),
+            }
+        )
+    multiply = sorted(
+        unit for unit, count in coverage.items() if unit in inventory and count > 1
+    )
+    if multiply:
+        reasons.append(
+            {
+                "code": UNIT_INVENTORY_NOT_CLOSED,
+                "detail": (
+                    f"{pair_id}: {len(multiply)} built unit identities are "
+                    f"bound by more than one label (first: {multiply[:3]})"
+                ),
+            }
+        )
+    return subjects, reasons
+
+
+def v2_prediction_subjects(
+    pair_id: str,
+    result: Mapping[str, Any] | None,
+    inventory: Mapping[str, tuple[str, int, str]],
+    by_side_key: Mapping[str, Mapping[str, list[str]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Canonical predicted subjects recovered from serialized detector output.
+
+    A comparison.v1 change is keyed by its deterministic ``change_id``, which
+    the detector computes from either a canonical identity (v3 per-occurrence
+    ambiguous changes) or a bare unit key (changes whose key is unique per
+    side by construction). Recovery recomputes that hash against the pair's
+    closed inventory using the change's OWN declared type — never heading
+    similarity, never order. A change that resolves to nothing, resolves to a
+    normalized key that repeats (so no single occurrence is named), violates
+    its type's shape, or duplicates an already-bound subject fails closed;
+    duplicates are an invalid state and are never silently merged.
+    """
+    reasons: list[dict[str, str]] = []
+    subjects: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str | None, str | None]] = set()
+    key_candidates = sorted(
+        set(by_side_key["previous"]) | set(by_side_key["current"])
+    )
+    candidates = sorted(inventory) + key_candidates
+    for change in (result or {}).get("changes", []):
+        change_type = change["change_type"]
+        material = None
+        for candidate in candidates:
+            if change["change_id"] == comparison_detector._change_id(  # noqa: SLF001
+                change_type, candidate
+            ):
+                material = candidate
+                break
+        if material is None:
+            reasons.append(
+                {
+                    "code": PREDICTION_SUBJECT_UNKNOWN_UNIT_IDENTITY,
+                    "detail": (
+                        f"{pair_id}: detected change {change['change_id']!r} "
+                        "does not resolve to any built unit identity"
+                    ),
+                }
+            )
+            continue
+        if material in inventory:
+            side = inventory[material][0]
+            previous = material if side == "previous" else None
+            current = material if side == "current" else None
+        else:
+            previous_ids = by_side_key["previous"].get(material, [])
+            current_ids = by_side_key["current"].get(material, [])
+            if len(previous_ids) > 1 or len(current_ids) > 1:
+                reasons.append(
+                    {
+                        "code": PREDICTION_SUBJECT_MISSING_UNIT_IDENTITY,
+                        "detail": (
+                            f"{pair_id}: detected change "
+                            f"{change['change_id']!r} is keyed by a "
+                            "normalized heading that repeats on a side; it "
+                            "names no single occurrence and a canonical "
+                            "identity is required"
+                        ),
+                    }
+                )
+                continue
+            previous = previous_ids[0] if previous_ids else None
+            current = current_ids[0] if current_ids else None
+        if not _subject_shape_ok(change_type, previous, current):
+            reasons.append(
+                {
+                    "code": SUBJECT_SHAPE_INVALID,
+                    "detail": (
+                        f"{pair_id}: detected change {change['change_id']!r} "
+                        f"({change_type}) does not bind the sides its type "
+                        "requires"
+                    ),
+                }
+            )
+            continue
+        key = (previous, current)
+        if key in seen_keys:
+            reasons.append(
+                {
+                    "code": PREDICTION_SUBJECT_DUPLICATE,
+                    "detail": (
+                        f"{pair_id}: a second detected change binds the "
+                        f"canonical subject {_subject_display(key)}; "
+                        "duplicates are an invalid state, never merged"
+                    ),
+                }
+            )
+            continue
+        seen_keys.add(key)
+        subjects.append({"key": key, "change_type": change_type, "change": change})
+    return subjects, reasons
+
+
+def prepare_v2_subjects(
+    state: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
+    """Validate and construct both subject sets for one scorable pair."""
+    inventory, by_side_key, problems = _v2_unit_inventory(state["build_record"])
+    if problems:
+        return [], [], problems
+    gold, gold_reasons = v2_gold_subjects(
+        state["pair_id"], state["annotation"], inventory
+    )
+    predicted, prediction_reasons = v2_prediction_subjects(
+        state["pair_id"], state["detection_result"], inventory, by_side_key
+    )
+    return gold, predicted, gold_reasons + prediction_reasons
+
+
+def score_pair_v2(
+    state: dict[str, Any],
+    gold_subjects: list[dict[str, Any]],
+    predicted_subjects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Contract-v2 scoring: exact canonical-subject matching, then type.
+
+    Same metric names, numerator/denominator structure, and per-pair report
+    shape as contract v1 — the semantic change is the identity, not the
+    formulas. One prediction satisfies at most one gold subject and one gold
+    subject consumes at most one prediction, because subjects are unique on
+    both sides by the time this runs (duplicates refused upstream), and no
+    set operation here can discard an occurrence: distinct occurrences carry
+    distinct canonical keys.
+    """
+    annotation = state["annotation"]
+    build_record = state["build_record"]
+
+    detected = {
+        (subject["key"], subject["change_type"]) for subject in predicted_subjects
+    }
+    detected_keys = {subject["key"] for subject in predicted_subjects}
+    detected_by_key = {
+        subject["key"]: subject["change"] for subject in predicted_subjects
+    }
+    detected_bound_ids = {
+        unit_id
+        for subject in predicted_subjects
+        for unit_id in subject["key"]
+        if unit_id is not None
+    }
+
+    expected = {
+        (subject["key"], subject["change_type"])
+        for subject in gold_subjects
+        if subject["change_type"] != "unchanged"
+    }
+    labels_by_key = {subject["key"]: subject["label"] for subject in gold_subjects}
+    unchanged_subjects = [
+        subject for subject in gold_subjects if subject["change_type"] == "unchanged"
+    ]
+    unchanged_false_positives = sorted(
+        _subject_display(subject["key"])
+        for subject in unchanged_subjects
+        if any(
+            unit_id in detected_bound_ids
+            for unit_id in subject["key"]
+            if unit_id is not None
+        )
+    )
+
+    matched = detected & expected
+    type_denominator = [
+        (key, change_type)
+        for key, change_type in expected
+        if key in detected_keys
+    ]
+    type_correct = [item for item in type_denominator if item in detected]
+
+    reason_total = 0
+    reason_correct = 0
+    for subject in gold_subjects:
+        code = subject["label"].get("expected_reason_code")
+        if not code:
+            continue
+        change = detected_by_key.get(subject["key"])
+        if change is None or change["change_type"] != "undetermined":
+            continue
+        reason_total += 1
+        if (change.get("undetermined_reason") or "").startswith(code):
+            reason_correct += 1
+
+    direction_total = 0
+    direction_correct = 0
+    for key, _change_type in matched:
+        label = labels_by_key.get(key)
+        if not label or not label.get("expected_direction"):
+            continue
+        direction_total += 1
+        change = detected_by_key.get(key)
+        statuses = [
+            check["status"]
+            for check in (change or {}).get("validation", [])
+            if check.get("check") == "direction_consistency"
+        ]
+        if statuses and all(status == "passed" for status in statuses):
+            direction_correct += 1
+
+    evidence = (build_record.get("execution") or {})
+    evidence_total = evidence.get("evidence_total", 0)
+    evidence_resolved = (
+        evidence_total
+        - evidence.get("evidence_unresolved", 0)
+        - evidence.get("evidence_foreign", 0)
+    )
+
+    exact_match = detected == expected and not unchanged_false_positives
+
+    return {
+        "pair_id": state["pair_id"],
+        "sector_label": state["sector_label"],
+        "annotation_status": annotation["annotation_status"],
+        "annotation_hash": rfb.annotation_hash(annotation),
+        "build_hash": build_record["build_hash"],
+        "label_count": len(annotation["labels"]),
+        "expected_change_count": len(expected),
+        "detected_change_count": len(detected),
+        "matched_count": len(matched),
+        "false_positives": sorted(
+            [_subject_display(key), change_type]
+            for key, change_type in detected - expected
+        ),
+        "missed": sorted(
+            [_subject_display(key), change_type]
+            for key, change_type in expected - detected
+        ),
+        "type_denominator": len(type_denominator),
+        "type_correct": len(type_correct),
+        "unchanged_label_count": len(unchanged_subjects),
+        "unchanged_false_positives": unchanged_false_positives,
+        "evidence_total": evidence_total,
+        "evidence_resolved": evidence_resolved,
+        "undetermined_reason_total": reason_total,
+        "undetermined_reason_correct": reason_correct,
+        "direction_total": direction_total,
+        "direction_correct": direction_correct,
+        "exact_match": exact_match,
+        "subject_matching": SUBJECT_MATCHING_V2,
+        "metrics": {
+            "change_precision": rfb.rate(
+                len(matched), len(detected), "change_precision"
+            ),
+            "change_recall": rfb.rate(len(matched), len(expected), "change_recall"),
+            "change_type_accuracy": rfb.rate(
+                len(type_correct), len(type_denominator), "change_type_accuracy"
+            ),
+            "unchanged_false_positive_rate": rfb.rate(
+                len(unchanged_false_positives),
+                len(unchanged_subjects),
+                "unchanged_false_positive_rate",
+            ),
+            "evidence_resolution_rate": rfb.rate(
+                evidence_resolved, evidence_total, "evidence_resolution_rate"
+            ),
+            "undetermined_reason_accuracy": rfb.rate(
+                reason_correct, reason_total, "undetermined_reason_accuracy"
+            ),
+            "direction_consistency_accuracy": rfb.rate(
+                direction_correct, direction_total, "direction_consistency_accuracy"
+            ),
+        },
+    }
+
+
 def score_pair(state: dict[str, Any]) -> dict[str, Any]:
     """Score one human-verified pair against detector output."""
     build_record = state["build_record"]
@@ -1228,14 +2010,30 @@ def _provenance(
     *,
     holdout_evaluation_performed: bool,
     generalization_claim_supported: bool,
+    contract: EvaluationContract | None = None,
 ) -> dict[str, Any]:
     gold_annotations = [
         state["annotation"]
         for state in states
         if state["annotation"] and rfb.is_gold(state["annotation"])
     ]
+    # Contract identity rides on gold reports. Contract-v1 and unlabeled
+    # reports keep the exact v1 shape (no new keys), so every report written
+    # under the original contract stays readable under it.
+    contract_fields: dict[str, Any] = {}
+    if contract is not None and contract.contract_version == (
+        EVALUATION_CONFIG_VERSION_V2
+    ):
+        contract_fields = {
+            "evaluation_contract_version": contract.contract_version,
+            "unit_identity_contract": CONTRACT_V2_UNIT_GRAMMAR,
+            "subject_matching": contract.subject_matching,
+        }
     return {
-        "report_version": EVALUATION_REPORT_VERSION,
+        **contract_fields,
+        "report_version": (
+            contract.report_version if contract else EVALUATION_REPORT_VERSION
+        ),
         "benchmark_id": manifest["benchmark_id"],
         "benchmark_version": manifest["benchmark_version"],
         "manifest_status": manifest["status"],
@@ -1247,7 +2045,11 @@ def _provenance(
         "workflow_version": comparison_store.WORKFLOW_VERSION,
         "declared_detector_version": config_document["declared_detector_version"],
         "declared_workflow_version": config_document["declared_workflow_version"],
-        "metric_definitions_version": rfb.METRIC_DEFINITIONS_VERSION,
+        "metric_definitions_version": (
+            contract.metric_definitions_version
+            if contract
+            else rfb.METRIC_DEFINITIONS_VERSION
+        ),
         "annotation_protocol_version": rfb.ANNOTATION_PROTOCOL_VERSION,
         "selection_protocol_version": manifest["selection_protocol_version"],
         # Corpus validity is provenance, not a footnote: any number in this
@@ -1444,6 +2246,9 @@ def gold_report(
     new_run: bool = False,
 ) -> dict[str, Any]:
     """Gold metrics, or an explicit refusal carrying every reason."""
+    # The contract decides which matching semantics score this run; an
+    # unknown or mixed declaration refuses before anything is computed.
+    contract = resolve_evaluation_contract(config_document)
     scorable, excluded = partition_scoring_scope(states)
     scope = scoring_scope_report(pairs, scorable, excluded)
     reasons = refusal_reasons(
@@ -1453,6 +2258,29 @@ def gold_report(
         new_run=new_run,
         excluded_pair_ids=frozenset(item["pair_id"] for item in excluded),
     )
+    artifact_reasons, incompatible_pairs = contract_artifact_reasons(
+        contract, states
+    )
+    reasons.extend(artifact_reasons)
+    # Contract v2 validates every gold and predicted subject before a single
+    # metric is computed. Only pairs whose artifacts the contract may score
+    # are inspected — a version-incompatible build is already refused above
+    # and its subjects are not meaningful under this contract.
+    prepared_subjects: dict[str, tuple[list[dict], list[dict]]] = {}
+    if contract.subject_matching == SUBJECT_MATCHING_V2:
+        for state in scorable:
+            if state["pair_id"] in incompatible_pairs:
+                continue
+            gold_subjects, predicted_subjects, subject_reasons = (
+                prepare_v2_subjects(state)
+            )
+            if subject_reasons:
+                reasons.extend(subject_reasons)
+                continue
+            prepared_subjects[state["pair_id"]] = (
+                gold_subjects,
+                predicted_subjects,
+            )
     if not reasons and not scorable:
         # Nothing refused, but nothing is verified either. Reporting empty
         # metrics as a successful gold run would state a result that has no
@@ -1476,6 +2304,7 @@ def gold_report(
                 # A refused run evaluated nothing.
                 holdout_evaluation_performed=False,
                 generalization_claim_supported=False,
+                contract=contract,
             ),
             "mode": "gold_evaluation",
             "refused": True,
@@ -1492,8 +2321,16 @@ def gold_report(
         }
 
     # Scored pairs only. `states` also holds pairs extraction blocked out of
-    # scope, which carry no annotation to score against.
-    scored = [score_pair(state) for state in scorable]
+    # scope, which carry no annotation to score against. The contract decides
+    # the scorer: v1 keeps the frozen unit-key semantics for v2-detector
+    # artifacts; v2 scores exact canonical subjects.
+    if contract.subject_matching == SUBJECT_MATCHING_V2:
+        scored = [
+            score_pair_v2(state, *prepared_subjects[state["pair_id"]])
+            for state in scorable
+        ]
+    else:
+        scored = [score_pair(state) for state in scorable]
 
     corpus_role = corpus_role_for_manifest(manifest)
     is_holdout = corpus_role == rfb.CORPUS_ROLE_EXTRACTION_HOLDOUT
@@ -1523,6 +2360,7 @@ def gold_report(
             config_document,
             holdout_evaluation_performed=holdout_evaluation_performed,
             generalization_claim_supported=generalization_claim_supported,
+            contract=contract,
         ),
         "mode": "gold_evaluation",
         "refused": False,
@@ -1537,7 +2375,11 @@ def gold_report(
             "has been explicitly approved. The synthetic comparison-regression "
             "suite remains the merge-blocking deterministic gate."
         ),
-        "metric_notes": METRIC_NOTES,
+        "metric_notes": (
+            METRIC_NOTES_V2
+            if contract.subject_matching == SUBJECT_MATCHING_V2
+            else METRIC_NOTES
+        ),
         "zero_denominator_policy": rfb.ZERO_DENOMINATOR_POLICY,
         "corpus_quality": corpus_quality(pairs, states),
         "gold_metrics": aggregate_gold_metrics(scored),
@@ -1737,6 +2579,11 @@ def main(argv: list[str] | None = None) -> int:
         # Validated here so a malformed sign-off is a configuration failure
         # with a code, not a claim that quietly evaluates to false.
         validate_signoff_document(config_document)
+        # Gold runs need a resolvable evaluation contract BEFORE any state is
+        # read or any report is written; an unknown, mixed, or identity-
+        # incompatible declaration is a configuration failure, never a guess.
+        if not args.unlabeled:
+            resolve_evaluation_contract(config_document)
     except rfb.BenchmarkError as exc:
         print(f"Invalid configuration [{exc.code}]: {exc.message}", file=sys.stderr)
         return 2

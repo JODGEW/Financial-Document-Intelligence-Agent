@@ -1335,24 +1335,41 @@ historical evidence. Contract and gates in
 [BENCHMARK.md](BENCHMARK.md#7-generalization-sign-off-not-performed), frozen by
 `tests/test_gold_evaluation_signoff.py` in required CI.
 
+The **future gold-evaluation contract is now explicitly versioned** for that
+v3 cycle: the v2 holdout also exposed an evaluator defect — gold matching
+keyed subjects by the normalized `unit_key`, collapsing repeated normalized
+headings that the v3 representation preserves — so future v3 evaluations run
+under `real-filing-benchmark.evaluation.v2` + `real-filing-benchmark-metrics.v2`,
+which match by exact canonical sequence-aware unit identity
+(`side:sequence:unit_key`); `unit_key` is descriptive metadata, not a primary
+evaluation key, and repeated normalized headings stay separate metric
+subjects. The frozen contract-v1 evaluation is unchanged — no v2 metric was
+recomputed and no v2 label was migrated (the two unit universes are not
+comparable) — and neither contract accepts the other's artifacts. Contract
+and refusal codes in
+[BENCHMARK.md](BENCHMARK.md#gold-evaluation-contract-v2), frozen by
+`tests/test_v3_gold_evaluator_contract.py` in required CI. Evaluator-contract
+correctness says nothing about detector accuracy.
+
 The remaining next steps, in order of dependency, are: a **newly frozen
-metadata-only unseen holdout for unit-grammar v3** (selected only after v3 is
-merged and frozen, before anyone looks at the selected bodies); human
-diagnostic annotation of the ten development pairs; and, if a generalization
-claim is ever to be made, an explicit human sign-off of the v2 holdout
-evaluation — all without changing extraction v2. No issuer may be replaced now
-that bodies have been observed.
+metadata-only unseen holdout for unit-grammar v3** (selected only after both
+v3 and the v2 evaluation contract are merged and frozen, before anyone looks
+at the selected bodies); human diagnostic annotation of the ten development
+pairs; and, if a generalization claim is ever to be made, an explicit human
+sign-off of the v2 holdout evaluation — all without changing extraction v2.
+No issuer may be replaced now that bodies have been observed.
 
 What still does not exist is any **signed** generalization claim, any v3
-evaluation of any kind (no v3 gold labels, no v3 holdout, no v3 accuracy
-number), any diagnostic annotation of the ten development pairs, any
-scheduler, job-processing daemon loop, automatic background invocation,
-external queue, container/cloud deployment infrastructure, or multi-node
-coordination. Maturity therefore remains **Stage 3**. Stage 3.5 remains in
-progress: the blind-extracted holdout corpus is human-annotated and evaluated
-with extraction v2 unchanged, the evaluation is unsigned,
-`generalization_claim_supported` remains false, and the v3 unit grammar is
-implemented but unevaluated.
+evaluation of any kind (no v3 gold labels, no v3 human annotations, no v3
+holdout, no v3 accuracy number), any diagnostic annotation of the ten
+development pairs, any scheduler, job-processing daemon loop, automatic
+background invocation, external queue, container/cloud deployment
+infrastructure, or multi-node coordination. Maturity therefore remains
+**Stage 3**. Stage 3.5 remains in progress: the blind-extracted holdout
+corpus is human-annotated and evaluated with extraction v2 unchanged, the
+evaluation is unsigned, `generalization_claim_supported` remains false, and
+the v3 unit grammar and v2 evaluation contract are implemented but
+unevaluated on any real corpus.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 

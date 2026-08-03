@@ -37,6 +37,7 @@ BENCHMARK_SUITES = (
     "tests/test_holdout_human_annotation_validation.py",
     "tests/test_real_filing_holdout_gold_evaluation.py",
     "tests/test_gold_evaluation_signoff.py",
+    "tests/test_v3_gold_evaluator_contract.py",
 )
 
 
@@ -53,6 +54,11 @@ def evaluation_config():
     document = dict(evaluator.load_evaluation_config())
     document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
     document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
+    # v3 artifacts require the contract-v2 canonical-identity evaluator; the
+    # committed file stays frozen at contract v1 with its v2-detector run.
+    document["config_version"] = evaluator.EVALUATION_CONFIG_VERSION_V2
+    document["metric_definitions_version"] = evaluator.METRIC_DEFINITIONS_VERSION_V2
+    document["declared_unit_grammar_version"] = evaluator.CONTRACT_V2_UNIT_GRAMMAR
     return document
 
 
@@ -66,6 +72,9 @@ def _write_matching_config(tmp_path, benchmark_id):
     document = dict(evaluator.load_evaluation_config())
     document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
     document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
+    document["config_version"] = evaluator.EVALUATION_CONFIG_VERSION_V2
+    document["metric_definitions_version"] = evaluator.METRIC_DEFINITIONS_VERSION_V2
+    document["declared_unit_grammar_version"] = evaluator.CONTRACT_V2_UNIT_GRAMMAR
     document["benchmark_id"] = benchmark_id
     path = tmp_path / "evaluation_config.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
@@ -368,7 +377,11 @@ def test_metric_notes_document_the_divergent_denominators(corpus, evaluation_con
     assert set(notes) == set(report["gold_metrics"])
     assert "DEFINITION DIFFERS" in notes["direction_consistency_accuracy"]
     assert "DENOMINATOR DIFFERS" in notes["undetermined_reason_accuracy"]
-    assert "Same definition as the synthetic" in notes["change_precision"]
+    # Contract v2 matches by canonical subject identity, and its precision
+    # note must say so rather than still claiming the synthetic suite's
+    # unit_key definition.
+    assert "canonical" in notes["change_precision"]
+    assert "Same definition as the synthetic" not in notes["change_precision"]
 
 
 def test_no_pass_fail_threshold_exists(corpus, evaluation_config):
@@ -404,7 +417,14 @@ def test_report_carries_full_provenance(corpus, evaluation_config):
     assert report["workflow_version"] == comparison_store.WORKFLOW_VERSION
     assert len(report["manifest_hash"]) == 64
     assert len(report["annotation_hash"]) == 64
-    assert report["metric_definitions_version"] == rfb.METRIC_DEFINITIONS_VERSION
+    # The report stamps the metric-definition version the resolved contract
+    # actually scored under — no longer a module constant regardless of config.
+    assert report["metric_definitions_version"] == (
+        evaluator.METRIC_DEFINITIONS_VERSION_V2
+    )
+    assert report["evaluation_contract_version"] == (
+        evaluator.EVALUATION_CONFIG_VERSION_V2
+    )
     assert report["annotation_protocol_version"] == rfb.ANNOTATION_PROTOCOL_VERSION
     assert report["evaluated_at"]
     # commit_sha is None outside a git checkout rather than invented.

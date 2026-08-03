@@ -140,6 +140,14 @@ jobs:
       # that already applied. It also pins the committed gold evaluation as
       # byte-identical, unsigned, and generalization_claim_supported=false, so
       # hardening the future gate cannot quietly revalue the frozen one.
+      # test_v3_gold_evaluator_contract.py freezes the contract-v2 gold
+      # evaluator (real-filing-benchmark.evaluation.v2 + metrics.v2): future
+      # v3-detector evaluations match by exact canonical sequence-aware unit
+      # identity, repeated normalized headings stay separate metric subjects,
+      # duplicate subjects and unclosed inventories refuse before any metric,
+      # the frozen contract-v1 evaluation stays identifiable, and neither
+      # contract silently accepts the other's artifacts — all over synthetic
+      # fixtures, before any new holdout exists.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -155,7 +163,8 @@ jobs:
             tests/test_real_filing_holdout_build_report.py \
             tests/test_holdout_human_annotation_validation.py \
             tests/test_real_filing_holdout_gold_evaluation.py \
-            tests/test_gold_evaluation_signoff.py
+            tests/test_gold_evaluation_signoff.py \
+            tests/test_v3_gold_evaluator_contract.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no
