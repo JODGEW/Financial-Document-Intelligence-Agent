@@ -1,0 +1,1002 @@
+{
+  "annotation_hash": "7444d8331e176c27c66ac3ab5045763a88331bbc33bd3e17521ad7a6246166bd",
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "benchmark_id": "real_filing_holdout_v1",
+  "benchmark_version": 1,
+  "commit_sha": "6e3e40561ebd9662b157f577d7a6665953a2ce99",
+  "corpus_quality": {
+    "filing_extraction_outcomes": {
+      "ambiguous": 2,
+      "extracted": 18,
+      "missing": 0,
+      "parse_failed": 0
+    },
+    "pairs_ambiguous_section": 1,
+    "pairs_built": 10,
+    "pairs_extracted": 9,
+    "pairs_human_verified": 9,
+    "pairs_machine_proposed_only": 0,
+    "pairs_missing_section": 0,
+    "pairs_parse_failed": 0,
+    "pairs_requested": 10,
+    "pairs_source_verified": 10
+  },
+  "corpus_role": "extraction_holdout_corpus",
+  "corpus_role_detail": "This corpus was frozen and unseen until after the extraction parser was frozen, and this run scored it against human-verified labels, so the metrics in this report are out-of-sample. Coverage is stated separately in scoring_scope and is not implied by this field: a generalization claim is supported only when generalization_claim_supported is true.",
+  "declared_detector_version": "item1a_detector.v2",
+  "declared_workflow_version": "comparison_workflow.v2",
+  "detector_version": "item1a_detector.v2",
+  "evaluated_at": "2026-08-03T04:14:21.590296+00:00",
+  "extraction_holdout_evaluation": true,
+  "extraction_parser_developed_using_this_corpus": false,
+  "generalization_claim": {
+    "blocked_by": [
+      "no human sign-off is recorded in the evaluation config (generalization_claim_signoff is null). The claim that this workflow generalizes is a human judgement and is never derived from coverage, corpus role, or metric values."
+    ],
+    "coverage_complete": false,
+    "pairs_in_manifest": 10,
+    "pairs_scored": 9,
+    "policy": "generalization_claim_supported is true only when a human sign-off in the evaluation config names the exact manifest this run evaluated and acknowledges the number of pairs it scored. No tool in this repository writes that sign-off.",
+    "signoff_present": false,
+    "signoff_signed_at_utc": null,
+    "signoff_signer_id": null,
+    "signoff_statement": null,
+    "supported": false
+  },
+  "generalization_claim_blocked_by": [
+    "no human sign-off is recorded in the evaluation config (generalization_claim_signoff is null). The claim that this workflow generalizes is a human judgement and is never derived from coverage, corpus role, or metric values."
+  ],
+  "generalization_claim_supported": false,
+  "gold_metrics": {
+    "change_precision": {
+      "denominator": 24,
+      "metric": "change_precision",
+      "numerator": 11,
+      "value": 0.458333,
+      "zero_denominator": false
+    },
+    "change_recall": {
+      "denominator": 21,
+      "metric": "change_recall",
+      "numerator": 11,
+      "value": 0.52381,
+      "zero_denominator": false
+    },
+    "change_type_accuracy": {
+      "denominator": 21,
+      "metric": "change_type_accuracy",
+      "numerator": 11,
+      "value": 0.52381,
+      "zero_denominator": false
+    },
+    "direction_consistency_accuracy": {
+      "denominator": 0,
+      "metric": "direction_consistency_accuracy",
+      "numerator": 0,
+      "value": null,
+      "zero_denominator": true,
+      "zero_denominator_policy": "null_value_metric_asserts_nothing"
+    },
+    "evidence_resolution_rate": {
+      "denominator": 1570,
+      "metric": "evidence_resolution_rate",
+      "numerator": 1570,
+      "value": 1.0,
+      "zero_denominator": false
+    },
+    "pair_exact_match_rate": {
+      "denominator": 9,
+      "metric": "pair_exact_match_rate",
+      "numerator": 1,
+      "value": 0.111111,
+      "zero_denominator": false
+    },
+    "unchanged_false_positive_rate": {
+      "denominator": 7,
+      "metric": "unchanged_false_positive_rate",
+      "numerator": 4,
+      "value": 0.571429,
+      "zero_denominator": false
+    },
+    "undetermined_reason_accuracy": {
+      "denominator": 0,
+      "metric": "undetermined_reason_accuracy",
+      "numerator": 0,
+      "value": null,
+      "zero_denominator": true,
+      "zero_denominator_policy": "null_value_metric_asserts_nothing"
+    }
+  },
+  "gold_metrics_available": true,
+  "label_statistics": {
+    "confidence_distribution": {
+      "high": 28,
+      "low": 0,
+      "medium": 0
+    },
+    "human_verified_label_count": 28,
+    "labels_by_expected_change_type": {
+      "added": 0,
+      "modified": 14,
+      "removed": 0,
+      "unchanged": 7,
+      "undetermined": 7
+    },
+    "labels_with_expected_direction": 0,
+    "reviewer_notes_included": false
+  },
+  "manifest_hash": "4797c84553eebb37c3759a37dabe3cd089116b02ec5d7dc3ddc9fe73568f0ce1",
+  "manifest_status": "corpus_built",
+  "metric_definitions_version": "real-filing-benchmark-metrics.v1",
+  "metric_notes": {
+    "change_precision": "Same definition as the synthetic regression suite: matched (unit_key, change_type) pairs over every change the detector emitted. A detected change whose unit key cannot be recovered counts in the denominator.",
+    "change_recall": "Same definition as the synthetic suite. Denominator is every human-verified label whose expected_change_type is not 'unchanged'.",
+    "change_type_accuracy": "Same definition as the synthetic suite. Denominator is the labels whose unit was detected at all \u2014 a missed unit is a recall failure, not a type error, and is not double-counted here.",
+    "direction_consistency_accuracy": "NEW METRIC, DEFINITION DIFFERS FROM THE SYNTHETIC SUITE. comparison.v1 carries no direction field, so the detector never states a direction. This metric scores the detector's direction_consistency VALIDATOR against a human's directional claim: for a matched change whose label sets expected_direction, the check is correct iff that validator passed. Denominator is matched changes with a labelled direction only, so it is typically far smaller than the change denominators.",
+    "evidence_resolution_rate": "Same definition as the synthetic suite: evidence references that resolve to an indexed chunk of the correct filing, over all evidence references. Computed over human-verified pairs only.",
+    "pair_exact_match_rate": "NEW METRIC. A pair matches exactly iff the detected (unit_key, change_type) set equals the human-verified non-unchanged label set AND no unchanged-labelled unit was emitted as a change. Denominator is human-verified pairs.",
+    "unchanged_false_positive_rate": "Same definition as the synthetic suite. comparison.v1 has no 'unchanged' change type, so an 'unchanged' label asserts ABSENCE: the numerator counts unchanged-labelled units that appear in the detected change set.",
+    "undetermined_reason_accuracy": "Same definition as the synthetic suite. DENOMINATOR DIFFERS ON REAL FILINGS: it counts human labels that carry an expected_reason_code AND whose unit the detector actually reported as undetermined. A label whose unit was not reported undetermined is a change-type error, already counted by change_type_accuracy."
+  },
+  "mode": "gold_evaluation",
+  "operational": {
+    "detection_duration_sample_size": 9,
+    "detection_duration_seconds_p50": 0.35,
+    "detection_duration_seconds_p95": 0.766,
+    "detection_jobs": 0,
+    "execution_mode": "direct synchronous detection: the benchmark build calls the existing detector directly, so no durable job, lease, or retry is created. Zero jobs and zero reclaims mean that path was not exercised, not that it succeeded.",
+    "failures_by_code": {},
+    "lease_reclaims": 0,
+    "percentile_method": "nearest_rank",
+    "retries": 0,
+    "total_detection_attempts": 9
+  },
+  "pass_fail_thresholds": null,
+  "per_pair": [
+    {
+      "annotation_hash": "7b6fa408cf91ca579be9f3de8e726494cbb900a219031a045e814d4fc52dc088",
+      "annotation_status": "human_verified",
+      "build_hash": "e21d72b45e999ac025271f4abf8029234df4fffc3b2eb9f6f865f96738eff880",
+      "detected_change_count": 3,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 114,
+      "evidence_total": 114,
+      "exact_match": true,
+      "expected_change_count": 3,
+      "false_positives": [],
+      "label_count": 4,
+      "matched_count": 3,
+      "metrics": {
+        "change_precision": {
+          "denominator": 3,
+          "metric": "change_precision",
+          "numerator": 3,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 3,
+          "metric": "change_recall",
+          "numerator": 3,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 3,
+          "metric": "change_type_accuracy",
+          "numerator": 3,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 114,
+          "metric": "evidence_resolution_rate",
+          "numerator": 114,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 1,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [],
+      "pair_id": "sic-2000s-01",
+      "sector_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "type_correct": 3,
+      "type_denominator": 3,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 1,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "b6e345177e46991e1072ef19d1f99780ac91eaefdc542d127c173045f3e9894e",
+      "annotation_status": "human_verified",
+      "build_hash": "1be164ccab14ec6ed0abda02eadfa622b364a059e7f91e5f5701aa316a63518b",
+      "detected_change_count": 2,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 153,
+      "evidence_total": 153,
+      "exact_match": false,
+      "expected_change_count": 2,
+      "false_positives": [
+        [
+          "item-1a-preamble",
+          "modified"
+        ],
+        [
+          "legal-and-regulatory-risks",
+          "modified"
+        ]
+      ],
+      "label_count": 2,
+      "matched_count": 0,
+      "metrics": {
+        "change_precision": {
+          "denominator": 2,
+          "metric": "change_precision",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 2,
+          "metric": "change_recall",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 2,
+          "metric": "change_type_accuracy",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 153,
+          "metric": "evidence_resolution_rate",
+          "numerator": 153,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 0,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "item-1a-preamble",
+          "undetermined"
+        ],
+        [
+          "legal-and-regulatory-risks",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-2000s-02",
+      "sector_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "type_correct": 0,
+      "type_denominator": 2,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 0,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "81b874cff2827769735601eedfe3c67e585cb50e69c4e969cd4a8c4df986a283",
+      "annotation_status": "human_verified",
+      "build_hash": "2ee29115d19f07c8ae1fede30e4eef719c8b417a04f57de2ed86a43ec2d1941d",
+      "detected_change_count": 1,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 171,
+      "evidence_total": 171,
+      "exact_match": false,
+      "expected_change_count": 1,
+      "false_positives": [
+        [
+          "item-1a-preamble",
+          "modified"
+        ]
+      ],
+      "label_count": 1,
+      "matched_count": 0,
+      "metrics": {
+        "change_precision": {
+          "denominator": 1,
+          "metric": "change_precision",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 1,
+          "metric": "change_recall",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 1,
+          "metric": "change_type_accuracy",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 171,
+          "metric": "evidence_resolution_rate",
+          "numerator": 171,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 0,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "item-1a-preamble",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-3000s-01",
+      "sector_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "type_correct": 0,
+      "type_denominator": 1,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 0,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "d0652af5679e0900cb277ea1e317a178dcfd91812002315b74648bddbaec1d98",
+      "annotation_status": "human_verified",
+      "build_hash": "a9e0b8decbe2378c24c1ba26b85182cb0a8f8ec6ca8122ff4a9d1e0c58b73e8c",
+      "detected_change_count": 2,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 147,
+      "evidence_total": 147,
+      "exact_match": false,
+      "expected_change_count": 2,
+      "false_positives": [
+        [
+          "legal-and-regulatory-risks",
+          "modified"
+        ]
+      ],
+      "label_count": 3,
+      "matched_count": 1,
+      "metrics": {
+        "change_precision": {
+          "denominator": 2,
+          "metric": "change_precision",
+          "numerator": 1,
+          "value": 0.5,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 2,
+          "metric": "change_recall",
+          "numerator": 1,
+          "value": 0.5,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 2,
+          "metric": "change_type_accuracy",
+          "numerator": 1,
+          "value": 0.5,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 147,
+          "metric": "evidence_resolution_rate",
+          "numerator": 147,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 1,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "legal-and-regulatory-risks",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-3000s-02",
+      "sector_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "type_correct": 1,
+      "type_denominator": 2,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 1,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "403629834667e8e9d8f8ab12abf06f73e6e1ad7064acf46c7a4da8f154d8da07",
+      "annotation_status": "human_verified",
+      "build_hash": "2dc28cb925673c50f63cca73eef50dbe92c485fbcdbfb568b930dcd4ccf343d7",
+      "detected_change_count": 1,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 202,
+      "evidence_total": 202,
+      "exact_match": false,
+      "expected_change_count": 1,
+      "false_positives": [
+        [
+          "item-1a-preamble",
+          "modified"
+        ]
+      ],
+      "label_count": 1,
+      "matched_count": 0,
+      "metrics": {
+        "change_precision": {
+          "denominator": 1,
+          "metric": "change_precision",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 1,
+          "metric": "change_recall",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 1,
+          "metric": "change_type_accuracy",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 202,
+          "metric": "evidence_resolution_rate",
+          "numerator": 202,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 0,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "item-1a-preamble",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-4000s-01",
+      "sector_label": "Transportation, communications, and utilities",
+      "type_correct": 0,
+      "type_denominator": 1,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 0,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "441ccd935f96f3b0e1e9ce622d9c3c4da3c0fb0f6a8a767554ae5416b187fa05",
+      "annotation_status": "human_verified",
+      "build_hash": "2f6f1e0a8df991000e09278628c882ab225140752d5d32a07776813df8050ea3",
+      "detected_change_count": 1,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 179,
+      "evidence_total": 179,
+      "exact_match": false,
+      "expected_change_count": 1,
+      "false_positives": [
+        [
+          "item-1a-preamble",
+          "modified"
+        ]
+      ],
+      "label_count": 1,
+      "matched_count": 0,
+      "metrics": {
+        "change_precision": {
+          "denominator": 1,
+          "metric": "change_precision",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 1,
+          "metric": "change_recall",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 1,
+          "metric": "change_type_accuracy",
+          "numerator": 0,
+          "value": 0.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 179,
+          "metric": "evidence_resolution_rate",
+          "numerator": 179,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 0,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "item-1a-preamble",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-4000s-02",
+      "sector_label": "Transportation, communications, and utilities",
+      "type_correct": 0,
+      "type_denominator": 1,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 0,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "598929a3a3c25b6e61b0d75dec5a9db091dc2ebaaf26b5bd90c9853c4801200a",
+      "annotation_status": "human_verified",
+      "build_hash": "aa4e87de5f58ed154e4a54b4be1a2147cdfe22d8ccc9fc0c71f996e1dddb17af",
+      "detected_change_count": 6,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 104,
+      "evidence_total": 104,
+      "exact_match": false,
+      "expected_change_count": 6,
+      "false_positives": [
+        [
+          "business-risks",
+          "undetermined"
+        ],
+        [
+          "general-risks",
+          "undetermined"
+        ]
+      ],
+      "label_count": 9,
+      "matched_count": 4,
+      "metrics": {
+        "change_precision": {
+          "denominator": 6,
+          "metric": "change_precision",
+          "numerator": 4,
+          "value": 0.666667,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 6,
+          "metric": "change_recall",
+          "numerator": 4,
+          "value": 0.666667,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 6,
+          "metric": "change_type_accuracy",
+          "numerator": 4,
+          "value": 0.666667,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 104,
+          "metric": "evidence_resolution_rate",
+          "numerator": 104,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 3,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 2,
+          "value": 0.666667,
+          "zero_denominator": false
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "business-risks",
+          "modified"
+        ],
+        [
+          "general-risks",
+          "modified"
+        ]
+      ],
+      "pair_id": "sic-5000s-01",
+      "sector_label": "Wholesale and retail trade",
+      "type_correct": 4,
+      "type_denominator": 6,
+      "unchanged_false_positives": [
+        "business-risks",
+        "general-risks"
+      ],
+      "unchanged_label_count": 3,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "432816b93283740c93f49451e21eff0b353a6a41336dca1bfc5d639819467e42",
+      "annotation_status": "human_verified",
+      "build_hash": "f4c35bbec6bdd288babf473ef6800578aef881c002510cd94925f3e307ce198c",
+      "detected_change_count": 4,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 140,
+      "evidence_total": 140,
+      "exact_match": false,
+      "expected_change_count": 2,
+      "false_positives": [
+        [
+          "item-1a-preamble",
+          "modified"
+        ],
+        [
+          "legal-and-regulatory-risks",
+          "modified"
+        ]
+      ],
+      "label_count": 4,
+      "matched_count": 2,
+      "metrics": {
+        "change_precision": {
+          "denominator": 4,
+          "metric": "change_precision",
+          "numerator": 2,
+          "value": 0.5,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 2,
+          "metric": "change_recall",
+          "numerator": 2,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 2,
+          "metric": "change_type_accuracy",
+          "numerator": 2,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 140,
+          "metric": "evidence_resolution_rate",
+          "numerator": 140,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 2,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 2,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [],
+      "pair_id": "sic-5000s-02",
+      "sector_label": "Wholesale and retail trade",
+      "type_correct": 2,
+      "type_denominator": 2,
+      "unchanged_false_positives": [
+        "item-1a-preamble",
+        "legal-and-regulatory-risks"
+      ],
+      "unchanged_label_count": 2,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    },
+    {
+      "annotation_hash": "ba1ec151ded0c46ce7e163e11be286b7063e35769881d5b21bae482fd5c2ca49",
+      "annotation_status": "human_verified",
+      "build_hash": "67e5db896a96b12a5ee83c8c02a814ef84cd71a325377b133dfc4cfc931254ff",
+      "detected_change_count": 4,
+      "direction_correct": 0,
+      "direction_total": 0,
+      "evidence_resolved": 360,
+      "evidence_total": 360,
+      "exact_match": false,
+      "expected_change_count": 3,
+      "false_positives": [
+        [
+          "market-funding-liquidity-credit-and-model-risks",
+          "removed"
+        ],
+        [
+          "model-credit-market-and-funding-liquidity-risks",
+          "added"
+        ],
+        [
+          "strategic-business-reputational-and-country-risks",
+          "modified"
+        ]
+      ],
+      "label_count": 3,
+      "matched_count": 1,
+      "metrics": {
+        "change_precision": {
+          "denominator": 4,
+          "metric": "change_precision",
+          "numerator": 1,
+          "value": 0.25,
+          "zero_denominator": false
+        },
+        "change_recall": {
+          "denominator": 3,
+          "metric": "change_recall",
+          "numerator": 1,
+          "value": 0.333333,
+          "zero_denominator": false
+        },
+        "change_type_accuracy": {
+          "denominator": 3,
+          "metric": "change_type_accuracy",
+          "numerator": 1,
+          "value": 0.333333,
+          "zero_denominator": false
+        },
+        "direction_consistency_accuracy": {
+          "denominator": 0,
+          "metric": "direction_consistency_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "evidence_resolution_rate": {
+          "denominator": 360,
+          "metric": "evidence_resolution_rate",
+          "numerator": 360,
+          "value": 1.0,
+          "zero_denominator": false
+        },
+        "unchanged_false_positive_rate": {
+          "denominator": 0,
+          "metric": "unchanged_false_positive_rate",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        },
+        "undetermined_reason_accuracy": {
+          "denominator": 0,
+          "metric": "undetermined_reason_accuracy",
+          "numerator": 0,
+          "value": null,
+          "zero_denominator": true,
+          "zero_denominator_policy": "null_value_metric_asserts_nothing"
+        }
+      },
+      "missed": [
+        [
+          "market-funding-liquidity-credit-and-model-risks",
+          "modified"
+        ],
+        [
+          "strategic-business-reputational-and-country-risks",
+          "undetermined"
+        ]
+      ],
+      "pair_id": "sic-6000s-02",
+      "sector_label": "Finance, insurance, and real estate",
+      "type_correct": 1,
+      "type_denominator": 3,
+      "unchanged_false_positives": [],
+      "unchanged_label_count": 0,
+      "undetermined_reason_correct": 0,
+      "undetermined_reason_total": 0
+    }
+  ],
+  "refused": false,
+  "report_version": "real-filing-benchmark.report.v1",
+  "scope": "Gold metrics cover ONLY pairs whose annotation file is human_verified. The corpus is controlled and intentionally small; it is not a statistically representative sample of SEC filings, issuers, or filing formats.",
+  "scoring_scope": {
+    "coverage_complete": false,
+    "excluded_pairs": [
+      {
+        "code": "extraction_blocked",
+        "current_extraction_outcome": "ambiguous",
+        "detail": "Item 1A was not extracted on both sides, so no review packet and no human-verified annotation exist for this pair. It is excluded from every gold numerator and denominator and is reported here rather than dropped.",
+        "pair_id": "sic-6000s-01",
+        "previous_extraction_outcome": "ambiguous"
+      }
+    ],
+    "note": "Gold metric denominators below count the scored pairs only. Excluded pairs are listed above with the reason they could not be scored; they are never silently absent from the denominator.",
+    "pairs_excluded": 1,
+    "pairs_in_manifest": 10,
+    "pairs_scored": 9,
+    "scored_pair_ids": [
+      "sic-2000s-01",
+      "sic-2000s-02",
+      "sic-3000s-01",
+      "sic-3000s-02",
+      "sic-4000s-01",
+      "sic-4000s-02",
+      "sic-5000s-01",
+      "sic-5000s-02",
+      "sic-6000s-02"
+    ]
+  },
+  "selection_protocol_version": "real-filing-holdout-selection.v1",
+  "threshold_policy": "No pass/fail threshold exists for real-filing metrics and none may be introduced until an initial human-verified baseline exists and has been explicitly approved. The synthetic comparison-regression suite remains the merge-blocking deterministic gate.",
+  "workflow_version": "comparison_workflow.v2",
+  "zero_denominator_policy": "null_value_metric_asserts_nothing"
+}

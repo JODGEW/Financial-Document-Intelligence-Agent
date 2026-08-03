@@ -146,7 +146,8 @@ jobs:
             tests/test_real_filing_holdout_source_verification.py \
             tests/test_real_filing_holdout_blind_extraction.py \
             tests/test_real_filing_holdout_build_report.py \
-            tests/test_holdout_human_annotation_validation.py
+            tests/test_holdout_human_annotation_validation.py \
+            tests/test_real_filing_holdout_gold_evaluation.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

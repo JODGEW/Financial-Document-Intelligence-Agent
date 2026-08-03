@@ -465,7 +465,8 @@ def test_holdout_corpus_stays_out_of_the_repository():
     """Acquisition and the blind run happened, so the gitignored corpus
     directory MAY exist locally now — but filing bodies, extracted sections,
     packets, and databases never enter the committed tree: the benchmark
-    directory holds exactly the six bounded JSON artifacts, and
+    directory holds exactly the six bounded JSON artifacts plus the
+    evaluation config that declares how this corpus is scored, and
     benchmark_data/ remains gitignored."""
     committed = {path.name for path in HOLDOUT_DIR.iterdir()}
     assert committed == {
@@ -475,6 +476,8 @@ def test_holdout_corpus_stays_out_of_the_repository():
         "blind_extraction_report.json",
         "execution_report.json",
         "annotation_packet_inventory.json",
+        "evaluation_config.json",
+        "gold_evaluation_report.json",
     }
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "benchmark_data/" in gitignore.splitlines()

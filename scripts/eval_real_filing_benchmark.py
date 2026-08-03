@@ -43,8 +43,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -53,12 +54,23 @@ if str(_REPO_ROOT) not in sys.path:
 import comparison_detector  # noqa: E402
 import comparison_reliability  # noqa: E402
 import comparison_store  # noqa: E402
+import config  # noqa: E402
 import real_filing_benchmark as rfb  # noqa: E402
+import real_filing_holdout as rfh  # noqa: E402
 from scripts import build_real_filing_benchmark as builder  # noqa: E402
 
 EVALUATION_REPORT_VERSION = "real-filing-benchmark.report.v1"
+
+#: The two manifest schemas this evaluator can read. They are validated by
+#: their own modules and are never cross-read: see ``load_manifest_dispatch``.
+DEV_MANIFEST_SCHEMA = rfb.MANIFEST_SCHEMA_VERSION
+HOLDOUT_MANIFEST_SCHEMA = rfh.HOLDOUT_MANIFEST_SCHEMA_VERSION
+
 DEFAULT_EVALUATION_CONFIG = (
     _REPO_ROOT / "benchmarks" / "real_filing_v1" / "evaluation_config.json"
+)
+DEFAULT_HOLDOUT_EVALUATION_CONFIG = (
+    _REPO_ROOT / "benchmarks" / "real_filing_holdout_v1" / "evaluation_config.json"
 )
 
 # Prominent, machine-readable honesty markers. Tests assert these strings, so
@@ -132,6 +144,197 @@ class EvaluationRefused(rfb.BenchmarkError):
     """Gold evaluation cannot proceed; the report states why."""
 
 
+# --- Manifest dispatch --------------------------------------------------------
+#
+# Two corpora exist and they do not share a manifest schema. The development
+# corpus (real_filing_v1) uses ``real-filing-benchmark.manifest.v1``; the
+# extraction holdout (real_filing_holdout_v1) uses
+# ``real-filing-holdout.manifest.v1``, which strata issuers by SIC, pins the
+# frozen parser hash, and carries no issuer slate.
+#
+# The two are NOT merged. Each schema keeps its own required-key set and its
+# own validator in its own module, and this evaluator picks a branch on
+# ``schema_version`` alone. Teaching either validator to tolerate the other's
+# keys would delete exactly the protection that makes a frozen manifest worth
+# freezing, so a branch that is handed the other schema refuses.
+
+
+@dataclass(frozen=True)
+class EvaluationManifest:
+    """A validated manifest plus everything the evaluator derives from it.
+
+    ``pairs`` is the evaluator's own pair shape, projected from whichever
+    schema was read. ``corpus_role`` is immutable corpus identity read from
+    the manifest, never a per-run choice.
+    """
+
+    schema_version: str
+    document: dict[str, Any]
+    pairs: list[dict[str, Any]]
+    corpus_role: str
+    default_config_path: Path
+    default_corpus_dir: str
+    path: Path
+
+
+def _resolve_manifest_path(path: str | Path | None) -> Path:
+    """Default to the development manifest: the dev path is unchanged."""
+    return Path(path) if path is not None else rfb.default_manifest_path()
+
+
+def peek_schema_version(path: str | Path) -> str:
+    """Read ``schema_version`` alone, before any schema is assumed.
+
+    Dispatch cannot itself validate, because validating requires already
+    knowing which schema applies. So this reads the one field that decides,
+    and refuses anything that does not carry a usable one.
+    """
+    target = Path(path)
+    if not target.exists():
+        raise EvaluationRefused(
+            "manifest_not_found", f"benchmark manifest not found: {target.name}"
+        )
+    try:
+        document = json.loads(target.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise EvaluationRefused("manifest_not_json", f"{target.name}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise EvaluationRefused(
+            "manifest_not_a_mapping", f"{target.name}: expected a JSON object"
+        )
+    version = document.get("schema_version")
+    if not isinstance(version, str) or not version:
+        raise EvaluationRefused(
+            "manifest_schema_version_missing",
+            f"{target.name}: no schema_version, so no validator can be chosen",
+        )
+    return version
+
+
+def _require_branch_schema(path: str | Path, expected: str) -> None:
+    found = peek_schema_version(path)
+    if found != expected:
+        raise EvaluationRefused(
+            "manifest_schema_dispatch_mismatch",
+            f"{Path(path).name}: this branch reads {expected!r} manifests only, "
+            f"got {found!r}. Each manifest schema is validated by its own "
+            "module; neither is ever read by the other's validator.",
+        )
+
+
+def load_development_manifest(path: str | Path) -> dict[str, Any]:
+    """Development-corpus branch. Refuses any other schema."""
+    _require_branch_schema(path, DEV_MANIFEST_SCHEMA)
+    return rfb.load_manifest(path)
+
+
+def load_holdout_manifest(path: str | Path) -> dict[str, Any]:
+    """Extraction-holdout branch. Refuses any other schema."""
+    _require_branch_schema(path, HOLDOUT_MANIFEST_SCHEMA)
+    return rfh.load_holdout_manifest(path)
+
+
+def development_evaluation_pairs(
+    document: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The development manifest already carries the evaluator's pair shape."""
+    return [dict(pair) for pair in rfb.manifest_pairs(document)]
+
+
+def holdout_evaluation_pairs(document: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project holdout pairs onto the evaluator's pair shape.
+
+    The holdout schema identifies an issuer's sector by the SIC stratum it was
+    sampled from (``stratum_label``); the development schema carries a
+    free-text ``sector_label``. They are the same reporting field, so the
+    projection maps one onto the other here — in the evaluator, at read time —
+    rather than either frozen schema growing the other's key.
+
+    Copies are returned: a manifest is a frozen input and is never mutated to
+    suit a reader.
+    """
+    projected = []
+    for pair in rfb.manifest_pairs(document):
+        projected.append(
+            {
+                "pair_id": pair["pair_id"],
+                "issuer_name": pair["issuer_name"],
+                "sector_label": pair["stratum_label"],
+                "previous": dict(pair["previous"]),
+                "current": dict(pair["current"]),
+            }
+        )
+    return projected
+
+
+def _holdout_corpus_role(document: Mapping[str, Any]) -> str:
+    """Immutable corpus identity, read from the holdout manifest.
+
+    The manifest is the authority on what this corpus IS. The evaluator only
+    checks that the identity it states is internally consistent, so a manifest
+    cannot name one role while asserting the development flag of the other.
+    """
+    role = document["corpus_role"]
+    declared_development = document["extraction_parser_developed_using_this_corpus"]
+    if declared_development != (role == rfb.CORPUS_ROLE_EXTRACTION_DEVELOPMENT):
+        raise EvaluationRefused(
+            "manifest_corpus_identity_inconsistent",
+            f"manifest declares corpus_role {role!r} but "
+            f"extraction_parser_developed_using_this_corpus="
+            f"{declared_development!r}",
+        )
+    return role
+
+
+def corpus_role_for_manifest(document: Mapping[str, Any]) -> str:
+    """Immutable corpus identity for either schema, dispatched on version."""
+    schema_version = document.get("schema_version")
+    if schema_version == DEV_MANIFEST_SCHEMA:
+        # The development manifest predates the corpus-role block and carries
+        # no role field; its role is the module constant it was frozen under.
+        return rfb.REAL_FILINGS_V1_CORPUS_ROLE
+    if schema_version == HOLDOUT_MANIFEST_SCHEMA:
+        return _holdout_corpus_role(document)
+    raise EvaluationRefused(
+        "manifest_schema_version_unsupported",
+        f"no evaluation branch reads manifest schema_version {schema_version!r}",
+    )
+
+
+def load_manifest_dispatch(path: str | Path | None = None) -> EvaluationManifest:
+    """Choose a validation branch on schema_version, then read that schema."""
+    target = _resolve_manifest_path(path)
+    schema_version = peek_schema_version(target)
+    if schema_version == DEV_MANIFEST_SCHEMA:
+        document = load_development_manifest(target)
+        return EvaluationManifest(
+            schema_version=schema_version,
+            document=document,
+            pairs=development_evaluation_pairs(document),
+            corpus_role=corpus_role_for_manifest(document),
+            default_config_path=DEFAULT_EVALUATION_CONFIG,
+            default_corpus_dir=config.REAL_FILING_BENCHMARK_DIR,
+            path=target,
+        )
+    if schema_version == HOLDOUT_MANIFEST_SCHEMA:
+        document = load_holdout_manifest(target)
+        return EvaluationManifest(
+            schema_version=schema_version,
+            document=document,
+            pairs=holdout_evaluation_pairs(document),
+            corpus_role=corpus_role_for_manifest(document),
+            default_config_path=DEFAULT_HOLDOUT_EVALUATION_CONFIG,
+            default_corpus_dir=config.REAL_FILING_HOLDOUT_DIR,
+            path=target,
+        )
+    raise EvaluationRefused(
+        "manifest_schema_version_unsupported",
+        f"{target.name}: no evaluation branch reads manifest schema_version "
+        f"{schema_version!r}. Known schemas: "
+        f"{[DEV_MANIFEST_SCHEMA, HOLDOUT_MANIFEST_SCHEMA]}",
+    )
+
+
 # --- Corpus state -------------------------------------------------------------
 
 
@@ -145,6 +348,215 @@ def load_evaluation_config(path: str | Path | None = None) -> dict[str, Any]:
     return json.loads(target.read_text(encoding="utf-8"))
 
 
+# --- Generalization claim sign-off --------------------------------------------
+#
+# "This workflow generalizes to unseen filings" is the one claim in this
+# benchmark that no computation can establish. Coverage, out-of-sample corpus
+# role, and verified labels are all NECESSARY CONTEXT for that judgement and
+# none of them is the judgement. Deriving the claim from any of them — as an
+# earlier revision derived it from coverage completeness — means a corpus that
+# happens to score cleanly publishes a scientific claim nobody made.
+#
+# So the claim is gated on a human sign-off recorded in the evaluation config,
+# carrying who signed and when. No tool in this repository writes that field;
+# it is the same contract as ``human_verified`` on an annotation, and a test
+# asserts the absence of any writer.
+
+SIGNOFF_FIELD = "generalization_claim_signoff"
+
+_SIGNOFF_REQUIRED = (
+    "signer_id",
+    "signed_at_utc",
+    "manifest_sha256",
+    "acknowledged_pairs_scored",
+)
+_SIGNOFF_OPTIONAL = ("statement",)
+
+#: Values that look like a filled-in field but identify nobody.
+_SIGNER_PLACEHOLDERS = frozenset(
+    {
+        "",
+        "-",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "tbd",
+        "todo",
+        "changeme",
+        "unknown",
+        "anonymous",
+        "signer_id",
+        "your name here",
+    }
+)
+
+
+def validate_signoff_document(config_document: Mapping[str, Any]) -> dict | None:
+    """Return the sign-off block, or None when the config records none.
+
+    A MALFORMED sign-off is a hard configuration error rather than a quiet
+    "unsigned". Silently degrading a broken sign-off to false would make a
+    typo indistinguishable from a deliberate decision not to sign.
+    """
+    signoff = config_document.get(SIGNOFF_FIELD)
+    if signoff is None:
+        return None
+    if not isinstance(signoff, dict):
+        raise EvaluationRefused(
+            "generalization_signoff_malformed",
+            f"{SIGNOFF_FIELD} must be a JSON object or null",
+        )
+    rfb._exact_keys(  # noqa: SLF001 - the repo's one key-checking primitive
+        signoff,
+        required=_SIGNOFF_REQUIRED,
+        optional=_SIGNOFF_OPTIONAL,
+        where=SIGNOFF_FIELD,
+        error=EvaluationRefused,
+        code_prefix="generalization_signoff",
+    )
+    signer = signoff["signer_id"]
+    if not isinstance(signer, str) or signer.strip().lower() in _SIGNER_PLACEHOLDERS:
+        raise EvaluationRefused(
+            "generalization_signoff_unattributed",
+            f"{SIGNOFF_FIELD}.signer_id must identify a person; "
+            f"{signer!r} does not",
+        )
+    rfb._require_iso_timestamp(  # noqa: SLF001
+        signoff["signed_at_utc"],
+        f"{SIGNOFF_FIELD}.signed_at_utc",
+        EvaluationRefused,
+        "generalization_signoff",
+    )
+    digest = signoff["manifest_sha256"]
+    if not isinstance(digest, str) or not rfb._SHA256_RE.match(digest):  # noqa: SLF001
+        raise EvaluationRefused(
+            "generalization_signoff_invalid_manifest_hash",
+            f"{SIGNOFF_FIELD}.manifest_sha256 must be 64 lowercase hex "
+            "characters naming the manifest that was signed",
+        )
+    acknowledged = signoff["acknowledged_pairs_scored"]
+    if not isinstance(acknowledged, int) or isinstance(acknowledged, bool):
+        raise EvaluationRefused(
+            "generalization_signoff_invalid_coverage",
+            f"{SIGNOFF_FIELD}.acknowledged_pairs_scored must be an integer",
+        )
+    if "statement" in signoff:
+        rfb._require_bounded_str(  # noqa: SLF001
+            signoff["statement"],
+            f"{SIGNOFF_FIELD}.statement",
+            max_chars=2000,
+            error=EvaluationRefused,
+            code_prefix="generalization_signoff",
+        )
+    return dict(signoff)
+
+
+def evaluate_generalization_claim(
+    config_document: Mapping[str, Any],
+    *,
+    manifest_sha256: str,
+    holdout_evaluation_performed: bool,
+    pairs_scored: int,
+    coverage_complete: bool,
+    pairs_in_manifest: int,
+) -> dict[str, Any]:
+    """Decide the claim, and state every reason it is not supported.
+
+    Coverage is reported here as context the signer is required to have
+    acknowledged, NOT as a condition that can grant the claim on its own.
+    """
+    signoff = validate_signoff_document(config_document)
+    blocked_by: list[str] = []
+
+    if not holdout_evaluation_performed:
+        blocked_by.append(
+            "this run did not perform a holdout evaluation: a generalization "
+            "claim needs an out-of-sample corpus that this run actually scored"
+        )
+    if signoff is None:
+        blocked_by.append(
+            f"no human sign-off is recorded in the evaluation config "
+            f"({SIGNOFF_FIELD} is null). The claim that this workflow "
+            "generalizes is a human judgement and is never derived from "
+            "coverage, corpus role, or metric values."
+        )
+    else:
+        if signoff["manifest_sha256"] != manifest_sha256:
+            blocked_by.append(
+                "the recorded sign-off names a different manifest than this "
+                "run evaluated, so it does not authorize a claim about this "
+                "corpus state"
+            )
+        if signoff["acknowledged_pairs_scored"] != pairs_scored:
+            blocked_by.append(
+                f"the recorded sign-off acknowledges "
+                f"{signoff['acknowledged_pairs_scored']} scored pairs but this "
+                f"run scored {pairs_scored}; the signer did not see this "
+                "coverage"
+            )
+
+    supported = not blocked_by
+    return {
+        "supported": supported,
+        "blocked_by": blocked_by,
+        # Coverage is a reported fact standing beside the claim, never the
+        # thing that grants it.
+        "coverage_complete": coverage_complete,
+        "pairs_scored": pairs_scored,
+        "pairs_in_manifest": pairs_in_manifest,
+        "signoff_present": signoff is not None,
+        "signoff_signer_id": signoff["signer_id"] if signoff else None,
+        "signoff_signed_at_utc": signoff["signed_at_utc"] if signoff else None,
+        "signoff_statement": (signoff or {}).get("statement"),
+        "policy": (
+            "generalization_claim_supported is true only when a human "
+            "sign-off in the evaluation config names the exact manifest this "
+            "run evaluated and acknowledges the number of pairs it scored. No "
+            "tool in this repository writes that sign-off."
+        ),
+    }
+
+
+def require_config_matches_manifest(
+    config_document: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> None:
+    """An evaluation config describes ONE corpus, and must name that corpus.
+
+    Without this, pointing ``--evaluation-config`` at the development config
+    while evaluating the holdout would silently score the holdout under the
+    other corpus's declared versions and gold-status policy.
+    """
+    declared = config_document.get("benchmark_id")
+    actual = manifest["benchmark_id"]
+    if declared != actual:
+        raise EvaluationRefused(
+            "evaluation_config_benchmark_mismatch",
+            f"the evaluation config declares benchmark_id {declared!r} but the "
+            f"manifest is {actual!r}. A config describes one corpus; using "
+            "another corpus's config would score this run under versions and "
+            "policy that were never declared for it.",
+        )
+
+
+def _required_pair_field(pair: Mapping[str, Any], field: str) -> Any:
+    """Read a pair field the evaluator cannot proceed without.
+
+    A bare ``pair[field]`` here raised an uncaught KeyError that surfaced as a
+    traceback rather than as a stated reason — and it fired on exactly the
+    case that matters, a manifest schema whose projection is incomplete. This
+    is a BenchmarkError so it exits as a configuration failure with a code.
+    """
+    if field not in pair:
+        raise EvaluationRefused(
+            "evaluation_pair_missing_field",
+            f"manifest pair {pair.get('pair_id', '<unknown>')!r} has no "
+            f"{field!r}: the evaluation projection for this manifest schema "
+            "did not produce a complete pair",
+        )
+    return pair[field]
+
+
 def collect_pair_state(
     pair: dict[str, Any], layout: rfb.CorpusLayout
 ) -> dict[str, Any]:
@@ -154,11 +566,11 @@ def collect_pair_state(
     report exists precisely to say how many pairs did not get as far as the
     next stage.
     """
-    pair_id = pair["pair_id"]
+    pair_id = _required_pair_field(pair, "pair_id")
     state: dict[str, Any] = {
         "pair_id": pair_id,
-        "issuer_name": pair["issuer_name"],
-        "sector_label": pair["sector_label"],
+        "issuer_name": _required_pair_field(pair, "issuer_name"),
+        "sector_label": _required_pair_field(pair, "sector_label"),
         "build_record": None,
         "detection_result": None,
         "annotation": None,
@@ -294,6 +706,93 @@ def corpus_quality(
 
 def _pair_for(pairs: list[dict[str, Any]], pair_id: str) -> dict[str, Any]:
     return next(pair for pair in pairs if pair["pair_id"] == pair_id)
+
+
+# --- Scoring scope ------------------------------------------------------------
+#
+# A pair whose Item 1A could not be extracted on both sides can never carry a
+# human-verified annotation: no review packet is generated for it, so there is
+# nothing for an annotator to verify. Treating its missing annotation as a
+# refusal reason would make one unextractable pair suppress the metrics for
+# every other pair in the corpus. Treating it as nothing at all would quietly
+# shrink the denominator instead.
+#
+# So it is neither: the pair is excluded from scoring and reported as excluded,
+# by pair id and with the extraction outcomes that blocked it.
+
+#: The only condition under which a pair may be excluded rather than refuse.
+EXCLUSION_EXTRACTION_BLOCKED = "extraction_blocked"
+
+
+def _is_extraction_blocked(state: Mapping[str, Any]) -> bool:
+    """True only for a built pair that extraction itself made unscorable.
+
+    Deliberately narrow. The pair must have built, must have failed
+    ``build_is_evaluable``, and must carry no problem other than the missing
+    annotation that follows from it. Any other defect — drift, a rejected
+    annotation, a machine proposal, an unreadable build record — is not an
+    extraction block and still refuses the run.
+    """
+    record = state["build_record"]
+    if not record or rfb.build_is_evaluable(record):
+        return False
+    codes = {problem["code"] for problem in state["problems"]}
+    return codes <= {"annotation_not_found"}
+
+
+def partition_scoring_scope(
+    states: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split states into what gold metrics cover and what they cannot."""
+    scorable: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for state in states:
+        annotation = state["annotation"]
+        if annotation is not None and rfb.is_gold(annotation):
+            scorable.append(state)
+            continue
+        if _is_extraction_blocked(state):
+            record = state["build_record"]
+            excluded.append(
+                {
+                    "pair_id": state["pair_id"],
+                    "code": EXCLUSION_EXTRACTION_BLOCKED,
+                    "previous_extraction_outcome": (
+                        record["previous"]["extraction_outcome"]
+                    ),
+                    "current_extraction_outcome": (
+                        record["current"]["extraction_outcome"]
+                    ),
+                    "detail": (
+                        "Item 1A was not extracted on both sides, so no review "
+                        "packet and no human-verified annotation exist for this "
+                        "pair. It is excluded from every gold numerator and "
+                        "denominator and is reported here rather than dropped."
+                    ),
+                }
+            )
+    return scorable, excluded
+
+
+def scoring_scope_report(
+    pairs: list[dict[str, Any]],
+    scorable: list[dict[str, Any]],
+    excluded: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """What the gold metrics below actually cover, stated as counts and ids."""
+    return {
+        "pairs_in_manifest": len(pairs),
+        "pairs_scored": len(scorable),
+        "pairs_excluded": len(excluded),
+        "scored_pair_ids": sorted(state["pair_id"] for state in scorable),
+        "excluded_pairs": sorted(excluded, key=lambda item: item["pair_id"]),
+        "coverage_complete": len(excluded) == 0,
+        "note": (
+            "Gold metric denominators below count the scored pairs only. "
+            "Excluded pairs are listed above with the reason they could not be "
+            "scored; they are never silently absent from the denominator."
+        ),
+    }
 
 
 # --- Gold scoring -------------------------------------------------------------
@@ -615,6 +1114,9 @@ def _provenance(
     manifest_path: str | Path | None,
     states: list[dict[str, Any]],
     config_document: dict[str, Any],
+    *,
+    holdout_evaluation_performed: bool,
+    generalization_claim_supported: bool,
 ) -> dict[str, Any]:
     gold_annotations = [
         state["annotation"]
@@ -639,8 +1141,14 @@ def _provenance(
         "selection_protocol_version": manifest["selection_protocol_version"],
         # Corpus validity is provenance, not a footnote: any number in this
         # report is qualified by whether the corpus was seen during extraction
-        # development.
-        **rfb.corpus_role_fields(),
+        # development. Identity (which corpus this is) is read from the
+        # manifest; lifecycle (what THIS run did with it) is derived from the
+        # run and passed in. Neither is defaulted.
+        **rfb.corpus_role_fields(
+            corpus_role_for_manifest(manifest),
+            holdout_evaluation_performed=holdout_evaluation_performed,
+            generalization_claim_supported=generalization_claim_supported,
+        ),
         "commit_sha": rfb.repo_commit_sha(_REPO_ROOT),
         "evaluated_at": rfb.utc_now_iso(),
     }
@@ -695,7 +1203,16 @@ def unlabeled_report(
         )
 
     return {
-        **_provenance(manifest, manifest_path, states, config_document),
+        # An unlabeled run reports mechanics and computes no gold metric, so
+        # it is not a holdout evaluation even when the corpus is the holdout.
+        **_provenance(
+            manifest,
+            manifest_path,
+            states,
+            config_document,
+            holdout_evaluation_performed=False,
+            generalization_claim_supported=False,
+        ),
         "mode": "unlabeled_execution",
         "gold_metrics_available": False,
         "gold_metrics": None,
@@ -728,8 +1245,16 @@ def refusal_reasons(
     config_document: dict[str, Any],
     *,
     new_run: bool,
+    excluded_pair_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
-    """Every reason gold evaluation cannot proceed, collected not short-circuited."""
+    """Every reason gold evaluation cannot proceed, collected not short-circuited.
+
+    ``excluded_pair_ids`` names pairs already reported as out of scoring scope
+    because extraction blocked them. For those, and only those, the missing
+    annotation that necessarily follows is not also a refusal reason — it is
+    reported in ``scoring_scope``. Every other problem on those pairs, source
+    checksum drift included, still refuses.
+    """
     reasons: list[dict[str, str]] = []
 
     if not new_run:
@@ -767,7 +1292,10 @@ def refusal_reasons(
 
     for state in states:
         pair_id = state["pair_id"]
+        excluded = pair_id in excluded_pair_ids
         for problem in state["problems"]:
+            if excluded and problem["code"] == "annotation_not_found":
+                continue
             reasons.append({"code": problem["code"], "detail": f"{pair_id}: {problem['detail']}"})
         if state["build_record"]:
             for problem in verify_source_checksums(
@@ -805,16 +1333,45 @@ def gold_report(
     new_run: bool = False,
 ) -> dict[str, Any]:
     """Gold metrics, or an explicit refusal carrying every reason."""
-    reasons = refusal_reasons(pairs, states, config_document, new_run=new_run)
-    provenance = _provenance(manifest, manifest_path, states, config_document)
+    scorable, excluded = partition_scoring_scope(states)
+    scope = scoring_scope_report(pairs, scorable, excluded)
+    reasons = refusal_reasons(
+        pairs,
+        states,
+        config_document,
+        new_run=new_run,
+        excluded_pair_ids=frozenset(item["pair_id"] for item in excluded),
+    )
+    if not reasons and not scorable:
+        # Nothing refused, but nothing is verified either. Reporting empty
+        # metrics as a successful gold run would state a result that has no
+        # labels behind it.
+        reasons = [
+            {
+                "code": "no_human_verified_pairs",
+                "detail": (
+                    "no pair in scope carries a human-verified annotation, so "
+                    "there is nothing to score"
+                ),
+            }
+        ]
     if reasons:
         return {
-            **provenance,
+            **_provenance(
+                manifest,
+                manifest_path,
+                states,
+                config_document,
+                # A refused run evaluated nothing.
+                holdout_evaluation_performed=False,
+                generalization_claim_supported=False,
+            ),
             "mode": "gold_evaluation",
             "refused": True,
             "gold_metrics_available": False,
             "gold_metrics": None,
             "refusal_reasons": reasons,
+            "scoring_scope": scope,
             "corpus_quality": corpus_quality(pairs, states),
             "note": (
                 "Gold evaluation was REFUSED. No accuracy metric is reported, "
@@ -823,13 +1380,45 @@ def gold_report(
             ),
         }
 
-    scored = [score_pair(state) for state in states]
+    # Scored pairs only. `states` also holds pairs extraction blocked out of
+    # scope, which carry no annotation to score against.
+    scored = [score_pair(state) for state in scorable]
+
+    corpus_role = corpus_role_for_manifest(manifest)
+    is_holdout = corpus_role == rfb.CORPUS_ROLE_EXTRACTION_HOLDOUT
+    # Lifecycle, derived from what this run actually did: gold metrics were
+    # computed, over a corpus whose frozen identity is out-of-sample.
+    holdout_evaluation_performed = is_holdout
+    # The generalization claim is NOT derived from any of that. It needs a
+    # human sign-off naming this exact corpus state; coverage travels with it
+    # as reported context rather than as the thing that grants it.
+    claim = evaluate_generalization_claim(
+        config_document,
+        manifest_sha256=rfb.manifest_hash(manifest_path),
+        holdout_evaluation_performed=holdout_evaluation_performed,
+        pairs_scored=scope["pairs_scored"],
+        coverage_complete=scope["coverage_complete"],
+        pairs_in_manifest=scope["pairs_in_manifest"],
+    )
+    generalization_claim_supported = claim["supported"]
+    blocked_by = claim["blocked_by"]
+
     return {
-        **provenance,
+        "generalization_claim": claim,
+        **_provenance(
+            manifest,
+            manifest_path,
+            states,
+            config_document,
+            holdout_evaluation_performed=holdout_evaluation_performed,
+            generalization_claim_supported=generalization_claim_supported,
+        ),
         "mode": "gold_evaluation",
         "refused": False,
         "gold_metrics_available": True,
         "scope": GOLD_SCOPE_NOTE,
+        "scoring_scope": scope,
+        "generalization_claim_blocked_by": blocked_by,
         "pass_fail_thresholds": None,
         "threshold_policy": (
             "No pass/fail threshold exists for real-filing metrics and none may "
@@ -881,6 +1470,27 @@ def print_report(report: dict[str, Any]) -> None:
             "  ** extraction generalizes to unseen filings. "
             "generalization_claim_supported=false"
         )
+    elif report["extraction_holdout_evaluation"]:
+        claim = str(report["generalization_claim_supported"]).lower()
+        print(
+            "  ** EXTRACTION HOLDOUT EVALUATION: this corpus was frozen from "
+            "official metadata\n"
+            "  ** after the extraction parser was frozen, so the metrics below "
+            "are OUT-OF-SAMPLE.\n"
+            f"  ** generalization_claim_supported={claim}"
+        )
+        signoff = report.get("generalization_claim") or {}
+        print(
+            "  ** human sign-off: "
+            + (
+                f"{signoff['signoff_signer_id']} at "
+                f"{signoff['signoff_signed_at_utc']}"
+                if signoff.get("signoff_present")
+                else "NONE RECORDED"
+            )
+        )
+        for reason in report.get("generalization_claim_blocked_by", []):
+            print(f"  **   blocked by: {reason}")
 
     quality = report["corpus_quality"]
     print("\nCorpus quality (counts):")
@@ -895,6 +1505,19 @@ def print_report(report: dict[str, Any]) -> None:
         "pairs_human_verified",
     ):
         print(f"  {key:<28} {quality[key]}")
+
+    scope = report.get("scoring_scope")
+    if scope:
+        print("\nScoring scope (what the gold metrics cover):")
+        for key in ("pairs_in_manifest", "pairs_scored", "pairs_excluded"):
+            print(f"  {key:<28} {scope[key]}")
+        for item in scope["excluded_pairs"]:
+            print(
+                f"  EXCLUDED {item['pair_id']:<19} [{item['code']}] "
+                f"previous={item['previous_extraction_outcome']} "
+                f"current={item['current_extraction_outcome']}"
+            )
+            print(f"    {item['detail']}")
 
     if report["mode"] == "unlabeled_execution":
         print()
@@ -990,14 +1613,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        manifest = rfb.load_manifest(args.manifest)
-        config_document = load_evaluation_config(args.evaluation_config)
+        # Which schema this manifest is decides which validator reads it, and
+        # which corpus's evaluation config and corpus directory are the
+        # defaults. Nothing is assumed to be the development corpus.
+        evaluation_manifest = load_manifest_dispatch(args.manifest)
+        config_document = load_evaluation_config(
+            args.evaluation_config or evaluation_manifest.default_config_path
+        )
+        require_config_matches_manifest(
+            config_document, evaluation_manifest.document
+        )
+        # Validated here so a malformed sign-off is a configuration failure
+        # with a code, not a claim that quietly evaluates to false.
+        validate_signoff_document(config_document)
     except rfb.BenchmarkError as exc:
         print(f"Invalid configuration [{exc.code}]: {exc.message}", file=sys.stderr)
         return 2
 
-    layout = rfb.CorpusLayout(args.corpus_dir)
-    pairs = rfb.manifest_pairs(manifest)
+    manifest = evaluation_manifest.document
+    manifest_path = evaluation_manifest.path
+    layout = rfb.CorpusLayout(
+        args.corpus_dir or evaluation_manifest.default_corpus_dir
+    )
+    pairs = evaluation_manifest.pairs
     if args.pair_id:
         wanted = set(args.pair_id)
         unknown = sorted(wanted - {pair["pair_id"] for pair in pairs})
@@ -1015,15 +1653,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    states = [collect_pair_state(pair, layout) for pair in pairs]
+    try:
+        states = [collect_pair_state(pair, layout) for pair in pairs]
+    except rfb.BenchmarkError as exc:
+        print(f"Invalid configuration [{exc.code}]: {exc.message}", file=sys.stderr)
+        return 2
+
     if args.unlabeled:
         report = unlabeled_report(
-            manifest, args.manifest, pairs, states, layout, config_document
+            manifest, manifest_path, pairs, states, layout, config_document
         )
     else:
         report = gold_report(
             manifest,
-            args.manifest,
+            manifest_path,
             pairs,
             states,
             layout,

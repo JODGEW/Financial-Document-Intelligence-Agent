@@ -8,6 +8,7 @@
   "declared_section_key": "item_1a_risk_factors",
   "gold_status_required": "human_verified",
   "pass_fail_thresholds": null,
+  "generalization_claim_signoff": null,
   "notes": [
     "The declared versions pin the workflow an evaluation run describes. If the live detector or workflow version differs, the evaluator REFUSES rather than silently reporting metrics under a version the config does not describe. Creating a new run under a new version is explicit (--new-run) and updates this file in a reviewed commit.",
     "pass_fail_thresholds is null on purpose. No gate exists for real-filing metrics and none may be introduced until an initial human-verified baseline exists and has been explicitly approved. The synthetic comparison-regression suite remains the merge-blocking deterministic gate.",

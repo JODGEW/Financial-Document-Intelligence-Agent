@@ -380,3 +380,230 @@ def human_verify(
         verified["labels"] = labels
     rfb.validate_annotation(verified)
     return verified
+
+
+# --- Synthetic extraction-holdout corpus --------------------------------------
+#
+# The real holdout corpus is twenty SEC filing bodies under gitignored
+# benchmark_data/, so it does not exist in a clean clone and the end-to-end
+# gold-evaluation tests could only skip in CI. A skipped test reads as a pass,
+# which is exactly the wrong signal for the path that publishes a corpus-role
+# claim.
+#
+# So the holdout SCHEMA is exercised against a corpus built here: a manifest
+# that satisfies every frozen holdout rule (ten pairs, five SIC strata, two per
+# stratum, ordered dates, metadata-only provenance references) over sentinel
+# CIKs and fictional issuers, with the same hand-written HTML the rest of this
+# module uses. No real registrant, accession, or filing byte is involved, and
+# the corpus lives in tmp_path.
+#
+# What this does NOT do is reproduce the real corpus's metric values. It
+# exercises the CLI path — dispatch, projection, config binding, scoring scope,
+# and the provenance block — not the numbers, which stay pinned against the
+# real corpus in the tests that require it.
+
+HOLDOUT_SIGNER = "release-manager@localhost"
+HOLDOUT_SIGNED_AT = "2026-03-01T09:30:00+00:00"
+
+
+def _holdout_side(
+    *,
+    cik: str,
+    accession_suffix: str,
+    year: str,
+    filing_date: str,
+    reporting_period: str,
+    digest: str,
+) -> dict[str, Any]:
+    return {
+        "accession_number": f"{cik}-{year[2:]}-{accession_suffix}",
+        "form": "10-K",
+        "filing_date": filing_date,
+        "reporting_period": reporting_period,
+        "primary_document": f"synthetic-{year}.htm",
+        "expected_sha256": digest,
+        "source_verified": True,
+    }
+
+
+def synthetic_holdout_manifest(
+    contents: dict[tuple[str, str], str], *, block_last_pair: bool = True
+) -> dict[str, Any]:
+    """A manifest that passes ``validate_holdout_manifest``, fully synthetic.
+
+    ``contents`` is filled in with the HTML for each (pair_id, side) so the
+    frozen ``expected_sha256`` values describe bytes the caller will actually
+    seed. Nothing here is read from the committed holdout manifest.
+    """
+    import real_filing_holdout as rfh
+
+    pairs: list[dict[str, Any]] = []
+    for stratum_index, stratum in enumerate(rfh.SIC_STRATA):
+        for ordinal in (1, 2):
+            index = stratum_index * 2 + ordinal
+            pair_id = f"{stratum['stratum_id']}-{ordinal:02d}"
+            cik = f"{index:010d}"
+            # The last pair of the last stratum loses its current-year section,
+            # mirroring the real corpus's one extraction-blocked pair. Turning
+            # that off yields a fully covered corpus, which the sign-off tests
+            # need in order to show that complete coverage still grants nothing.
+            blocked = block_last_pair and index == len(rfh.SIC_STRATA) * 2
+            previous_html = PREVIOUS_HTML.replace("FY2022", f"FY2022 {pair_id}")
+            current_html = (NO_SECTION_HTML if blocked else CURRENT_HTML).replace(
+                "FY2023", f"FY2023 {pair_id}"
+            )
+            contents[(pair_id, "previous")] = previous_html
+            contents[(pair_id, "current")] = current_html
+            pairs.append(
+                {
+                    "pair_id": pair_id,
+                    "issuer_name": f"Fictional Holdout Issuer {index:02d}, Inc.",
+                    "cik": cik,
+                    "sic": stratum["sic_range"][0] + 34,
+                    "stratum_id": stratum["stratum_id"],
+                    "stratum_label": stratum["label"],
+                    "target_previous_fiscal_year": (
+                        rfh.TARGET_PREVIOUS_FISCAL_YEAR
+                    ),
+                    "target_current_fiscal_year": rfh.TARGET_CURRENT_FISCAL_YEAR,
+                    "metadata_source_references": [
+                        rfh.submissions_url(cik),
+                        rfh.companyfacts_url(cik),
+                    ],
+                    "previous": _holdout_side(
+                        cik=cik,
+                        accession_suffix=f"{index:06d}",
+                        year="2024",
+                        filing_date="2024-02-16",
+                        reporting_period="2023-12-31",
+                        digest=sha256(previous_html),
+                    ),
+                    "current": _holdout_side(
+                        cik=cik,
+                        accession_suffix=f"{index:06d}",
+                        year="2025",
+                        filing_date="2025-02-21",
+                        reporting_period="2024-12-31",
+                        digest=sha256(current_html),
+                    ),
+                }
+            )
+
+    document = {
+        "schema_version": rfh.HOLDOUT_MANIFEST_SCHEMA_VERSION,
+        "benchmark_id": rfh.HOLDOUT_BENCHMARK_ID,
+        "benchmark_version": rfh.HOLDOUT_BENCHMARK_VERSION,
+        "status": rfb.STATUS_CORPUS_BUILT,
+        "form": rfb.MANIFEST_FORM,
+        "target_pair_count": rfh.TARGET_PAIR_COUNT,
+        "frozen_extraction_parser_version": (
+            rfh.FROZEN_EXTRACTION_PARSER_VERSION
+        ),
+        "frozen_parser_source_path": rfh.FROZEN_PARSER_SOURCE_PATH,
+        "frozen_parser_source_sha256": rfh.frozen_parser_source_sha256(),
+        "selection_protocol_version": rfh.HOLDOUT_SELECTION_PROTOCOL_VERSION,
+        "selection_protocol_hash": rfh.selection_protocol_hash(),
+        "development_exclusions": {
+            "development_benchmark_id": rfb.BENCHMARK_ID,
+            # Sentinel exclusions: no synthetic pair may use these.
+            "excluded_ciks": ["0000000999"],
+            "excluded_accessions": ["0000000999-24-999999"],
+        },
+        "metadata_snapshot": {
+            "company_tickers_retrieved_at": "2026-03-01T00:00:00+00:00",
+            "selected_at": "2026-03-01T00:00:00+00:00",
+        },
+        "selected_at": "2026-03-01T00:00:00+00:00",
+        "pairs": pairs,
+        **rfh.holdout_corpus_role_fields(),
+    }
+    rfh.validate_holdout_manifest(document)
+    return document
+
+
+def build_synthetic_holdout_corpus(
+    tmp_path: Path, *, block_last_pair: bool = True
+) -> dict[str, Any]:
+    """Build a complete holdout-schema corpus through the REAL pipeline.
+
+    Ingestion, Item 1A extraction, and comparison all run through the same
+    functions the blind holdout run used, so the outcomes asserted downstream
+    are the outcomes that path produces.
+    """
+    import real_filing_holdout_extraction as rfhe
+    from scripts import build_real_filing_benchmark as builder
+    from scripts import create_real_filing_annotation_packets as packets
+
+    contents: dict[tuple[str, str], str] = {}
+    document = synthetic_holdout_manifest(contents, block_last_pair=block_last_pair)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(document, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    manifest_sha256 = rfb.sha256_file(manifest_path)
+
+    layout = rfb.CorpusLayout(tmp_path / "corpus")
+    seed_sources(layout, document, contents)
+
+    scored: list[str] = []
+    blocked: list[str] = []
+    for pair_document in rfb.manifest_pairs(document):
+        rfhe.blind_extract_pair(
+            pair_document,
+            manifest=document,
+            manifest_sha256=manifest_sha256,
+            layout=layout,
+        )
+        pair_id = pair_document["pair_id"]
+        record = builder.load_build_record(pair_id, layout)
+        if not rfb.build_is_evaluable(record):
+            blocked.append(pair_id)
+            continue
+        _packet, annotation = packets.build_packet(pair_id, layout, document)
+        rfb.write_json_atomic(layout.annotation_path(pair_id), human_verify(annotation))
+        scored.append(pair_id)
+
+    return {
+        "document": document,
+        "manifest_path": manifest_path,
+        "manifest_sha256": manifest_sha256,
+        "layout": layout,
+        "scored_pair_ids": scored,
+        "blocked_pair_ids": blocked,
+    }
+
+
+def write_holdout_evaluation_config(
+    tmp_path: Path, *, signoff: dict[str, Any] | None = None
+) -> Path:
+    """The committed holdout config, optionally carrying a sign-off block."""
+    import config as app_config  # noqa: F401  (kept for path symmetry)
+
+    source = (
+        Path(__file__).resolve().parent.parent.parent
+        / "benchmarks"
+        / "real_filing_holdout_v1"
+        / "evaluation_config.json"
+    )
+    document = json.loads(source.read_text(encoding="utf-8"))
+    document["generalization_claim_signoff"] = signoff
+    path = tmp_path / "evaluation_config.json"
+    path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def holdout_signoff(
+    *,
+    manifest_sha256: str,
+    pairs_scored: int,
+    signer_id: str = HOLDOUT_SIGNER,
+    signed_at_utc: str = HOLDOUT_SIGNED_AT,
+) -> dict[str, Any]:
+    """A well-formed sign-off block. Only a test ever constructs one."""
+    return {
+        "signer_id": signer_id,
+        "signed_at_utc": signed_at_utc,
+        "manifest_sha256": manifest_sha256,
+        "acknowledged_pairs_scored": pairs_scored,
+        "statement": "Synthetic fixture sign-off for contract tests only.",
+    }
