@@ -358,11 +358,22 @@ def load_evaluation_config(path: str | Path | None = None) -> dict[str, Any]:
 # happens to score cleanly publishes a scientific claim nobody made.
 #
 # So the claim is gated on a human sign-off recorded in the evaluation config,
-# carrying who signed and when. No tool in this repository writes that field;
-# it is the same contract as ``human_verified`` on an annotation, and a test
-# asserts the absence of any writer.
+# carrying who signed, when, and IN THEIR OWN WORDS what they are signing. No
+# tool in this repository writes that field; it is the same contract as
+# ``human_verified`` on an annotation, and a test asserts the absence of any
+# writer.
+#
+# ``statement`` was previously optional, which meant a sign-off block carrying
+# only identity, a timestamp, and two hashes could publish the claim with no
+# human sentence attached to it. Identity and a timestamp record WHO acted and
+# WHEN; only the statement records WHAT they asserted. A claim nobody wrote a
+# sentence for is a claim nobody made, so the statement is now required for any
+# affirmative sign-off, with its own codes rather than the generic missing-key
+# code. Nothing generates it: there is no default, no template, and no
+# derivation from the signer id, the timestamp, the metrics, or the environment.
 
 SIGNOFF_FIELD = "generalization_claim_signoff"
+STATEMENT_FIELD = "statement"
 
 _SIGNOFF_REQUIRED = (
     "signer_id",
@@ -370,7 +381,88 @@ _SIGNOFF_REQUIRED = (
     "manifest_sha256",
     "acknowledged_pairs_scored",
 )
-_SIGNOFF_OPTIONAL = ("statement",)
+#: Structurally optional so its ABSENCE reaches ``validate_signoff_statement``
+#: and gets a dedicated code; semantically required by that function.
+_SIGNOFF_SHAPE_OPTIONAL = (STATEMENT_FIELD,)
+
+#: The repository's existing bound for this field, unchanged. Counted over the
+#: raw value in Unicode code points, matching ``rfb._require_bounded_str``.
+MAX_SIGNOFF_STATEMENT_CHARS = 2000
+
+#: Sentinel distinguishing "the key was absent" from "the key held null".
+_ABSENT = object()
+
+#: Code points that occupy no visual space, so a statement made only of them is
+#: as empty as one made only of spaces. ``str.strip()`` does not remove these —
+#: Python does not classify them as whitespace — so the emptiness check deletes
+#: them outright rather than stripping edges, which would let an alternating
+#: run like "​ ​ ​" survive as "non-empty".
+#: Same set as ``loaders.sec_headings._ZERO_WIDTH``, duplicated deliberately:
+#: importing the parser here would pull the ingestion graph into a validator
+#: that must stay offline and dependency-free.
+_INVISIBLE = dict.fromkeys(map(ord, "​‌‍⁠﻿"), None)
+
+SIGNOFF_STATEMENT_REQUIRED = "generalization_signoff_statement_required"
+SIGNOFF_STATEMENT_INVALID_TYPE = "generalization_signoff_statement_invalid_type"
+SIGNOFF_STATEMENT_EMPTY = "generalization_signoff_statement_empty"
+SIGNOFF_STATEMENT_TOO_LONG = "generalization_signoff_statement_too_long"
+
+
+def validate_signoff_statement(value: Any = _ABSENT) -> str:
+    """Return the trimmed sign-off statement, or refuse with a stable code.
+
+    The one thing in a sign-off block that a person has to have written. Called
+    with no argument, or with the sentinel, it reports the field as absent
+    rather than inventing one.
+
+    The contract, in check order:
+
+    1. present — omitting it is not an unsigned run, it is a broken sign-off
+    2. a ``str`` — never a bool, number, list, mapping, bytes, or ``None``
+    3. non-empty once edge whitespace and zero-width code points are discounted
+    4. at most ``MAX_SIGNOFF_STATEMENT_CHARS`` raw code points
+
+    Normalization follows ``rfb._require_bounded_str``, the repository's
+    convention for bounded human text: leading and trailing whitespace is
+    trimmed and the trimmed value is what gets returned and persisted. Interior
+    text is returned exactly as written — spaces, punctuation, casing, and
+    newlines included — because a reviewer's sentence is evidence, not a field
+    to reformat. A multi-line statement is accepted.
+
+    This function validates that a sentence EXISTS and is bounded. It does not
+    read it, judge it, or treat it as agreement with any particular claim.
+    """
+    if value is _ABSENT:
+        raise EvaluationRefused(
+            SIGNOFF_STATEMENT_REQUIRED,
+            f"{SIGNOFF_FIELD}.{STATEMENT_FIELD} is required for an affirmative "
+            "generalization sign-off: the claim needs a sentence a person "
+            "wrote, and none is generated for them",
+        )
+    # bool is an int subclass, and both must fail as loudly as a list would.
+    if not isinstance(value, str):
+        raise EvaluationRefused(
+            SIGNOFF_STATEMENT_INVALID_TYPE,
+            f"{SIGNOFF_FIELD}.{STATEMENT_FIELD} must be a string, got "
+            f"{type(value).__name__}",
+        )
+    statement = value.strip()
+    # Deleted, not stripped: emptiness is about the WHOLE value, so a run that
+    # alternates zero-width and whitespace must not read as visible text.
+    if not statement.translate(_INVISIBLE).strip():
+        raise EvaluationRefused(
+            SIGNOFF_STATEMENT_EMPTY,
+            f"{SIGNOFF_FIELD}.{STATEMENT_FIELD} must carry visible text; "
+            "whitespace or zero-width characters alone assert nothing",
+        )
+    if len(value) > MAX_SIGNOFF_STATEMENT_CHARS:
+        raise EvaluationRefused(
+            SIGNOFF_STATEMENT_TOO_LONG,
+            f"{SIGNOFF_FIELD}.{STATEMENT_FIELD} exceeds "
+            f"{MAX_SIGNOFF_STATEMENT_CHARS} characters",
+        )
+    return statement
+
 
 #: Values that look like a filled-in field but identify nobody.
 _SIGNER_PLACEHOLDERS = frozenset(
@@ -398,6 +490,15 @@ def validate_signoff_document(config_document: Mapping[str, Any]) -> dict | None
     A MALFORMED sign-off is a hard configuration error rather than a quiet
     "unsigned". Silently degrading a broken sign-off to false would make a
     typo indistinguishable from a deliberate decision not to sign.
+
+    ``null`` — the state of both committed evaluation configs — is the legacy
+    unsigned case and returns None here, so a report written before the
+    statement was required stays readable and stays unsigned. The strict
+    contract applies only to a block that is actually present, which is the
+    only shape that can authorize a claim.
+
+    The returned block is a copy carrying the NORMALIZED statement; the caller's
+    mapping is never mutated.
     """
     signoff = config_document.get(SIGNOFF_FIELD)
     if signoff is None:
@@ -410,7 +511,7 @@ def validate_signoff_document(config_document: Mapping[str, Any]) -> dict | None
     rfb._exact_keys(  # noqa: SLF001 - the repo's one key-checking primitive
         signoff,
         required=_SIGNOFF_REQUIRED,
-        optional=_SIGNOFF_OPTIONAL,
+        optional=_SIGNOFF_SHAPE_OPTIONAL,
         where=SIGNOFF_FIELD,
         error=EvaluationRefused,
         code_prefix="generalization_signoff",
@@ -441,15 +542,12 @@ def validate_signoff_document(config_document: Mapping[str, Any]) -> dict | None
             "generalization_signoff_invalid_coverage",
             f"{SIGNOFF_FIELD}.acknowledged_pairs_scored must be an integer",
         )
-    if "statement" in signoff:
-        rfb._require_bounded_str(  # noqa: SLF001
-            signoff["statement"],
-            f"{SIGNOFF_FIELD}.statement",
-            max_chars=2000,
-            error=EvaluationRefused,
-            code_prefix="generalization_signoff",
-        )
-    return dict(signoff)
+    # Last, so every pre-existing check keeps its established order and code.
+    validated = dict(signoff)
+    validated[STATEMENT_FIELD] = validate_signoff_statement(
+        signoff.get(STATEMENT_FIELD, _ABSENT)
+    )
+    return validated
 
 
 def evaluate_generalization_claim(
@@ -467,6 +565,14 @@ def evaluate_generalization_claim(
     acknowledged, NOT as a condition that can grant the claim on its own.
     """
     signoff = validate_signoff_document(config_document)
+    statement: str | None = None
+    if signoff is not None:
+        # Re-checked at the gate itself rather than trusted from upstream, so a
+        # future path that assembles a sign-off block without going through the
+        # validator still cannot publish the claim on identity and hashes alone.
+        statement = validate_signoff_statement(
+            signoff.get(STATEMENT_FIELD, _ABSENT)
+        )
     blocked_by: list[str] = []
 
     if not holdout_evaluation_performed:
@@ -508,12 +614,17 @@ def evaluate_generalization_claim(
         "signoff_present": signoff is not None,
         "signoff_signer_id": signoff["signer_id"] if signoff else None,
         "signoff_signed_at_utc": signoff["signed_at_utc"] if signoff else None,
-        "signoff_statement": (signoff or {}).get("statement"),
+        "signoff_statement": statement,
         "policy": (
             "generalization_claim_supported is true only when a human "
             "sign-off in the evaluation config names the exact manifest this "
-            "run evaluated and acknowledges the number of pairs it scored. No "
-            "tool in this repository writes that sign-off."
+            "run evaluated, acknowledges the number of pairs it scored, and "
+            "carries an explicit non-empty statement the signer wrote. No "
+            "tool in this repository writes that sign-off, and no statement is "
+            "generated, defaulted, or derived from the signer id, the "
+            "timestamp, the metrics, or the environment. A recorded statement "
+            "means a person wrote one; it is not itself agreement with any "
+            "claim, and it is never a legal or cryptographic signature."
         ),
     }
 

@@ -133,6 +133,12 @@ jobs:
       # recorded identity and hash chain, exactly-once unit-id closure, and
       # read-only behavior — entirely over synthetic fixtures, before any
       # human label exists.
+      # test_gold_evaluation_signoff.py freezes the generalization sign-off
+      # admission contract: an affirmative claim now requires an explicit,
+      # non-empty, bounded statement a person wrote, on top of every condition
+      # that already applied. It also pins the committed gold evaluation as
+      # byte-identical, unsigned, and generalization_claim_supported=false, so
+      # hardening the future gate cannot quietly revalue the frozen one.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -147,7 +153,8 @@ jobs:
             tests/test_real_filing_holdout_blind_extraction.py \
             tests/test_real_filing_holdout_build_report.py \
             tests/test_holdout_human_annotation_validation.py \
-            tests/test_real_filing_holdout_gold_evaluation.py
+            tests/test_real_filing_holdout_gold_evaluation.py \
+            tests/test_gold_evaluation_signoff.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

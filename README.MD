@@ -658,7 +658,7 @@ Ten metrics are reported with explicit numerators and denominators: change preci
 
 A compact baseline lives at [eval/comparison_regression_baseline.json](eval/comparison_regression_baseline.json) — versions, per-metric values with denominators, gate configuration, and each fixture's stable detector result hash, not an opaque output snapshot. A normal run never rewrites it; it prints a human-readable diff instead. Regeneration requires `--write-baseline`, which **refuses to run in CI**, so blessing a behavior change is always an explicit human commit whose label, threshold, and metric edits appear as ordinary reviewed Git diffs. A detector or workflow version change is visible in the baseline's version block and does not automatically bless changed metrics.
 
-**These metrics are not evidence of real-world SEC filing accuracy.** They measure whether deterministic behavior over a controlled synthetic corpus has drifted. A controlled real-public-filing benchmark process now exists ([BENCHMARK.md](BENCHMARK.md)) — frozen manifest, official-source acquisition, checksum verification, Item 1A extraction, machine-proposed annotation packets, explicit human verification, and a gold evaluator that refuses to score anything a person has not verified. **Its corpus has been acquired and built but not annotated: zero labels are `human_verified`, so no real-filing accuracy number exists.** That corpus is also an extraction *development* corpus — its filings were inspected while the SEC Item heading parser was written — so its 20/20 extraction result is in-sample and is not evidence of generalization (`generalization_claim_supported = false`); a separately frozen holdout corpus (`real_filing_holdout_v1`, now blind-extracted under the unchanged frozen parser — 18/20 sides extracted, 2 ambiguous, preserved as observed — but with zero `human_verified` labels, so still no out-of-sample accuracy number) exists for that purpose. Inter-annotator agreement is not implemented (one annotator per pair), and per-section metrics beyond Item 1A remain future work.
+**These metrics are not evidence of real-world SEC filing accuracy.** They measure whether deterministic behavior over a controlled synthetic corpus has drifted. A controlled real-public-filing benchmark process now exists ([BENCHMARK.md](BENCHMARK.md)) — frozen manifest, official-source acquisition, checksum verification, Item 1A extraction, machine-proposed annotation packets, explicit human verification, and a gold evaluator that refuses to score anything a person has not verified. **That process's *development* corpus has been acquired and built but not annotated: zero of its labels are `human_verified`, so it yields no accuracy number.** It is also an extraction *development* corpus — its filings were inspected while the SEC Item heading parser was written — so its 20/20 extraction result is in-sample and is not evidence of generalization (`generalization_claim_supported = false`). A separately frozen holdout corpus (`real_filing_holdout_v1`) exists for that purpose, and **it has since been blind-extracted, human-annotated, and gold-evaluated**: the frozen report at [benchmarks/real_filing_holdout_v1/gold_evaluation_report.json](benchmarks/real_filing_holdout_v1/gold_evaluation_report.json) is the source of truth for those metrics, with the analysis in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md). Those are real out-of-sample metrics **at the frozen v2 unit granularity, not risk-factor-item-level accuracy**, and `generalization_claim_supported` remains `false` for want of an explicit sign-off. Inter-annotator agreement is not implemented (one annotator per pair), and per-section metrics beyond Item 1A remain future work.
 
 ---
 
@@ -1122,7 +1122,7 @@ Known limitations:
 * Authentication and permission-based authorization cover the comparison workflow only. They do not cover the generic chat/RAG API or its JSONL answer-review queue, and they add no assignment or automatic delivery. New replay and review actions created through the protected comparison API derive their actors from a cryptographically verified local Principal; caller-supplied actor identifiers cannot override it. Direct library callers retain the explicit `legacy_self_asserted` compatibility path, and rows created before this boundary remain readable with that same marker rather than being retroactively treated as authenticated. Decision events remain application records in local SQLite, not tamper-proof audit storage
 * The runtime grounding validator is deterministic and lexical (citation-string and numeric-token matching); it is not semantic entailment validation
 * Filing comparison runs end to end, but **only for Item 1A Risk Factors and only proven on controlled synthetic fixtures**. It remains deterministic heading-based extraction and exact-match alignment with no semantic similarity, embeddings, or LLM comparison; unprovable changes become `undetermined`. Its lexical/numeric validators are not semantic entailment, and comparison risk measures output trust and review necessity rather than financial materiality or legal/investment risk. Comparison reviews now require `review.decide`; approve/reject identity is derived from the verified Principal while reason, note, edit-validation, lifecycle, and export-eligibility semantics remain unchanged. Export creation requires `export.create`, but artifacts remain persisted local JSON only: no delivery, email, external storage, frontend review editor, signature, or tamper-proof store. Authentication metadata does not enter `comparison.v1` or export payload hashes. To preserve the existing `comparison.export.v1` contract and hashes, that artifact still carries its legacy `reviewer_id_basis=self_asserted_local_metadata` field and does not carry the workflow record's authenticated provenance; representing that provenance in a portable export requires an explicitly versioned future export contract
-* The comparison regression suite and its `comparison-regression` CI gate protect deterministic behavior over **five controlled synthetic fixture pairs** (fictional companies, hand-written chunk fixtures plus the two Acme excerpts). Exact gates there mean "nothing drifted", **not** "the detector is accurate": no metric in this repository has been measured against real SEC filings. A controlled real-filing benchmark process now exists ([BENCHMARK.md](BENCHMARK.md)); its corpus is acquired and built but unannotated, so it produces no accuracy number either — its evaluator refuses gold scoring until a human verifies labels — and because that corpus was inspected while extraction was written, it is a development corpus whose extraction result cannot support a generalization claim. The gated limitations remain Item 1A only, lexical heading alignment with no similarity stage, local SQLite storage, and a local shared-secret authentication boundary
+* The comparison regression suite and its `comparison-regression` CI gate protect deterministic behavior over **five controlled synthetic fixture pairs** (fictional companies, hand-written chunk fixtures plus the two Acme excerpts). Exact gates there mean "nothing drifted", **not** "the detector is accurate". Real-filing measurement is separate ([BENCHMARK.md](BENCHMARK.md)): the *development* corpus is acquired and built but unannotated, so it produces no accuracy number — its evaluator refuses gold scoring until a human verifies labels — and because it was inspected while extraction was written, it cannot support a generalization claim. The frozen *holdout* corpus **has** been human-annotated and gold-evaluated ([gold_evaluation_report.json](benchmarks/real_filing_holdout_v1/gold_evaluation_report.json), analysis in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md)); those metrics are out-of-sample at the frozen v2 unit granularity, are not risk-factor-item-level accuracy, and remain unsigned for generalization. The gated limitations remain Item 1A only, lexical heading alignment with no similarity stage, local SQLite storage, and a local shared-secret authentication boundary
 * The filing registry ([filing_registry.py](filing_registry.py)) detects exact-content duplicates (a renamed byte-identical file records a `duplicate` outcome and is not indexed twice) and identity conflicts (same company/form/period from different content records a `conflict` and is not indexed). Detection happens at ingest time within the local registry only — there is no fuzzy near-duplicate detection, and cross-process registry writes are unprotected (same JSONL limitation as the review queue)
 * The review queue is local JSONL: atomic per file and race-safe in one process, but the two-file move is not a transaction and cross-process access is unprotected
 * Authenticated initial comparison detection has a durable SQLite job, finite leases, fenced claim generations, deterministic bounded retries for explicitly allowlisted transient codes, and a separate one-shot worker, but this is a **single-node reference queue**, not a distributed or highly available execution system. While one detector execution is active, the worker owns a bounded in-process heartbeat controller for that claim only; terminal finalization still performs authoritative fence checks. A queued job survives API restart; a worker crash stops heartbeats and leaves the job and attempt `running` until the last extended lease expires and a later explicit worker invocation reclaims it. An allowlisted transient failure moves the logical job to `retry_wait`, but reaching `next_attempt_at` runs nothing: only a later one-shot invocation claims it with a fresh attempt, generation, token, lease, and heartbeat. Retry count and lease reclaim are distinct, while claim generation remains the hard combined execution-ownership bound. Unknown, internal, deterministic, validation, input/version, and ownership failures never retry. Exhaustion is terminal and visible. There is no exactly-once guarantee, random jitter, dead-letter queue, scheduler, job-processing daemon loop, external queue, distributed lease, or high availability. The reliability view reports lease/retry state but never repairs or triggers it. Direct library/regression detection and operator-controlled stale replay remain synchronous; every job-owned attempt returns `detection_attempt_managed_by_job` and stays outside generic replay. The generic chat side still has no durable task record, and the audit log remains an append-only local file, not immutable storage
@@ -1193,11 +1193,13 @@ execution occurs when time passes**. A SQLite-only backup is not a complete
 filing-workflow backup. There is no distributed, high-availability, or
 exactly-once claim.
 
-The real-filing benchmark exists as a *process*, not as a result. Its manifest
-status is `source_verified`: ten pairs across ten issuers, twenty filings
-acquired from official SEC endpoints and SHA-256 verified. The corpus has been
-built and the comparison workflow has executed over it. **No label is
-`human_verified`, and no real-filing accuracy number exists.** Acquisition is
+The real-filing **development** benchmark exists as a *process*, not as a
+result. Its manifest status is `source_verified`: ten pairs across ten issuers,
+twenty filings acquired from official SEC endpoints and SHA-256 verified. The
+corpus has been built and the comparison workflow has executed over it. **No
+label in *this* corpus is `human_verified`, so it yields no accuracy number**
+(the separately frozen holdout corpus has since been annotated and evaluated;
+see below). Acquisition is
 an explicit external-network operation that CI never performs; the
 merge-blocking check runs only the offline benchmark infrastructure suites.
 Machine-proposed annotations are not gold and cannot become gold without a
@@ -1256,17 +1258,15 @@ frozen parser observed these twenty filings for the first time in one
 predeclared execution that refuses on any frozen-identity drift and attests
 byte-identical frozen code before and after. **The blind result, preserved
 exactly as observed: 18/20 sides extracted, 2 ambiguous (both sides of one
-pair), 0 missing, 0 parse-failed; 9/10 pairs reached `detected` and have
-machine-proposed annotation packets.** The ambiguous pair stays in the corpus,
-blocked and unrepaired — repairing it would require a parser change, which
-would convert the holdout into development data (the manifest's pinned parser
-hash makes that detectable), require freezing a parser v3, and require a new
-unseen holdout. **This is extraction COVERAGE, not extraction CORRECTNESS:
-zero holdout labels are `human_verified`, no accuracy number of any kind
-exists, and `extraction_holdout_evaluation = false` and
-`generalization_claim_supported = false` remain machine-readable in the
-manifest and in every committed blind-run report.** No body-based parser
-change has occurred.
+pair), 0 missing, 0 parse-failed; 9/10 pairs reached `detected` and, at that
+commit, carried machine-proposed annotation packets.** The ambiguous pair stays
+in the corpus, blocked and unrepaired — repairing it would require a parser
+change, which would convert the holdout into development data (the manifest's
+pinned parser hash makes that detectable), require freezing a parser v3, and
+require a new unseen holdout. **That step measured extraction COVERAGE, not
+extraction CORRECTNESS**, which is why the blind-run reports carry
+`extraction_holdout_evaluation = false`: no label was `human_verified` yet. No
+body-based parser change has occurred, then or since.
 
 **The human-review admission gate now exists as a tested, merge-blocking
 contract** (`scripts/validate_holdout_human_annotations.py`, frozen by
@@ -1285,19 +1285,65 @@ credential material. The empty completion templates in the gitignored
 workspace are **local preparation artifacts, not annotations**; only
 explicitly completed `human_verified` files may enter the gold corpus, and
 **validator acceptance is necessary but does not itself establish label
-correctness**. No gold evaluation has run.
+correctness**.
+
+**The gold holdout evaluation has since run and is committed** — and it is
+**complete but unsigned**. Human review of the nine review-ready packets is
+finished, those annotations are `human_verified`, and a frozen real-filing gold
+report exists:
+[benchmarks/real_filing_holdout_v1/gold_evaluation_report.json](benchmarks/real_filing_holdout_v1/gold_evaluation_report.json)
+**is the source of truth for every metric**, and
+[HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) is the source-anchored writeup
+and error analysis. The numbers are not restated here.
+
+Two properties of that evaluation matter more than any single figure. It covers
+the **buildable** holdout pairs only: one extraction-blocked pair is recorded as
+an explicit exclusion and is never silently counted in a detector-quality
+denominator. And its metrics are real out-of-sample results **at the frozen v2
+unit granularity — they are not risk-factor-item-level accuracy**, because the
+frozen segmentation frequently did not cut at individual risk factors. The
+principal observed limitation is segmentation and unit-boundary quality rather
+than evidence resolution. The parser was **not** changed in response; improving
+it needs a parser v3 developed in a new cycle *and* a newly frozen unseen
+holdout, since these failures have already been observed.
+
+The report
+records `generalization_claim_supported = false`, and the reason is neither a
+metric value nor a coverage gap: **no human has signed a generalization
+claim.** That claim is gated on `generalization_claim_signoff` in
+`evaluation_config.json`, which is `null`; **no tool in this repository writes
+it**, and a test asserts the absence of any writer. An affirmative sign-off now
+requires an explicit non-empty bounded `statement` a person wrote — a `str`
+carrying visible text, at most 2,000 code points, never `null`, never blank,
+never whitespace- or zero-width-only, and **never generated, defaulted, or
+derived** from the annotator, the timestamp, the metrics, or the environment —
+*on top of* every condition that already applied (a non-placeholder signer, an
+explicit-UTC timestamp, the exact manifest hash this run evaluated, and the
+exact pair count it scored). A statement alone rescues nothing, and **that the
+holdout labels are `human_verified` and that the evaluator ran to completion
+are not themselves a generalization sign-off** — the annotation and sign-off
+schemas share no field. Validator acceptance means a bounded sentence exists,
+nothing more: it is not agreement with any claim, and it is not an electronic
+signature, a cryptographic attestation, or a compliance certification. An
+unsigned completed evaluation is a legitimate permanent state and remains valid
+historical evidence. Contract and gates in
+[BENCHMARK.md](BENCHMARK.md#7-generalization-sign-off-not-performed), frozen by
+`tests/test_gold_evaluation_signoff.py` in required CI.
 
 The remaining next steps, in order of dependency, are: human diagnostic
-annotation of the ten development pairs; human verification of the nine
-holdout packets; and the gold holdout evaluation — all without changing
-extraction v2. No issuer may be replaced now that bodies have been observed.
+annotation of the ten development pairs; and, if a generalization claim is ever
+to be made, an explicit human sign-off of the holdout evaluation — all without
+changing extraction v2. No issuer may be replaced now that bodies have been
+observed.
 
-What still does not exist is any completed real-filing evaluation, any
-human-verified holdout label, any scheduler, job-processing daemon loop,
-automatic background invocation, external queue, container/cloud deployment
-infrastructure, or multi-node coordination. Maturity therefore remains **Stage
-3**. Stage 3.5 remains in progress until the blind-extracted holdout corpus is
-human-annotated, evaluated, and reviewed with extraction v2 still unchanged.
+What still does not exist is any **signed** generalization claim, any
+diagnostic annotation of the ten development pairs, any scheduler,
+job-processing daemon loop, automatic background invocation, external queue,
+container/cloud deployment infrastructure, or multi-node coordination. Maturity
+therefore remains **Stage 3**. Stage 3.5 remains in progress: the
+blind-extracted holdout corpus is human-annotated and evaluated with extraction
+v2 unchanged, but the evaluation is unsigned and
+`generalization_claim_supported` remains false.
 
 ### Next: the financial filing comparison workflow (current roadmap)
 
@@ -1330,7 +1376,7 @@ The next implementation phase is a governed two-filing change review for one com
 
     The eighth bounded Stage-3.5 step is now done: **single-node reference runtime packaging, process-level fault injection, and restart/recovery validation** ([runtime_fault_hooks.py](runtime_fault_hooks.py), [runtime_readiness.py](runtime_readiness.py), [tests/test_runtime_fault_injection.py](tests/test_runtime_fault_injection.py), runbooks in [OPERATIONS.md](OPERATIONS.md), full contract in [Local reference runtime and process-fault validation](#local-reference-runtime-and-process-fault-validation)). Real processes are started, `SIGKILL`-ed, paused, raced, and starved of the SQLite write lock, and the surviving durable state is read back from a different process. The fault seam is test-only, disabled in every production process, and unreachable from any header, query parameter, body field, environment variable, config file, or CLI flag. No lifecycle state, retry classification, delay, or policy changed: this commit validates the existing architecture rather than redesigning it. Readiness is strictly read-only and fails closed, initialization remains a separate explicit action, the worker remains a manually invoked one-shot process, and the backup utility is honestly scoped to the workflow database alone
 
-    The ninth bounded Stage-3.5 step is now done as a **process, not a result**: a **controlled real-public-filing benchmark** ([BENCHMARK.md](BENCHMARK.md), [real_filing_benchmark.py](real_filing_benchmark.py), [real_filing_acquisition.py](real_filing_acquisition.py), manifest and protocol in [benchmarks/real_filing_v1/](benchmarks/real_filing_v1/)). A frozen, versioned manifest pre-registers a ten-issuer slate across nine sector labels with exact-key validation, deterministic ordering, canonical official-source URLs, chronology and issuer-identity rules, 10-K-only form restriction, and a four-state maturity ladder (`proposed` → `source_verified` → `corpus_built` → `human_annotation_complete`). Acquisition ([scripts/fetch_real_filing_benchmark.py](scripts/fetch_real_filing_benchmark.py)) is network-disabled by default, requires an externally supplied descriptive `SEC_USER_AGENT` (placeholders rejected), enforces official SEC hosts by exact hostname equality over https, paces requests, retries only transport faults and an explicit transient-status allowlist under a policy independent of detection-job retry, honors `Retry-After`, writes atomically, reuses verified cache, verifies SHA-256 before bytes reach the corpus, and refuses silent content replacement. The corpus build ([scripts/build_real_filing_benchmark.py](scripts/build_real_filing_benchmark.py)) runs the **existing** ingestion, filing-identity, section-identification, and comparison paths unchanged and records `extracted`/`missing`/`ambiguous`/`parse_failed` outcomes with bounded structural metadata and deterministic build hashes. Annotation packets ([scripts/create_real_filing_annotation_packets.py](scripts/create_real_filing_annotation_packets.py)) are explicitly machine-proposed; the versioned annotation schema makes the machine/human boundary structural — a machine status may carry no annotator identity, and `human_verified` requires an explicit annotator id and timestamp **no tool in this repository sets**. The evaluator ([scripts/eval_real_filing_benchmark.py](scripts/eval_real_filing_benchmark.py)) refuses gold scoring on unverified labels, section-hash drift, source-checksum drift, unknown unit references, or an undeclared detector/workflow version; six metrics reuse the synthetic definitions verbatim, three new ones document their divergent denominators, every rate carries numerator and denominator, and a zero denominator reports `null`. **No corpus has been acquired, no label is `human_verified`, and no real-filing accuracy claim exists.** Required CI gained only the offline infrastructure suites; the synthetic regression suite, its labels, and its frozen baseline are untouched and remain the merge-blocking deterministic gate. **Stage 3.5 remains in progress until the benchmark corpus is source-verified, human-annotated, evaluated, and reviewed**
+    The ninth bounded Stage-3.5 step is now done as a **process, not a result**: a **controlled real-public-filing benchmark** ([BENCHMARK.md](BENCHMARK.md), [real_filing_benchmark.py](real_filing_benchmark.py), [real_filing_acquisition.py](real_filing_acquisition.py), manifest and protocol in [benchmarks/real_filing_v1/](benchmarks/real_filing_v1/)). A frozen, versioned manifest pre-registers a ten-issuer slate across nine sector labels with exact-key validation, deterministic ordering, canonical official-source URLs, chronology and issuer-identity rules, 10-K-only form restriction, and a four-state maturity ladder (`proposed` → `source_verified` → `corpus_built` → `human_annotation_complete`). Acquisition ([scripts/fetch_real_filing_benchmark.py](scripts/fetch_real_filing_benchmark.py)) is network-disabled by default, requires an externally supplied descriptive `SEC_USER_AGENT` (placeholders rejected), enforces official SEC hosts by exact hostname equality over https, paces requests, retries only transport faults and an explicit transient-status allowlist under a policy independent of detection-job retry, honors `Retry-After`, writes atomically, reuses verified cache, verifies SHA-256 before bytes reach the corpus, and refuses silent content replacement. The corpus build ([scripts/build_real_filing_benchmark.py](scripts/build_real_filing_benchmark.py)) runs the **existing** ingestion, filing-identity, section-identification, and comparison paths unchanged and records `extracted`/`missing`/`ambiguous`/`parse_failed` outcomes with bounded structural metadata and deterministic build hashes. Annotation packets ([scripts/create_real_filing_annotation_packets.py](scripts/create_real_filing_annotation_packets.py)) are explicitly machine-proposed; the versioned annotation schema makes the machine/human boundary structural — a machine status may carry no annotator identity, and `human_verified` requires an explicit annotator id and timestamp **no tool in this repository sets**. The evaluator ([scripts/eval_real_filing_benchmark.py](scripts/eval_real_filing_benchmark.py)) refuses gold scoring on unverified labels, section-hash drift, source-checksum drift, unknown unit references, or an undeclared detector/workflow version; six metrics reuse the synthetic definitions verbatim, three new ones document their divergent denominators, every rate carries numerator and denominator, and a zero denominator reports `null`. **At the commit that landed this step no corpus had been acquired, no label was `human_verified`, and no real-filing accuracy claim existed**; the holdout corpus has since been acquired, blind-extracted, human-annotated, and gold-evaluated (see above), while the development corpus remains unannotated. Required CI gained only the offline infrastructure suites; the synthetic regression suite, its labels, and its frozen baseline are untouched and remain the merge-blocking deterministic gate. **Stage 3.5 remains in progress: the holdout evaluation is complete but unsigned, so `generalization_claim_supported` is still false**
 
 Explicitly deferred until after that path: document-level permissions (formerly "Phase 6"), broader authentication for generic chat/RAG, new document formats, OCR, rerankers and vector-store migration, further generic chat UI redesign, additional generic chat eval expansion, LLM-as-judge evaluation, NIST documentation expansion, and Gradio parity.
 
