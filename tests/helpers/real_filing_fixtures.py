@@ -587,6 +587,7 @@ def write_holdout_evaluation_config(
     import config as app_config  # noqa: F401  (kept for path symmetry)
     import comparison_detector
     import comparison_store
+    from scripts import eval_real_filing_benchmark as evaluator
 
     source = (
         Path(__file__).resolve().parent.parent.parent
@@ -597,6 +598,16 @@ def write_holdout_evaluation_config(
     document = json.loads(source.read_text(encoding="utf-8"))
     document["declared_detector_version"] = comparison_detector.DETECTOR_VERSION
     document["declared_workflow_version"] = comparison_store.WORKFLOW_VERSION
+    # Live-version corpora are v3 artifacts, and v3 artifacts require the
+    # contract-v2 canonical-identity evaluator; the committed file itself
+    # stays frozen at contract v1 alongside its v2-detector evaluation.
+    document["config_version"] = evaluator.EVALUATION_CONFIG_VERSION_V2
+    document["metric_definitions_version"] = (
+        evaluator.METRIC_DEFINITIONS_VERSION_V2
+    )
+    document["declared_unit_grammar_version"] = (
+        evaluator.CONTRACT_V2_UNIT_GRAMMAR
+    )
     document["generalization_claim_signoff"] = signoff
     path = tmp_path / "evaluation_config.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")

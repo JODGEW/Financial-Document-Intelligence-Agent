@@ -99,6 +99,7 @@ unannotated; the table below describes it unless a row names the holdout.
 | Holdout gold evaluation | **done** — 9 of 10 pairs scored, 28 human-verified labels, metrics in `gold_evaluation_report.json`, writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) |
 | Holdout generalization sign-off | **not done** — `generalization_claim_supported` is `false` because no sign-off exists, not because labels or an evaluation are missing |
 | Unit-segmentation grammar v3 | **implemented, unevaluated** — `item1a_detector.v3` / `comparison_workflow.v3` add the generic heading classes the v2 evaluation showed were missing; the v2 evidence is frozen and byte-identical, the old holdout is now v3 *development* data, and **no v3 evaluation, holdout, or generalization claim exists** (see [Unit grammar v3](#unit-grammar-v3)) |
+| Gold-evaluation contract v2 | **frozen, unused on real data** — `real-filing-benchmark.evaluation.v2` + `real-filing-benchmark-metrics.v2` fix the evaluator defect the v2 holdout exposed: future v3 evaluations match by exact canonical `side:sequence:unit_key` subject identity, never by normalized `unit_key`; the frozen contract-v1 evaluation is unchanged and neither contract accepts the other's artifacts (see [Gold-evaluation contract v2](#gold-evaluation-contract-v2)) |
 
 The manifest's `status` is `source_verified`. Every per-filing field was
 resolved from an official SEC endpoint; none of it was invented, recalled, or
@@ -151,12 +152,22 @@ fabricated fact that later readers cannot distinguish from a real one.
    below). The v2 evaluation stays frozen under its v2 identity, and the
    current holdout is now **v3 development data** — its failure modes were
    observed, so it can never serve as unseen v3 evidence.
-9. **A newly frozen unseen holdout for v3.** Not started, deliberately not in
-   the v3 development commit: a new metadata-only holdout selection (same
+9. **Freeze the v3 gold-evaluation contract.** ~~Pending~~ **Done** — the v2
+   holdout also exposed an *evaluator* defect, separate from unit
+   segmentation: gold matching and metric bookkeeping keyed subjects by the
+   normalized `unit_key`, which collapses repeated normalized headings the
+   v3 representation deliberately preserves. The future evaluation contract
+   is now explicitly versioned (`real-filing-benchmark.evaluation.v2` +
+   `real-filing-benchmark-metrics.v2`) and matches by exact canonical unit
+   identity (see [Gold-evaluation contract v2](#gold-evaluation-contract-v2)
+   below). No v2 metric was recomputed and no v2 label was migrated.
+10. **A newly frozen unseen holdout for v3.** Not started, deliberately not in
+   the v3 development commits: a new metadata-only holdout selection (same
    protocol discipline as `real_filing_holdout_v1`) may be frozen only
-   *after* v3 is merged and frozen, and before anyone looks at the selected
-   bodies. Until it is annotated and evaluated, **no v3 accuracy or
-   generalization claim exists**.
+   *after* both parser v3 and the v2 evaluation contract are merged and
+   frozen, and before anyone looks at the selected bodies. Until it is
+   annotated and evaluated, **no v3 accuracy or generalization claim
+   exists**.
 
 ### The prior null result, and what changed
 
@@ -668,6 +679,73 @@ every positive and negative grammar class, determinism, sequence-aware
 identity, v2 byte-compatibility, packet-seam preservation, and CI pinning),
 plus the updated detector/regression suites — all in the required
 `comparison-regression` check.
+
+---
+
+## Gold-evaluation contract v2
+
+The v2 holdout exposed a second, separate defect — in the *evaluator*, not
+the detector: gold matching, duplicate handling, and pair exact match keyed
+every subject by the normalized `unit_key`, silently collapsing units whose
+headings normalize identically, even though the v3 detector, the packet
+generator, and the annotation admission validator all preserve each occurrence
+under the canonical sequence-aware identity `side:sequence:unit_key`. Changed
+matching semantics may not hide behind an unchanged version string, so the
+evaluation contract is now explicit and versioned in
+`scripts/eval_real_filing_benchmark.py`:
+
+- **Two closed contracts, dispatched from the config alone.** Contract v1
+  (`real-filing-benchmark.evaluation.v1` + `real-filing-benchmark-metrics.v1`)
+  is the frozen historical semantics behind the committed v2-detector
+  evaluations; it stays readable and identifiable and scores
+  `item1a_detector.v2` / `comparison_workflow.v2` artifacts only. Contract v2
+  (`real-filing-benchmark.evaluation.v2` + `real-filing-benchmark-metrics.v2`,
+  reports `real-filing-benchmark.report.v2`) is required for
+  `item1a_detector.v3` / `comparison_workflow.v3` artifacts and additionally
+  requires the config to declare `declared_unit_grammar_version:
+  item1a_units.v3`. Unknown or mixed version pairings fail closed
+  (`evaluation_contract_version_unknown`); nothing is inferred from whichever
+  report happens to exist, and no legacy config is silently upgraded. Neither
+  contract accepts the other's artifacts
+  (`evaluation_contract_incompatible_detector` / `_workflow` /
+  `_unit_identity`).
+- **Canonical subjects, not normalized headings.** A contract-v2 subject is
+  the exact ordered pair of canonical unit identities a change or label binds
+  (`added` = current only, `removed` = previous only, `modified`/`unchanged` =
+  both, `undetermined` = the labelled combination). Matching is exact
+  subject-key equality, then change type: no fuzzy matching, no heading
+  similarity, no `unit_key` fallback, no order dependence. One prediction
+  satisfies at most one gold subject and the reverse. `unit_key` remains
+  descriptive metadata inside the identity.
+- **Fail-closed subject validation before any metric.** Unknown, missing,
+  wrong-side, wrong-sequence, or metadata-drifted identities refuse with
+  stable codes (`gold_subject_*`, `prediction_subject_*`,
+  `evaluation_subject_shape_invalid`); duplicate canonical subjects are an
+  invalid state, never silently deduplicated; and gold labels must close over
+  the built unit inventory exactly once per identity
+  (`evaluation_unit_inventory_not_closed`). Repeated normalized headings
+  therefore stay separate subjects in precision and recall denominators,
+  type accuracy, unchanged false-positive counting, and pair exact match —
+  which now compares complete canonical subject/type sets.
+- **The v2 evidence is untouched.** Formulas, metric names, zero-denominator
+  `null` policy, blocked-pair exclusion, and the sign-off gate are unchanged;
+  the identity is the correction. The committed contract-v1 configs and the
+  frozen `gold_evaluation_report.json` keep their recorded identities
+  byte-identical, no v2 metric was recomputed, and no v2 annotation was
+  migrated to canonical v3 subjects — the two label universes are not
+  comparable because the unit definitions differ.
+- **What still does not exist:** no v3 unseen holdout, no v3 human
+  annotation, no v3 gold evaluation, no v3 accuracy number, and no
+  generalization claim (`generalization_claim_supported` remains `false` and
+  unsigned). Evaluator-contract correctness is not detector correctness. The
+  next step is metadata-only selection of a new unseen holdout, now that both
+  parser v3 and this contract exist.
+
+Tests: `tests/test_v3_gold_evaluator_contract.py` (synthetic-only: contract
+dispatch and cross-acceptance refusals, canonical identity validation,
+repeated-heading occurrence preservation across every metric, duplicate and
+closure refusal, determinism, order independence, and CI pinning) — in the
+required `comparison-regression` check.
 
 ---
 
