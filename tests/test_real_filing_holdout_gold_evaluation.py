@@ -116,16 +116,26 @@ def holdout_gold_text():
 # --- End to end over the real holdout corpus ----------------------------------
 
 
-def test_holdout_gold_cli_succeeds_and_scores_the_review_ready_pairs(
+def test_live_v3_workflow_refuses_to_rescore_the_frozen_v2_holdout(
     holdout_gold_report,
 ):
-    """Exit 0, gold metrics produced, nine pairs scored out of ten frozen."""
-    assert holdout_gold_report["code"] == 0
+    """The frozen corpus is v2 evidence and the live workflow is v3: the gold
+    CLI must REFUSE on the version gate rather than recompute metrics under an
+    identity the committed config does not describe. The evaluation of record
+    stays the committed gold_evaluation_report.json (byte-pinned by
+    test_gold_evaluation_signoff), produced by item1a_detector.v2 before the
+    v3 unit grammar existed."""
+    assert holdout_gold_report["code"] == 1
     report = holdout_gold_report["report"]
     assert report["mode"] == "gold_evaluation"
-    assert report["refused"] is False
-    assert report["gold_metrics_available"] is True
+    assert report["refused"] is True
+    assert report["gold_metrics_available"] is False
+    assert report["gold_metrics"] is None
+    codes = sorted(reason["code"] for reason in report["refusal_reasons"])
+    assert codes == ["detector_version_mismatch", "workflow_version_mismatch"]
 
+    # The scoring scope stays visible even on refusal: the tenth pair's
+    # exclusion is a fact about the corpus, not about this run.
     scope = report["scoring_scope"]
     assert scope["pairs_in_manifest"] == 10
     assert scope["pairs_scored"] == 9
@@ -133,7 +143,6 @@ def test_holdout_gold_cli_succeeds_and_scores_the_review_ready_pairs(
     assert scope["coverage_complete"] is False
     assert BLOCKED_PAIR_ID not in scope["scored_pair_ids"]
     assert len(scope["scored_pair_ids"]) == 9
-    assert len(report["per_pair"]) == 9
 
 
 def test_extraction_blocked_pair_is_reported_never_silently_dropped(
@@ -164,19 +173,33 @@ def test_holdout_run_carries_positive_holdout_provenance(holdout_gold_report):
     """The affirmative values, not merely the absence of a warning banner.
 
     A report that simply omitted the development banner would look identical
-    to one whose corpus role was never resolved, so the holdout run has to
-    state what it IS: an out-of-sample corpus, evaluated by this run.
+    to one whose corpus role was never resolved, so even a refused run has to
+    state what the corpus IS — and what this run did not do.
     """
     report = holdout_gold_report["report"]
     assert report["corpus_role"] == rfb.CORPUS_ROLE_EXTRACTION_HOLDOUT
-    assert report["extraction_holdout_evaluation"] is True
+    # This refused run performed no evaluation, and its provenance says so —
+    # corpus identity (still the holdout) and run lifecycle (no evaluation
+    # here) are separate facts. The committed v2 report keeps recording the
+    # evaluation that DID happen.
+    assert report["extraction_holdout_evaluation"] is False
     assert report["extraction_parser_developed_using_this_corpus"] is False
     assert report["benchmark_id"] == rfh.HOLDOUT_BENCHMARK_ID
     assert report["corpus_role_detail"]
+    committed = json.loads(
+        (
+            REPO_ROOT
+            / "benchmarks"
+            / "real_filing_holdout_v1"
+            / "gold_evaluation_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert committed["extraction_holdout_evaluation"] is True
+    assert committed["detector_version"] == "item1a_detector.v2"
 
 
 def test_holdout_run_does_not_claim_generalization_while_coverage_is_partial(
-    holdout_gold_report, holdout_gold_text
+    holdout_gold_report,
 ):
     """Out-of-sample is not the same as generalizing, and the gap is stated.
 
@@ -186,7 +209,20 @@ def test_holdout_run_does_not_claim_generalization_while_coverage_is_partial(
     """
     report = holdout_gold_report["report"]
     assert report["generalization_claim_supported"] is False
-    claim = report["generalization_claim"]
+
+    # The committed evaluation of record still publishes the full claim block,
+    # blocked on the missing human sign-off — the live refusal changes none of
+    # that.
+    committed = json.loads(
+        (
+            REPO_ROOT
+            / "benchmarks"
+            / "real_filing_holdout_v1"
+            / "gold_evaluation_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert committed["generalization_claim_supported"] is False
+    claim = committed["generalization_claim"]
     assert claim["supported"] is False
     assert claim["signoff_present"] is False
     assert claim["signoff_signer_id"] is None
@@ -196,19 +232,25 @@ def test_holdout_run_does_not_claim_generalization_while_coverage_is_partial(
     assert claim["pairs_scored"] == 9
     assert claim["pairs_in_manifest"] == 10
 
-    out = holdout_gold_text["out"]
-    assert "generalization_claim_supported=false" in out
-    assert "human sign-off: NONE RECORDED" in out
-
 
 def test_holdout_gold_metric_values_are_pinned(holdout_gold_report):
-    """The scoring path is unchanged, pinned at the numerator/denominator.
+    """The published v2 values stay pinned at the numerator/denominator.
 
-    These are the values the frozen corpus, frozen detector, and nine
-    human-verified annotations produce. A change to any of them is a change to
-    a published result and must be deliberate, not a side effect of plumbing.
+    These are the values the frozen corpus, frozen v2 detector, and nine
+    human-verified annotations produced. The live v3 workflow can no longer
+    recompute them (the version gate refuses), so the pin holds against the
+    committed report — the only evaluation of record.
     """
-    metrics = holdout_gold_report["report"]["gold_metrics"]
+    assert holdout_gold_report["report"]["gold_metrics"] is None
+    committed = json.loads(
+        (
+            REPO_ROOT
+            / "benchmarks"
+            / "real_filing_holdout_v1"
+            / "gold_evaluation_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    metrics = committed["gold_metrics"]
     expected = {
         "change_precision": (11, 24),
         "change_recall": (11, 21),

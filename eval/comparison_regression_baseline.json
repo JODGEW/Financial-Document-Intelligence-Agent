@@ -1,7 +1,7 @@
 {
   "fixture_hashes": {
-    "ambiguous-heading-pair": "21d280abf45671e68ddbf954a49baaf6d3bc2d8dd57c8255d04c67fd28b684c8",
-    "labels": "a5fd82b90163123dc6b9dfd0e41c6fb5c7662b7a3222f1d34b3312e8f33a9ab7",
+    "ambiguous-heading-pair": "e9c62299bb2be1cf457daabe2de5ce8a879c7afd8d4d74bef0e125b0f8b2539a",
+    "labels": "3054978df084ca6daeb003c770ab55a23017af7e9e2c1b834804e1ff54ca850a",
     "missing-section-pair": "aad2a87d6e195e6971a5b1daefd214a65e71f906e0d54428049d9609e1553217",
     "no-change-pair": "1a0af3cca5a508051d3573b8525b4c67998e48ffe4dc70540650de6492e88e59",
     "retitled-unit-pair": "22488273713dd7a22a11eb2c0121c1f7e3e478b550e09ead745a44b85e609e67",
@@ -14,7 +14,7 @@
       "governance_decision": "held_for_review",
       "lifecycle": "detected",
       "release_basis": null,
-      "result_hash": "667da41a324eadcd96c42f2188935b2d56c5a27e8a5cd5abbac6b079f0029dda",
+      "result_hash": "690bba984acfa992f4063e025781af17c7f6b91e04bc02e658a980dc2ff62212",
       "risk_score": 0.3
     },
     "missing-section-pair": {
@@ -23,7 +23,7 @@
       "governance_decision": "held_for_review",
       "lifecycle": "detected",
       "release_basis": "approved_after_review",
-      "result_hash": "639ed7ce1146aa6cc1677c3f9bc37a76296daad089e32e7cca2f7876f2b96bef",
+      "result_hash": "4e738ce5b939f0b82d2785221085dda07045c79987e6d0b13e1f61997d221c03",
       "risk_score": 0.3
     },
     "no-change-pair": {
@@ -32,7 +32,7 @@
       "governance_decision": "returned",
       "lifecycle": "detected",
       "release_basis": "returned_by_policy",
-      "result_hash": "6320066dea68763cfd193d1d6f48a10f3996bf6526d1d8b17c93c880b25aebf2",
+      "result_hash": "a79fb3496b8e26ffbb9630ebd9153a4119f179ec295ef2a3eee6af44cb12d6e5",
       "risk_score": 0.0
     },
     "retitled-unit-pair": {
@@ -41,7 +41,7 @@
       "governance_decision": "returned",
       "lifecycle": "detected",
       "release_basis": "returned_by_policy",
-      "result_hash": "1baf5b5d1f7afc83cafa14316f75c522b38eda4c07dd976827f7e590a3889225",
+      "result_hash": "8644738fa609a60378bd23e76dc3b3801920fcd7124b5b3d241e46871f96a8b2",
       "risk_score": 0.0
     },
     "standard-pair": {
@@ -50,7 +50,7 @@
       "governance_decision": "returned",
       "lifecycle": "detected",
       "release_basis": "returned_by_policy",
-      "result_hash": "32ff41f8f4bee4c45fafcb646e35e242bb2b899a563d817c815a2ecaf418997c",
+      "result_hash": "d6694059bf1386f1caaac149e902d567fd2a5f029a39ca0f7febe6a58c244cda",
       "risk_score": 0.0
     }
   },
@@ -143,8 +143,8 @@
       "value": 0.0
     },
     "undetermined_reason_accuracy": {
-      "denominator": 2,
-      "numerator": 2,
+      "denominator": 4,
+      "numerator": 4,
       "value": 1.0
     }
   },
@@ -152,17 +152,17 @@
   "suite": "comparison-regression",
   "versions": {
     "comparison_schema_version": "comparison.v1",
-    "detector_version": "item1a_detector.v2",
+    "detector_version": "item1a_detector.v3",
     "export_schema_version": "comparison.export.v1",
     "governance_policy_id": "comparison_risk_v1",
     "governance_policy_version": "1",
-    "label_schema_version": "comparison-regression.v1",
+    "label_schema_version": "comparison-regression.v2",
     "section_key": "item_1a_risk_factors",
     "validator_versions": {
       "citation_support": "citation_support.v1",
       "direction_consistency": "direction_consistency.v1",
       "numeric_consistency": "numeric_consistency.v1"
     },
-    "workflow_version": "comparison_workflow.v2"
+    "workflow_version": "comparison_workflow.v3"
   }
 }
