@@ -310,10 +310,10 @@ Currently supports:
 The financial filing comparison workflow is implemented through deterministic
 Item 1A detection, durable job execution, comparison-specific governance and
 review, and release-gated export. Stage 3.5 remains in progress: the frozen
-real-filing holdout evaluation is complete but unsigned, the v3 detector has
-not been evaluated on a new real holdout, and the local reference runtime is
-not a production deployment. Document-level permissions and broader
-authentication for generic chat/RAG remain deferred.
+real-filing holdout evaluation is complete but unsigned, the v3 development
+cycle still needs a newly frozen real-holdout evaluation, and the local
+reference runtime is not a production deployment. Document-level permissions
+and broader authentication for generic chat/RAG remain deferred.
 
 The governance modules live in [governance/](governance/). The full design doc and phase-by-phase build log are kept as local working notes outside the public repo.
 
