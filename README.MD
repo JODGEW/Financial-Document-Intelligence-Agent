@@ -79,7 +79,8 @@ This is not a production compliance system or legal tool. It is a portfolio proj
 - [x] Wraps the agent in a governance layer: context policy admission, runtime grounding validation, per-answer governance report, and document change impact analysis
 - [x] Holds answers that meet a mandatory-review policy condition in a human review queue — either weighted risk at/above the 0.75 threshold or grounding strictly below the 0.50 review floor, each with an explicit reason code (a low weighted-risk answer can still be held by the floor). Hold or flag mode via `HUMAN_REVIEW_HOLD`; resolved in the React reviewer workspace or the CLI (approve/reject with an optional note — no draft editing yet)
 - [x] Optional LangSmith run tracing (off by default); every traced run carries the answer's `audit_id`, joining it to the audit log and governance report
-- [x] 928 tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, the human review queue (routes, atomicity, races, demo seeding), durable leased and bounded-retry comparison-detection jobs, local access control, and thread safety
+- [x] 1,800+ tests covering multi-format ingestion, per-format loaders, PII redaction, tools, agent behavior, auditability, API responses and error sanitization, evaluation metrics, governance reporting and policy validation, context policy admission, runtime grounding validation, streaming leak prevention, document change impact analysis, both review workflows, durable leased and bounded-retry comparison-detection jobs, local access control, comparison evaluation contracts, and thread safety
+- [x] Runs a deterministic Item 1A two-filing comparison workflow with durable filing identity, asynchronous detection jobs, finite leases and retries, comparison-specific governance/review, and release-gated structured export
 
 ## Best-fit use cases
 
@@ -123,7 +124,7 @@ python -m uvicorn api:app --reload  # React API, run from repo root
 cd frontend && npm run dev          # React UI, run in a second terminal
 python -m pytest tests/ -v       # run tests
 python eval_runner.py            # run evaluation dataset
-python scripts/demo_walkthrough.py  # guided governance demo (see below)
+python scripts/demo_walkthrough.py  # four-act RAG + comparison demo (see below)
 ```
 
 ### Example output
@@ -152,7 +153,14 @@ The agent uses a structured **Result Summary** format for every answer:
 
 ## Guided demo
 
-One command walks the governance story end to end, pausing between acts:
+Run the commands below from the repository root after installing
+`requirements.txt` (activate `.venv`, or replace `python` with
+`.venv/bin/python`).
+
+### Run the complete four-act walkthrough
+
+This command walks the current RAG and structured-comparison stories end to
+end, pausing between acts:
 
 ```bash
 python scripts/demo_walkthrough.py
@@ -161,8 +169,54 @@ python scripts/demo_walkthrough.py
 1. **A grounded answer** — one real query, then the governance report behind it: which chunks the context policy admitted or dropped (and why), grounding score, citation coverage, risk score, and the routing decision.
 2. **A held answer** — a deliberately ungrounded draft (fabricated numbers, citation to a file that was never retrieved) is validated by the real pipeline under the normal policy; the mandatory grounding floor holds it: the user sees a held notice instead of the draft, the full draft lands in the review queue with its evidence and reason codes, and the reviewer CLI approves it. No thresholds are modified.
 3. **Drift, caught** — the eval baseline is diffed against a perturbed temp copy (the real `eval/baseline.json` is untouched), producing the exact `scripts/eval_diff.py` output an operator sees when a metric moves, a case flips pass/fail, or latency shifts. Add `--live-eval` to run the real eval against Bedrock instead of the offline diff.
+4. **Structured filing comparison** — a controlled synthetic missing-section pair (fictional Corville Freight) runs through the protected comparison API, durable one-shot worker, deterministic Item 1A detector, governance hold, authenticated approval, and release-gated `comparison.export.v1` export. The export is refused before review and succeeds only after approval.
 
-Acts 1–2 need AWS credentials and an ingested corpus; Act 3 in default mode needs neither. `--no-pause` runs straight through. The demo's one persistent side effect is intentional — Act 2 writes a real item into `review_queue/` (gitignored runtime state; a clean clone starts with an empty queue). Seed or reset local demo queue data with `python scripts/review_queue.py seed --reset`.
+Acts 1–2 need AWS credentials and an ingested corpus; Acts 3–4 need neither.
+Act 4 uses an ephemeral auth secret and temporary registry, Chroma collection,
+and SQLite database; it makes no model or network call and removes its state
+afterward. `--no-pause` runs straight through. The demo's one persistent side
+effect is intentional — Act 2 writes a real item into `review_queue/`
+(gitignored runtime state; a clean clone starts with an empty queue). Seed or
+reset local demo queue data with `python scripts/review_queue.py seed --reset`.
+
+Available options:
+
+```bash
+python scripts/demo_walkthrough.py --no-pause  # do not pause between acts
+python scripts/demo_walkthrough.py --live-eval # run Act 3 against Bedrock
+python scripts/demo_walkthrough.py --help
+```
+
+### Run only the offline comparison walkthrough
+
+Use the standalone script to run Act 4 without first running the Bedrock-backed
+acts:
+
+```bash
+python scripts/comparison_demo_walkthrough.py
+```
+
+The default presentation pauses between six narrated steps: filing inputs,
+durable detection, governance, pre-review release refusal, authenticated human
+review, and released export. Useful variants:
+
+```bash
+python scripts/comparison_demo_walkthrough.py --no-pause
+python scripts/comparison_demo_walkthrough.py --show-json
+python scripts/comparison_demo_walkthrough.py --keep-state
+python scripts/comparison_demo_walkthrough.py --help
+```
+
+`--show-json` prints the complete released `comparison.export.v1` artifact.
+`--keep-state` retains the generated registry, Chroma data, and SQLite database
+in the temporary directory printed at the end; without it, they are removed
+automatically.
+
+The walkthrough runs the protected comparison API, durable one-shot worker,
+deterministic Item 1A detector, governance hold, authenticated approval,
+pre-review export refusal, and approved export creation. It needs the installed
+Python dependencies but no AWS credentials, model call, network access,
+pre-existing Chroma data, separately running API server, or worker process.
 
 ---
 
@@ -253,7 +307,13 @@ Currently supports:
 - deterministic evaluation for grounding, citations, routing, and drift (32-case dataset with a frozen baseline)
 - optional LangSmith run tracing, joined to the audit log by `audit_id`
 
-Planned next: the financial filing comparison workflow (see the roadmap under "What would make this more production-like"). Document-level permissions — formerly "Phase 6" — are deferred until after the comparison workflow and basic authentication.
+The financial filing comparison workflow is implemented through deterministic
+Item 1A detection, durable job execution, comparison-specific governance and
+review, and release-gated export. Stage 3.5 remains in progress: the frozen
+real-filing holdout evaluation is complete but unsigned, the v3 detector has
+not been evaluated on a new real holdout, and the local reference runtime is
+not a production deployment. Document-level permissions and broader
+authentication for generic chat/RAG remain deferred.
 
 The governance modules live in [governance/](governance/). The full design doc and phase-by-phase build log are kept as local working notes outside the public repo.
 
@@ -384,7 +444,8 @@ ReAct-RAG/
 ├── frontend/        # React + TypeScript + Tailwind UI (chat + review workspaces)
 ├── docs/            # sample docs (.md, .txt, .pdf) — corpus only; never indexed: policies/
 ├── policies/        # safety policy docs (e.g. guardrails-policy.md) — outside corpus
-├── scripts/         # operator scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py,
+├── scripts/         # operator/demo scripts (setup_guardrail.py, eval_diff.py, document_impact.py, review_queue.py, demo_walkthrough.py,
+│                   #   comparison_demo_walkthrough.py,
 │                   #   check_runtime_readiness.py, backup_workflow_db.py, run_reference_api.sh, run_reference_worker.sh,
 │                   #   fetch/build/annotate/eval_real_filing_benchmark scripts)
 ├── chroma_db/       # persistent vector store
@@ -395,7 +456,7 @@ ReAct-RAG/
 │   ├── context_policy.py     # chunk admission, token budgets, drop reasons
 │   ├── impact.py             # document change diff + audit log scan
 │   └── review_queue.py       # file-backed human review queue (enqueue/list/approve/reject + cross-status reads)
-├── tests/           # 1258 tests (including bounded Chroma upserts, SEC HTML Item extraction, the offline real-filing benchmark infrastructure suites, process-level fault injection, leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
+├── tests/           # 1,800+ tests (including bounded Chroma upserts, SEC HTML Item extraction, the offline real-filing benchmark infrastructure suites, process-level fault injection, leased/retry detection jobs, comparison regression, reliability, authenticated actors, and access control)
 │   ├── helpers/           # test-only process harness, fault actions, and child entry points
 │   ├── test_runtime_fault_injection.py
 │   ├── test_ingest.py
@@ -557,7 +618,11 @@ python cli.py -q "What is the current Fed funds rate?"
 
 ## Tests
 
-957 tests are collected; the offline credential-free required-check suites pass locally. The 29 process-level fault-injection tests start, kill, pause, and race real operating-system processes over temporary state; they are credential-free and bounded (~80 s).
+The full suite currently contains more than 1,800 tests; the offline
+credential-free required-check suites are the merge-blocking gate. The
+process-level fault-injection tests start, kill, pause, and race real
+operating-system processes over temporary state; they are credential-free and
+bounded.
 The access-control and comparison-regression suites use deterministic local
 fixtures and a test-only signing secret; they require no real AWS credentials,
 repository secret, or network. Live external-service execution is a separate,
@@ -1371,13 +1436,14 @@ evaluation is unsigned, `generalization_claim_supported` remains false, and
 the v3 unit grammar and v2 evaluation contract are implemented but
 unevaluated on any real corpus.
 
-### Next: the financial filing comparison workflow (current roadmap)
+### Financial filing comparison workflow (implemented roadmap)
 
-The next implementation phase is a governed two-filing change review for one company, built in this order (each step depends on the ones before it):
+The governed two-filing change-review workflow was built in this dependency
+order:
 
 1. Comparison output schema (structured, versioned — defined before any UI) — **done as a contract**: `comparison.v1` in [governance/comparison_schema.py](governance/comparison_schema.py), machine-validated (Pydantic, cross-filing and evidence-side invariants) with golden fixtures in `tests/`
-2. Durable filing identity — **done**: [filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml). Explicit manifest metadata (company, form type, `period_end`, `filing_date` — never inferred from filenames or mtimes) mints a per-filing `filing_id` (`company:form:period_end`), distinct from the year-stripped `document_family_id` that successive filings share (kept, with `document_id` as its legacy alias, for the impact workflow). The registry records one durable outcome per attempted source (`parsed` / `duplicate` / `failed` / `conflict`, atomic JSONL writes), orders same-company/same-form filings chronologically by `period_end`, and builds validated `FilingReference` sides via `to_filing_reference`. Two controlled fictional Acme 10-K excerpts (FY2024 + FY2025, distinct periods, shared family) are the demo dataset — they prove identity and ordering, not comparison quality, and structured comparison itself still does not exist. **The next dependency is step 3 (persistent comparison entity)**
-3. Persistent comparison entity (create, list, reopen across restarts) — **done**: [comparison_store.py](comparison_store.py) (stdlib SQLite, no ORM — chosen over JSONL because comparisons are mutable workflow records that later commits transition and attach children to) plus `POST /api/comparisons`, `GET /api/comparisons/{id}`, and `GET /api/comparisons` (filters: `filing_id`, `status` — including `queued_for_detection` and `detecting`). Creation validates the pair against the filing registry (existence, parsed status, undisputed identity, complete metadata, same company/form, strictly increasing `period_end`, supported section scope) and returns stable 422 reason codes; identical requests are idempotent (deterministic `cmp_` id + unique logical-key constraint, `created` flag, no duplicate rows under concurrent creates). Records persist in an explicit **`ready_for_detection`** state: no changes, evidence, validation, risk, or review fields exist on them — a pre-detection record cannot masquerade as a completed comparison. **The next dependency is step 4 (Item 1A section alignment and structured change detection)**
+2. Durable filing identity — **done**: [filing_registry.py](filing_registry.py) + [corpus_manifest.yaml](corpus_manifest.yaml). Explicit manifest metadata (company, form type, `period_end`, `filing_date` — never inferred from filenames or mtimes) mints a per-filing `filing_id` (`company:form:period_end`), distinct from the year-stripped `document_family_id` that successive filings share (kept, with `document_id` as its legacy alias, for the impact workflow). The registry records one durable outcome per attempted source (`parsed` / `duplicate` / `failed` / `conflict`, atomic JSONL writes), orders same-company/same-form filings chronologically by `period_end`, and builds validated `FilingReference` sides via `to_filing_reference`. Two controlled fictional Acme 10-K excerpts (FY2024 + FY2025, distinct periods, shared family) exercise the clean comparison path; the new guided-demo fourth act uses a separate controlled missing-section fixture to make governance hold, review, and approved export visible. These fixtures prove workflow behavior, not real-filing accuracy.
+3. Persistent comparison entity (create, list, reopen across restarts) — **done**: [comparison_store.py](comparison_store.py) (stdlib SQLite, no ORM — chosen over JSONL because comparisons are mutable workflow records that later commits transition and attach children to) plus `POST /api/comparisons`, `GET /api/comparisons/{id}`, and `GET /api/comparisons` (filters: `filing_id`, `status` — including `queued_for_detection` and `detecting`). Creation validates the pair against the filing registry (existence, parsed status, undisputed identity, complete metadata, same company/form, strictly increasing `period_end`, supported section scope) and returns stable 422 reason codes; identical requests are idempotent (deterministic `cmp_` id + unique logical-key constraint, `created` flag, no duplicate rows under concurrent creates). Records persist in an explicit **`ready_for_detection`** state: no changes, evidence, validation, risk, or review fields exist on them — a pre-detection record cannot masquerade as a completed comparison.
 4. Item 1A (Risk Factors) section alignment between the two filings — **done**: ingestion stamps a canonical `section_key` (`item_1a_risk_factors`, mapped from splitter-produced headings only — body text can never classify) plus a `chunk_seq` ordering; [comparison_detector.py](comparison_detector.py) loads complete sections by `filing_id` + `section_key` via metadata `get` (no vector retrieval anywhere in the path) with an explicit completeness proof (registry chunk_count vs indexed count)
 5. Structured changes: added / removed / modified / undetermined — **done** with deterministic rules only (exact normalized heading match, then exact content match; deliberately no similarity stage in v1). "Removed" is never inferred from a retrieval miss: added/removed are emitted only when both sections are proven complete, and anything unprovable or ambiguous becomes `undetermined` with a stable reason code
 6. Previous-filing and current-filing evidence attached to every change — **done**: every `EvidenceReference` resolves back to an indexed chunk (chunk_id, page, section, excerpt from the indexed text), with the comparison.v1 side rules enforced by schema validation over detector output
@@ -1385,7 +1451,7 @@ The next implementation phase is a governed two-filing change review for one com
 8. Reachable review routing for comparison results — **done**: a dedicated comparison risk policy ([policies/comparison_risk_policy.yaml](policies/comparison_risk_policy.yaml), fail-fast validated like the other governance YAML) scores **output trust and review necessity only** (failed-validation rate, undetermined-change rate, evidence-failure rate — explicit denominators, `not_applicable` never counts, change counts deliberately excluded as a materiality proxy). Mandatory-review rules (any failed check by name, any undetermined change, any unexpected `not_run`) hold a comparison independently of the weighted score. Evaluations persist immutably in SQLite keyed by (comparison, result hash, policy id+version) — idempotent, concurrent-safe, old policy versions stay readable — with a validated governed comparison.v1 snapshot updating only risk and review; a held decision creates exactly one pending `comparison_review_items` row in the same transaction. `POST/GET /api/comparisons/{id}/governance` + `GET /api/comparison-reviews`. Vocabulary honesty: `returned_with_warning` is reachable only if an operator relaxes the mandatory rules, and `blocked` is not produced by policy v1. The controlled clean Acme result returns; held paths are proven with synthetic results
 9. Reviewer attribution, required decision reasons, and draft-edit support — **done** ([comparison_review.py](comparison_review.py)): one terminal approve/reject per pending comparison review, recorded as an append-only SQLite decision event with an action-specific allowlisted reason code (edits ⇔ `approved_with_summary_edits`), a required bounded note, both result hashes, and the complete final reviewed comparison.v1 snapshot. New API decisions require `review.decide` and derive the reviewer id from the verified Principal; the deprecated request field cannot override it. Existing rows remain readable as `legacy_self_asserted`. Editing remains summary-only by change_id and is revalidated against original evidence; rejection, idempotency, concurrency, and transactional semantics are unchanged. `GET/POST /api/comparison-reviews/{id}[...]` + `/events`
 10. Release-gated structured export (formerly phrased "approved-only export") — **done** ([comparison_export.py](comparison_export.py), contract in [governance/comparison_export_schema.py](governance/comparison_export_schema.py)): a persisted, deterministic `comparison.export.v1` JSON artifact created only when the persisted governance workflow already released the result. Eligibility is resolved from stored records, never client-submitted state: `returned` and `returned_with_warning` evaluations export their governed snapshot directly, held evaluations export the final reviewed snapshot from their approved terminal review event, and pending, rejected, and blocked outcomes refuse with stable reason codes. Export creation now requires `export.create` and reads require `export.read`; release eligibility, payload construction, and payload hashing are unchanged, and no new token or policy metadata is inserted into the export payload. For version/hash compatibility, `comparison.export.v1` retains its legacy `reviewer_id_basis=self_asserted_local_metadata` field and omits the workflow record's authenticated provenance; carrying that provenance requires a future versioned export contract. Export rows remain application records, **not signed or tamper-proof storage**. `POST/GET /api/comparisons/{id}/exports` + `GET /api/comparison-exports/{export_id}` — persisted JSON only: no delivery, downloads, webhooks, or frontend
-11. A labeled comparison dataset with precision/recall metrics and CI regression gates — **done** ([scripts/eval_comparison_regression.py](scripts/eval_comparison_regression.py), labels in [tests/fixtures/comparison_regression_labels.json](tests/fixtures/comparison_regression_labels.json), fixtures in [tests/fixtures/comparison_regression/](tests/fixtures/comparison_regression/), CI in [.github/workflows/comparison-regression.yml](.github/workflows/comparison-regression.yml)): a versioned human-readable label contract (`comparison-regression.v2` — v2 adds sequence-aware unit identities for the per-unit ambiguous changes the v3 detector serializes) over five **controlled synthetic** fixture pairs — standard (modified/added/removed/unchanged), no-change, missing-section, ambiguous-heading, and retitled-and-reworded — each run end to end from fresh temporary state, twice, with ten metrics reported at explicit denominators and exact CI gates. The suite also pins the workflow invariants (idempotency, one pending review per held result, pending/rejected refusing release, approved releasing the reviewed snapshot, snapshot preservation after export, SQLite integrity). Branch-protection check name `comparison-regression`; credential-free (no AWS, no Bedrock, no network); baseline regeneration requires `--write-baseline` and is refused in CI. **Coverage is controlled and synthetic — the metrics measure deterministic-behavior stability, not real-filing accuracy.** Controlled real-public-filing evaluation now has an implemented, offline-tested process ([BENCHMARK.md](BENCHMARK.md)) whose corpus is not yet acquired or annotated. The next dependency is step 12
+11. A labeled comparison dataset with precision/recall metrics and CI regression gates — **done** ([scripts/eval_comparison_regression.py](scripts/eval_comparison_regression.py), labels in [tests/fixtures/comparison_regression_labels.json](tests/fixtures/comparison_regression_labels.json), fixtures in [tests/fixtures/comparison_regression/](tests/fixtures/comparison_regression/), CI in [.github/workflows/comparison-regression.yml](.github/workflows/comparison-regression.yml)): a versioned human-readable label contract (`comparison-regression.v2` — v2 adds sequence-aware unit identities for the per-unit ambiguous changes the v3 detector serializes) over five **controlled synthetic** fixture pairs — standard (modified/added/removed/unchanged), no-change, missing-section, ambiguous-heading, and retitled-and-reworded — each run end to end from fresh temporary state, twice, with ten metrics reported at explicit denominators and exact CI gates. The suite also pins the workflow invariants (idempotency, one pending review per held result, pending/rejected refusing release, approved releasing the reviewed snapshot, snapshot preservation after export, SQLite integrity). Branch-protection check name `comparison-regression`; credential-free (no AWS, no Bedrock, no network); baseline regeneration requires `--write-baseline` and is refused in CI. **Coverage is controlled and synthetic — the metrics measure deterministic-behavior stability, not real-filing accuracy.** The separate development corpus is acquired and built but remains unannotated; the frozen holdout corpus has been blind-extracted, human-annotated, and evaluated under v2. Its generalization claim remains unsigned, and v3 still needs a newly frozen real holdout.
 12. Then Stage-3.5 reliability and authentication work (state machine, retries, durable failure handling, auth) — **in progress, not complete**. The first reliability step is done: comparison detection has **durable execution attempts and an explicit lifecycle**. Both the direct synchronous path (`ready_for_detection → detecting → detected | failed`) and the asynchronous worker path (`queued_for_detection → detecting → detected | failed`) create the same attempt record and append-only `detection_started` / terminal event before computation. Attempt ids, monotonic attempt numbers, versions, source hashes, timestamps, result hash or stable safe failure fields remain transactionally coherent with the comparison and result. The authenticated API no longer starts an attempt inline; its attempt exists only after a worker claims the durable job. Attempts and events remain readable at `GET /api/comparisons/{id}/detection-attempts`, `GET /api/detection-attempts/{id}`, and `GET /api/detection-attempts/{id}/events`. **They are append-only application records, not tamper-proof storage.**
 
     The second reliability step is also done: **bounded stale-detection recognition and operator-controlled replay** ([detection_recovery.py](detection_recovery.py), policy in [policies/detection_recovery_policy.yaml](policies/detection_recovery_policy.yaml)). Staleness remains eligibility, never an automatic action: the read-only recovery view mutates nothing, and only an explicit replay transaction retires an eligible direct/replay attempt, starts its bounded replacement, and records the linkage. Protected-API replay requires `recovery.replay`; its actor and idempotency hash use the verified Principal subject, never a token or caller-supplied identity. Direct library callers retain the explicit legacy attribution path. Replay remains synchronous and creates no initial-detection job. A current job-owned attempt reports `detection_attempt_managed_by_job`, is not replay eligible, and can be replaced only by the job's finite-lease reclaim transaction. Generic operator replay remains unchanged for synchronous non-job attempts
@@ -1506,7 +1572,7 @@ values, SQL, or filesystem paths.
 ### 5. Enterprise-oriented deployment path
 
 * [ ] Hosted vector store
-* [ ] API service layer
+* [x] Local FastAPI service layer (generic chat plus protected comparison APIs; no production hosting or HA claim)
 * [x] Local comparison-workflow authentication and exact permission checks (bounded shared-secret reference implementation; generic chat/RAG and document-level authorization remain out of scope)
 * [ ] Document-level permissions
 * [ ] IAM-based service access
