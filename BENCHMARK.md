@@ -98,7 +98,7 @@ unannotated; the table below describes it unless a row names the holdout.
 | Extraction holdout corpus | **frozen, source-verified, blind-extracted, human-annotated, and gold-evaluated** (`benchmarks/real_filing_holdout_v1/`, manifest status still `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; those 9 pairs are now `human_verified` and scored. See the holdout section below |
 | Holdout gold evaluation | **done** — 9 of 10 pairs scored, 28 human-verified labels, metrics in `gold_evaluation_report.json`, writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) |
 | Holdout generalization sign-off | **not done** — `generalization_claim_supported` is `false` because no sign-off exists, not because labels or an evaluation are missing |
-| v3 extraction holdout (metadata-only) | **frozen** (`benchmarks/real_filing_v3_holdout_v1/`, status `holdout_frozen_metadata_only`) — 10 new issuer pairs / 20 FY2024→FY2025 10-Ks selected from official SEC metadata only, after parser v3 and evaluation contract v2 were frozen; both prior corpora excluded by CIK and accession; filing bodies not downloaded, `expected_sha256` null everywhere, no v3 extraction, annotation, or evaluation. See the v3 holdout section below |
+| v3 extraction holdout (source-verified) | **frozen + acquired** (`benchmarks/real_filing_v3_holdout_v1/`, status `source_verified`) — 10 new issuer pairs / 20 FY2024→FY2025 10-Ks selected from official SEC metadata only, after parser v3 and evaluation contract v2 were frozen; both prior corpora excluded by CIK and accession. The twenty frozen bodies have since been downloaded from the official SEC archive and checksum-verified; their SHA-256 values are frozen in the manifest and the bodies themselves are not committed. No v3 extraction, comparison, annotation, or evaluation has run. See the v3 holdout section below |
 | Unit-segmentation grammar v3 | **implemented, unevaluated** — `item1a_detector.v3` / `comparison_workflow.v3` add the generic heading classes the v2 evaluation showed were missing; the v2 evidence is frozen and byte-identical, the old holdout is now v3 *development* data, and **no v3 evaluation, holdout, or generalization claim exists** (see [Unit grammar v3](#unit-grammar-v3)) |
 | Gold-evaluation contract v2 | **frozen, unused on real data** — `real-filing-benchmark.evaluation.v2` + `real-filing-benchmark-metrics.v2` fix the evaluator defect the v2 holdout exposed: future v3 evaluations match by exact canonical `side:sequence:unit_key` subject identity, never by normalized `unit_key`; the frozen contract-v1 evaluation is unchanged and neither contract accepts the other's artifacts (see [Gold-evaluation contract v2](#gold-evaluation-contract-v2)) |
 
@@ -166,14 +166,16 @@ fabricated fact that later readers cannot distinguish from a real one.
    selection done** — deliberately in a separate commit after both parser v3
    and the v2 evaluation contract were merged and frozen:
    `real_filing_v3_holdout_v1` (see [v3 extraction
-   holdout](#v3-extraction-holdout-real_filing_v3_holdout_v1--frozen-metadata-only)
+   holdout](#v3-extraction-holdout-real_filing_v3_holdout_v1--source-verified-unextracted)
    below) freezes 10 new issuer pairs / 20 FY2024→FY2025 10-Ks from official
    SEC metadata only, under a hash-ranked deterministic protocol that
    excludes every CIK and accession of both prior corpora. Filing bodies
-   were not downloaded or inspected; the next step is source acquisition
-   with SHA-256 verification, without running extraction. Until the corpus
-   is acquired, blind-extracted, annotated, and evaluated, **no v3 accuracy
-   or generalization claim exists**.
+   were not downloaded or inspected at selection time. **Source acquisition
+   is now done too**: the same twenty frozen documents were downloaded from
+   the official SEC archive and checksum-verified, advancing the manifest one
+   step to `source_verified` without running extraction. Until the corpus is
+   blind-extracted, annotated, and evaluated, **no v3 accuracy or
+   generalization claim exists**.
 
 ### The prior null result, and what changed
 
@@ -611,6 +613,10 @@ python scripts/acquire_real_filing_holdout.py --allow-network   # done: source v
 python scripts/run_real_filing_holdout_blind_extraction.py      # done: the blind extraction run (offline)
 python scripts/validate_holdout_human_annotations.py --workspace  # pre-review integrity (read-only)
 python scripts/validate_holdout_human_annotations.py              # after human review: gold-admission check
+
+# v3 holdout (same discipline, separate corpus):
+python scripts/select_real_filing_v3_holdout.py --allow-network   # done: the freeze (metadata only)
+python scripts/acquire_real_filing_v3_holdout.py --allow-network  # done: source verification (bodies + checksums)
 ```
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
@@ -756,13 +762,15 @@ required `comparison-regression` check.
 
 ---
 
-## v3 extraction holdout (`real_filing_v3_holdout_v1`) — frozen, METADATA-ONLY
+## v3 extraction holdout (`real_filing_v3_holdout_v1`) — SOURCE-VERIFIED, unextracted
 
 `benchmarks/real_filing_v3_holdout_v1/` holds the second frozen holdout
-manifest (`real-filing-v3-holdout.manifest.v1`, status
-`holdout_frozen_metadata_only`), its bounded selection audit report, and a
-future evaluation config — committed *before* any selected filing body was
-downloaded or inspected. Both prior corpora are spent as v3 evidence: the
+manifest (`real-filing-v3-holdout.manifest.v1`, now at status
+`source_verified`), its bounded selection audit report, a bounded
+source-verification report, and a future evaluation config. The *selection*
+was committed **before** any selected filing body was downloaded or
+inspected; the bodies were acquired afterwards, and the selection has not
+changed since. Both prior corpora are spent as v3 evidence: the
 development corpus by construction, and `real_filing_holdout_v1` because its
 failure modes were observed and then used to design `item1a_units.v3` and the
 contract-v2 evaluator, which makes it v3 development data. This corpus is the
@@ -798,14 +806,44 @@ one a future v3 generalization claim must be earned on.
   (2000s–6000s, two each), under a 500-probe budget. An unfillable stratum
   fails the entire selection; the corpus is never silently smaller and the
   target years are never switched or mixed.
-- **Body access is structurally impossible during selection**: every URL
-  passes the same closed metadata allowlist as the first holdout (registrant
+- **Body access was structurally impossible during selection**: every URL
+  passed the same closed metadata allowlist as the first holdout (registrant
   list, submissions incl. paged history, companyfacts — no Archives
-  pattern), so `filing_body_requests` is 0 by construction and the report's
-  downstream counters (`source_documents_downloaded`, `extraction_runs`,
-  `comparison_runs`, `annotation_packets`, `human_verified_labels`,
-  `gold_evaluation_runs`) are all zero. `expected_sha256` is null and
-  `source_verified` is false on all 20 sides.
+  pattern), so the *selection* report records `filing_body_requests = 0` by
+  construction, and its downstream counters (`source_documents_downloaded`,
+  `extraction_runs`, `comparison_runs`, `annotation_packets`,
+  `human_verified_labels`, `gold_evaluation_runs`) are all zero.
+- **The twenty bodies have since been acquired and source-verified**
+  (`holdout_frozen_metadata_only → source_verified`, one lifecycle step,
+  protocol `real-filing-v3-source-acquisition.v1`). Each body came from the
+  one canonical official archive URL derived from the frozen CIK, accession,
+  and primary-document fields — `https://www.sec.gov/Archives/edgar/data/`
+  only, over https, exact hostname equality, no query, no fragment, no index
+  page, no exhibit, no alternate accession, and an identity-bound redirect
+  guard that refuses any target other than that exact URL. SHA-256 is taken
+  over the **decoded entity bytes** (Content-Encoding applied first, before
+  any text decoding, Unicode normalization, newline normalization, or
+  parsing); bytes are written atomically, re-read in binary, and re-hashed,
+  and the digest is accepted only when the two agree. All 20 sides verified
+  in a single run (20 requests, 0 retries, 0 redirects, 87,281,002 bytes),
+  and every `expected_sha256` and `source_verified: true` in the manifest
+  comes from that run. **The bodies themselves are not committed** — they
+  live only under gitignored `benchmark_data/real_filing_v3_holdout_v1/`.
+  The transition is all-or-nothing: one failed side would have left the
+  committed manifest metadata-only with every digest still null, and no
+  selected filing may be replaced for any reason, including a failed URL,
+  an unusual document, or a suspicion that Item 1A is absent.
+- **Reproducing the source set later requires the same exact archive bytes.**
+  The freeze carried null digests, so this first acquisition observed them
+  and froze them (trust-on-first-acquisition, stated in the report); every
+  later read verifies against the committed values. A mismatch — remote or
+  local — fails closed. A disagreeing local file is preserved and refused,
+  never overwritten, never deleted, and never silently re-pinned.
+- **Source verification is not parser validation.** It establishes only which
+  official bytes were obtained. It does **not** mean extraction succeeded,
+  and it is not a claim that all twenty filings contain an extractable
+  Item 1A section — that is unknown until the separate blind extraction run
+  reports it.
 - **The future evaluation config is committed now**, while the corpus is
   metadata-only: it declares contract v2 (`evaluation.v2` + `metrics.v2` +
   `report.v2`, canonical `side:sequence:unit_key` subject matching over
@@ -822,19 +860,29 @@ one a future v3 generalization claim must be earned on.
 - **What this corpus is not (yet):** it supports no claim of representative
   sampling and no accuracy statement of any kind.
   `extraction_holdout_evaluation` and `generalization_claim_supported` are
-  false; no v3 extraction, annotation packet, human label, or v3 gold
-  evaluation exists for it. The next step is source acquisition with
-  SHA-256 verification of the twenty frozen bodies — without running
-  extraction — mirroring the first holdout's acquisition step.
+  false; no v3 extraction run, unit-parser v3 execution, comparison,
+  annotation packet, machine label, human label, v3 gold evaluation, or
+  sign-off exists for it, and the source-verification report records all of
+  those counters as zero. The next step is a **blind extraction and
+  comparison run** over these already-verified bytes, with the frozen parser,
+  unit grammar, detector, workflow, and evaluator contract unchanged.
 
 Tests: `tests/test_v3_holdout_selection.py` (deterministic hash-ranked
 selection, fixed seed, dual-corpus exclusions, strata/eligibility denials,
 the closed metadata allowlist, zero-counter audit report — all over
-synthetic metadata) and `tests/test_v3_holdout_manifest.py` (the committed
+synthetic metadata), `tests/test_v3_holdout_manifest.py` (the committed
 manifest/config/report of record: schema and denials, live pinning of every
 frozen v3/v2 identity and source hash, exclusion provenance, and the
-config's contract declarations) — both in the required
-`comparison-regression` check.
+config's contract declarations), `tests/test_v3_holdout_source_acquisition.py`
+(URL construction and the closed URL allowlist, redirect refusals,
+transport-level response checks, entity-byte hashing, local-file reuse and
+mismatch refusal, and the all-or-nothing transition — mocked transport and
+synthetic HTML only), and
+`tests/test_v3_holdout_source_verification.py` (the committed advanced
+manifest and source-verification report: the one-step transition, the
+manifest hash chain, twenty distinct verified digests, report/manifest
+binding, canonical-URL-only records, prose denials, and no committed body)
+— all in the required `comparison-regression` check.
 
 ---
 

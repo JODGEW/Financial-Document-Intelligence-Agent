@@ -66,10 +66,17 @@ def mutated(manifest, **overrides):
 # --- The committed manifest -----------------------------------------------------
 
 
-def test_committed_manifest_is_valid_and_metadata_only(manifest):
+def test_committed_manifest_is_valid_and_source_verified(manifest):
+    """The corpus advanced one step: metadata-only -> source_verified.
+
+    The twenty frozen bodies were acquired and checksummed; nothing downstream
+    of bytes-on-disk happened. The schema rule that a *metadata-only* manifest
+    may carry no digest is unchanged and still exercised below — see
+    ``test_verification_claims_are_rejected_while_metadata_only``.
+    """
     assert manifest["schema_version"] == "real-filing-v3-holdout.manifest.v1"
     assert manifest["benchmark_id"] == "real_filing_v3_holdout_v1"
-    assert manifest["status"] == rfv3.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
+    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
     assert manifest["form"] == "10-K"
     assert manifest["target_pair_count"] == 10
     assert manifest["target_previous_fiscal_year"] == 2024
@@ -80,12 +87,15 @@ def test_committed_manifest_denies_every_downstream_claim(manifest):
     assert manifest["corpus_role"] == "extraction_holdout_corpus"
     assert manifest["extraction_parser_developed_using_this_corpus"] is False
     assert manifest["evaluation_contract_developed_using_this_corpus"] is False
+    # Source-verified means bytes were obtained, and nothing more: no
+    # extraction has run, so no holdout evaluation and no generalization claim
+    # exists.
     assert manifest["extraction_holdout_evaluation"] is False
     assert manifest["generalization_claim_supported"] is False
     for pair in manifest["pairs"]:
         for side in ("previous", "current"):
-            assert pair[side]["expected_sha256"] is None
-            assert pair[side]["source_verified"] is False
+            assert rfb._SHA256_RE.match(pair[side]["expected_sha256"])
+            assert pair[side]["source_verified"] is True
 
 
 def test_committed_manifest_has_ten_pairs_over_five_two_issuer_strata(manifest):
@@ -202,18 +212,54 @@ def test_prior_benchmark_ids_are_rejected(manifest):
             )
 
 
+def metadata_only(manifest):
+    """The committed manifest rewound to its metadata-only shape.
+
+    The corpus has since advanced to ``source_verified``, but the rule that a
+    metadata-only manifest may claim no digest and no verification is exactly
+    as strict as it was at the freeze, and is still exercised against a real
+    document rather than a hand-built one.
+    """
+    rewound = json.loads(json.dumps(manifest))
+    rewound["status"] = rfv3.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
+    for pair in rewound["pairs"]:
+        for side in ("previous", "current"):
+            pair[side]["expected_sha256"] = None
+            pair[side]["source_verified"] = False
+    rfv3.validate_v3_holdout_manifest(rewound)
+    return rewound
+
+
 def test_verification_claims_are_rejected_while_metadata_only(manifest):
-    poisoned = json.loads(json.dumps(manifest))
+    base = metadata_only(manifest)
+
+    poisoned = json.loads(json.dumps(base))
     poisoned["pairs"][0]["previous"]["expected_sha256"] = "b" * 64
     with pytest.raises(rfv3.V3HoldoutManifestError) as excinfo:
         rfv3.validate_v3_holdout_manifest(poisoned)
     assert excinfo.value.code == "v3_holdout_side_unexpected_sha256"
 
-    poisoned = json.loads(json.dumps(manifest))
+    poisoned = json.loads(json.dumps(base))
     poisoned["pairs"][0]["current"]["source_verified"] = True
     with pytest.raises(rfv3.V3HoldoutManifestError) as excinfo:
         rfv3.validate_v3_holdout_manifest(poisoned)
     assert excinfo.value.code == "v3_holdout_side_claims_verification"
+
+
+def test_a_source_verified_manifest_must_carry_a_real_digest(manifest):
+    """The mirror rule: past metadata-only, a null or placeholder digest is a
+    verification claim with nothing behind it."""
+    poisoned = json.loads(json.dumps(manifest))
+    poisoned["pairs"][0]["previous"]["expected_sha256"] = None
+    with pytest.raises(rfv3.V3HoldoutManifestError) as excinfo:
+        rfv3.validate_v3_holdout_manifest(poisoned)
+    assert excinfo.value.code == "v3_holdout_side_invalid_sha256"
+
+    poisoned = json.loads(json.dumps(manifest))
+    poisoned["pairs"][0]["current"]["expected_sha256"] = rfb.PLACEHOLDER_SHA256
+    with pytest.raises(rfv3.V3HoldoutManifestError) as excinfo:
+        rfv3.validate_v3_holdout_manifest(poisoned)
+    assert excinfo.value.code == "v3_holdout_side_placeholder_sha256"
 
 
 def test_corpus_role_overclaims_are_rejected(manifest):
@@ -388,10 +434,27 @@ def test_report_matches_manifest_and_records_zero_downstream_activity(
     assert report["selection_succeeded"] is True
     assert report["failures"] == []
     assert report["selection_protocol_hash"] == manifest["selection_protocol_hash"]
-    assert report["manifest_status"] == manifest["status"]
-    assert report["holdout_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
-    assert report["reproducible_manifest_hash"] == (
+    # The selection report is a historical record of the freeze, not a mirror
+    # of the live manifest: it records the status the manifest had when the
+    # selection ran, and stays byte-identical as the corpus advances.
+    assert report["manifest_status"] == rfv3.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
+    # Its two manifest hashes are the metadata-only ones it froze. They are
+    # not recomputed against the live file — that would silently accept a
+    # rewritten selection report. The link forward is the source-verification
+    # report, which chains prior -> new.
+    source_report = json.loads(
+        (V3_DIR / "source_verification_report.json").read_text(encoding="utf-8")
+    )
+    assert report["holdout_manifest_sha256"] == source_report[
+        "prior_manifest_sha256"
+    ]
+    assert source_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
+    assert source_report["new_reproducible_manifest_hash"] == (
         rfv3.reproducible_manifest_hash(manifest)
+    )
+    assert rfb._SHA256_RE.match(report["reproducible_manifest_hash"])
+    assert report["reproducible_manifest_hash"] != (
+        source_report["new_reproducible_manifest_hash"]
     )
     assert report["filing_body_requests"] == 0
     assert report["source_documents_downloaded"] == 0

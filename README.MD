@@ -1426,22 +1426,38 @@ only** under a hash-ranked deterministic protocol with a fixed seed: ten new
 issuer pairs — twenty filer-designated FY2024→FY2025 10-Ks across the same
 five closed SIC strata — excluding every CIK and accession of both prior
 corpora, with the parser, unit grammar, detector, workflow, and evaluator
-contract pinned by version and source hash in the manifest. Its filing
-bodies have not been downloaded or inspected: `expected_sha256` is null on
-all twenty sides, and the committed selection report records
-`filing_body_requests = 0`. The remaining next steps, in order of
-dependency, are: source acquisition and SHA-256 verification of those
-twenty bodies **without running extraction**; human diagnostic annotation
-of the ten development pairs; and, if a generalization claim is ever to be
-made, an explicit human sign-off of the v2 holdout evaluation — all without
-changing extraction v2. No issuer may be replaced in a corpus whose bodies
-have been observed, and none may be replaced in the new corpus once its
-bodies are observed.
+contract pinned by version and source hash in the manifest. At selection
+time its filing bodies had not been downloaded or inspected, and the
+committed selection report records `filing_body_requests = 0`.
+
+**Those twenty bodies have since been acquired and source-verified**
+(manifest status `holdout_frozen_metadata_only → source_verified`, one
+lifecycle step). Each came from the single canonical official SEC archive
+URL derived from its frozen CIK, accession, and primary-document fields;
+SHA-256 was taken over the decoded entity bytes, the bytes were written
+atomically and re-read and re-hashed before the digest was accepted, and all
+twenty verified in one run. Those checksums are now frozen in the manifest,
+so every later read is a real verification and a mismatch fails rather than
+silently re-pinning. **The source bodies are intentionally not committed** —
+they live only under gitignored `benchmark_data/`, and reproducing the set
+later requires the same exact SEC archive bytes. Source verification is not
+parser validation: no Item 1A extraction, no unit-parser v3 execution, no
+comparison, no annotation packet, no human label, and no v3 gold evaluation
+has run, and it is not a claim that all twenty filings contain an
+extractable Item 1A section. The remaining next steps, in order of
+dependency, are: a **blind extraction and comparison run** over these
+verified bytes with every frozen contract unchanged; human diagnostic
+annotation of the ten development pairs; and, if a generalization claim is
+ever to be made, an explicit human sign-off of the v2 holdout evaluation —
+all without changing extraction v2. No issuer may be replaced in a corpus
+whose bodies have been observed, and no selected filing in the v3 holdout
+may be replaced now that its bodies are acquired.
 
 What still does not exist is any **signed** generalization claim, any v3
 evaluation of any kind (no v3 gold labels, no v3 human annotations, no v3
-accuracy number — the v3 holdout is frozen but metadata-only, unacquired
-and unevaluated), any diagnostic annotation of the ten development pairs,
+accuracy number — the v3 holdout is frozen and source-verified, but
+unextracted and unevaluated), any diagnostic annotation of the ten
+development pairs,
 any scheduler, job-processing daemon loop, automatic background invocation,
 external queue, container/cloud deployment infrastructure, or multi-node
 coordination. Maturity therefore remains **Stage 3**. Stage 3.5 remains in
