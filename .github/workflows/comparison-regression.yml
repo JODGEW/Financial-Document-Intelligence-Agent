@@ -159,10 +159,25 @@ jobs:
       # schema and denials (expected_sha256 null, source_verified false, no
       # evaluation, no generalization claim), live pinning of every frozen
       # v3/v2 contract identity and source hash, and the future evaluation
-      # config that declares contract v2 but cannot score a metadata-only
-      # corpus. CI validates committed artifacts and mocked metadata only; it
-      # never runs the real selection, never contacts SEC EDGAR, and never
+      # config that declares contract v2 but cannot score a corpus with no
+      # extraction. CI validates committed artifacts and mocked metadata only;
+      # it never runs the real selection, never contacts SEC EDGAR, and never
       # downloads a filing body.
+      # test_v3_holdout_source_acquisition.py and
+      # test_v3_holdout_source_verification.py freeze the step that advanced
+      # that manifest one notch to source_verified: canonical official body
+      # URLs derived from frozen fields only, a closed URL allowlist that
+      # refuses lookalike hosts, index pages, exhibits, alternate accessions,
+      # traversal and encoded separators, an identity-bound redirect guard,
+      # transport-level response checks that never read filing semantics,
+      # sha256 over decoded entity bytes with a local re-read, verified-cache
+      # reuse that refuses to overwrite disagreeing bytes, and the
+      # all-or-nothing transition in which one failed side leaves the
+      # committed manifest metadata-only and replaces no filing. The committed
+      # suite also pins the manifest hash chain, the report/manifest digest
+      # binding, and the structural zeroes proving no extraction, comparison,
+      # annotation, metric, or sign-off exists for this corpus. Mocked
+      # transport and synthetic HTML only — CI never acquires a body.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -181,7 +196,9 @@ jobs:
             tests/test_gold_evaluation_signoff.py \
             tests/test_v3_gold_evaluator_contract.py \
             tests/test_v3_holdout_selection.py \
-            tests/test_v3_holdout_manifest.py
+            tests/test_v3_holdout_manifest.py \
+            tests/test_v3_holdout_source_acquisition.py \
+            tests/test_v3_holdout_source_verification.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

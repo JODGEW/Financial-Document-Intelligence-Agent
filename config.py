@@ -100,6 +100,15 @@ REAL_FILING_HOLDOUT_DIR = os.getenv(
     "REAL_FILING_HOLDOUT_DIR",
     os.path.join(os.path.dirname(__file__), "benchmark_data", "real_filing_holdout_v1"),
 )
+# The v3 extraction holdout — selected after the v3 unit grammar and the
+# contract-v2 gold evaluator were frozen — keeps its bodies in its own
+# gitignored tree, never mixed with either prior corpus.
+REAL_FILING_V3_HOLDOUT_DIR = os.getenv(
+    "REAL_FILING_V3_HOLDOUT_DIR",
+    os.path.join(
+        os.path.dirname(__file__), "benchmark_data", "real_filing_v3_holdout_v1"
+    ),
+)
 SEC_USER_AGENT = os.getenv("SEC_USER_AGENT") or None
 
 # Document ingestion. Two-tier PII redaction dispatch:
