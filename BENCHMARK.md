@@ -98,6 +98,7 @@ unannotated; the table below describes it unless a row names the holdout.
 | Extraction holdout corpus | **frozen, source-verified, blind-extracted, human-annotated, and gold-evaluated** (`benchmarks/real_filing_holdout_v1/`, manifest status still `corpus_built`) — the frozen parser ran once, unchanged, over all 20 verified bodies: **18/20 sides extracted, 2 ambiguous** (both sides of one pair), 9/10 pairs reached `detected`; those 9 pairs are now `human_verified` and scored. See the holdout section below |
 | Holdout gold evaluation | **done** — 9 of 10 pairs scored, 28 human-verified labels, metrics in `gold_evaluation_report.json`, writeup in [HOLDOUT_EVALUATION.md](HOLDOUT_EVALUATION.md) |
 | Holdout generalization sign-off | **not done** — `generalization_claim_supported` is `false` because no sign-off exists, not because labels or an evaluation are missing |
+| v3 extraction holdout (metadata-only) | **frozen** (`benchmarks/real_filing_v3_holdout_v1/`, status `holdout_frozen_metadata_only`) — 10 new issuer pairs / 20 FY2024→FY2025 10-Ks selected from official SEC metadata only, after parser v3 and evaluation contract v2 were frozen; both prior corpora excluded by CIK and accession; filing bodies not downloaded, `expected_sha256` null everywhere, no v3 extraction, annotation, or evaluation. See the v3 holdout section below |
 | Unit-segmentation grammar v3 | **implemented, unevaluated** — `item1a_detector.v3` / `comparison_workflow.v3` add the generic heading classes the v2 evaluation showed were missing; the v2 evidence is frozen and byte-identical, the old holdout is now v3 *development* data, and **no v3 evaluation, holdout, or generalization claim exists** (see [Unit grammar v3](#unit-grammar-v3)) |
 | Gold-evaluation contract v2 | **frozen, unused on real data** — `real-filing-benchmark.evaluation.v2` + `real-filing-benchmark-metrics.v2` fix the evaluator defect the v2 holdout exposed: future v3 evaluations match by exact canonical `side:sequence:unit_key` subject identity, never by normalized `unit_key`; the frozen contract-v1 evaluation is unchanged and neither contract accepts the other's artifacts (see [Gold-evaluation contract v2](#gold-evaluation-contract-v2)) |
 
@@ -161,13 +162,18 @@ fabricated fact that later readers cannot distinguish from a real one.
    `real-filing-benchmark-metrics.v2`) and matches by exact canonical unit
    identity (see [Gold-evaluation contract v2](#gold-evaluation-contract-v2)
    below). No v2 metric was recomputed and no v2 label was migrated.
-10. **A newly frozen unseen holdout for v3.** Not started, deliberately not in
-   the v3 development commits: a new metadata-only holdout selection (same
-   protocol discipline as `real_filing_holdout_v1`) may be frozen only
-   *after* both parser v3 and the v2 evaluation contract are merged and
-   frozen, and before anyone looks at the selected bodies. Until it is
-   annotated and evaluated, **no v3 accuracy or generalization claim
-   exists**.
+10. **A newly frozen unseen holdout for v3.** ~~Pending~~ **Metadata-only
+   selection done** — deliberately in a separate commit after both parser v3
+   and the v2 evaluation contract were merged and frozen:
+   `real_filing_v3_holdout_v1` (see [v3 extraction
+   holdout](#v3-extraction-holdout-real_filing_v3_holdout_v1--frozen-metadata-only)
+   below) freezes 10 new issuer pairs / 20 FY2024→FY2025 10-Ks from official
+   SEC metadata only, under a hash-ranked deterministic protocol that
+   excludes every CIK and accession of both prior corpora. Filing bodies
+   were not downloaded or inspected; the next step is source acquisition
+   with SHA-256 verification, without running extraction. Until the corpus
+   is acquired, blind-extracted, annotated, and evaluated, **no v3 accuracy
+   or generalization claim exists**.
 
 ### The prior null result, and what changed
 
@@ -669,10 +675,11 @@ versioned there:
   v3 diagnostics over it are structural only (unit counts, recognized
   headings, repeated-heading preservation), gitignored, and are **not** a
   holdout evaluation.
-- **What does not exist yet:** no v3 gold evaluation, no v3 unseen holdout,
-  no v3 accuracy number, no generalization claim (`generalization_claim_supported`
-  remains `false` and unsigned). The next step is a new metadata-only holdout
-  selection, frozen only after v3 is merged and frozen.
+- **What does not exist yet:** no v3 gold evaluation, no v3 accuracy number,
+  no generalization claim (`generalization_claim_supported` remains `false`
+  and unsigned). The metadata-only v3 holdout selection is now frozen
+  (`real_filing_v3_holdout_v1`, selected after v3 was merged and frozen);
+  its bodies remain deliberately unfetched and unevaluated.
 
 Tests: `tests/test_item1a_unit_parser_v3.py` (generic synthetic fixtures for
 every positive and negative grammar class, determinism, sequence-aware
@@ -734,18 +741,100 @@ evaluation contract is now explicit and versioned in
   byte-identical, no v2 metric was recomputed, and no v2 annotation was
   migrated to canonical v3 subjects — the two label universes are not
   comparable because the unit definitions differ.
-- **What still does not exist:** no v3 unseen holdout, no v3 human
-  annotation, no v3 gold evaluation, no v3 accuracy number, and no
-  generalization claim (`generalization_claim_supported` remains `false` and
-  unsigned). Evaluator-contract correctness is not detector correctness. The
-  next step is metadata-only selection of a new unseen holdout, now that both
-  parser v3 and this contract exist.
+- **What still does not exist:** no v3 human annotation, no v3 gold
+  evaluation, no v3 accuracy number, and no generalization claim
+  (`generalization_claim_supported` remains `false` and unsigned).
+  Evaluator-contract correctness is not detector correctness. The
+  metadata-only v3 holdout (`real_filing_v3_holdout_v1`) is now frozen under
+  this contract; its bodies remain deliberately unfetched.
 
 Tests: `tests/test_v3_gold_evaluator_contract.py` (synthetic-only: contract
 dispatch and cross-acceptance refusals, canonical identity validation,
 repeated-heading occurrence preservation across every metric, duplicate and
 closure refusal, determinism, order independence, and CI pinning) — in the
 required `comparison-regression` check.
+
+---
+
+## v3 extraction holdout (`real_filing_v3_holdout_v1`) — frozen, METADATA-ONLY
+
+`benchmarks/real_filing_v3_holdout_v1/` holds the second frozen holdout
+manifest (`real-filing-v3-holdout.manifest.v1`, status
+`holdout_frozen_metadata_only`), its bounded selection audit report, and a
+future evaluation config — committed *before* any selected filing body was
+downloaded or inspected. Both prior corpora are spent as v3 evidence: the
+development corpus by construction, and `real_filing_holdout_v1` because its
+failure modes were observed and then used to design `item1a_units.v3` and the
+contract-v2 evaluator, which makes it v3 development data. This corpus is the
+one a future v3 generalization claim must be earned on.
+
+- **Selected after both freezes, before any body observation.** The
+  selection ran only after `item1a_units.v3` / `item1a_detector.v3` /
+  `comparison_workflow.v3` and `real-filing-benchmark.evaluation.v2` +
+  `real-filing-benchmark-metrics.v2` + `report.v2` were merged and frozen.
+  The manifest pins each of those identities by version and — for
+  `loaders/sec_headings.py`, `comparison_detector.py`,
+  `comparison_store.py`, and `scripts/eval_real_filing_benchmark.py` — by
+  source sha256, so post-freeze drift in any pinned file is a checkable
+  fact, and required CI checks it.
+- **Deterministic hash-ranked selection under a fixed seed**
+  (`real-filing-v3-holdout-selection.v1`, hash-frozen into the manifest):
+  candidates from the official `company_tickers.json` registrant list are
+  ranked by `SHA-256("real_filing_v3_holdout_v1|" + zero-padded CIK)`
+  ascending (ties by CIK, then title) instead of the first holdout's
+  ascending-CIK order, which had selected only the earliest-registered
+  issuers. The seed is the benchmark id, fixed before selection; no runtime
+  seed input exists and no randomness is used.
+- **Both prior corpora excluded, from their committed manifests.** Every
+  CIK and, independently, every accession in `real_filing_v1` and
+  `real_filing_holdout_v1` is excluded (10 CIKs + 20 accessions each). The
+  exclusion sets are derived at run time — never retyped — and the sha256 of
+  each source manifest is frozen into the new manifest; CI re-derives both
+  sets and refuses drift.
+- **Fixed filer-designated FY2024 → FY2025 target** via official XBRL
+  `fy`/`fp` companyfacts rows (never a period-end-year heuristic), two
+  consecutive annual 10-Ks per issuer, exact form `10-K` only (no 10-K/A,
+  20-F, or 40-F), 10 distinct issuers across the same five closed SIC strata
+  (2000s–6000s, two each), under a 500-probe budget. An unfillable stratum
+  fails the entire selection; the corpus is never silently smaller and the
+  target years are never switched or mixed.
+- **Body access is structurally impossible during selection**: every URL
+  passes the same closed metadata allowlist as the first holdout (registrant
+  list, submissions incl. paged history, companyfacts — no Archives
+  pattern), so `filing_body_requests` is 0 by construction and the report's
+  downstream counters (`source_documents_downloaded`, `extraction_runs`,
+  `comparison_runs`, `annotation_packets`, `human_verified_labels`,
+  `gold_evaluation_runs`) are all zero. `expected_sha256` is null and
+  `source_verified` is false on all 20 sides.
+- **The future evaluation config is committed now**, while the corpus is
+  metadata-only: it declares contract v2 (`evaluation.v2` + `metrics.v2` +
+  `report.v2`, canonical `side:sequence:unit_key` subject matching over
+  `item1a_units.v3`), binds to this benchmark id, carries null thresholds
+  and a null sign-off, and cannot produce a report — the evaluator has no
+  branch that reads this manifest schema, so gold scoring is structurally
+  unreachable until later stages exist.
+- **Selection is auditable but not byte-replayable from a later snapshot.**
+  The rules are pinned by `selection_protocol_hash` and the outcome by the
+  manifest hashes, but the repository does not store the SEC metadata
+  snapshot the selection read, so a rerun against later metadata may select
+  differently; any such rerun is a distinct selection attempt, documented,
+  never a silent overwrite.
+- **What this corpus is not (yet):** it supports no claim of representative
+  sampling and no accuracy statement of any kind.
+  `extraction_holdout_evaluation` and `generalization_claim_supported` are
+  false; no v3 extraction, annotation packet, human label, or v3 gold
+  evaluation exists for it. The next step is source acquisition with
+  SHA-256 verification of the twenty frozen bodies — without running
+  extraction — mirroring the first holdout's acquisition step.
+
+Tests: `tests/test_v3_holdout_selection.py` (deterministic hash-ranked
+selection, fixed seed, dual-corpus exclusions, strata/eligibility denials,
+the closed metadata allowlist, zero-counter audit report — all over
+synthetic metadata) and `tests/test_v3_holdout_manifest.py` (the committed
+manifest/config/report of record: schema and denials, live pinning of every
+frozen v3/v2 identity and source hash, exclusion provenance, and the
+config's contract declarations) — both in the required
+`comparison-regression` check.
 
 ---
 

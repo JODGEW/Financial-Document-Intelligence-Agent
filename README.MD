@@ -1416,25 +1416,40 @@ and refusal codes in
 `tests/test_v3_gold_evaluator_contract.py` in required CI. Evaluator-contract
 correctness says nothing about detector accuracy.
 
-The remaining next steps, in order of dependency, are: a **newly frozen
-metadata-only unseen holdout for unit-grammar v3** (selected only after both
-v3 and the v2 evaluation contract are merged and frozen, before anyone looks
-at the selected bodies); human diagnostic annotation of the ten development
-pairs; and, if a generalization claim is ever to be made, an explicit human
-sign-off of the v2 holdout evaluation — all without changing extraction v2.
-No issuer may be replaced now that bodies have been observed.
+One of those next steps has since happened: a **newly frozen metadata-only
+unseen holdout for unit-grammar v3** now exists
+(`benchmarks/real_filing_v3_holdout_v1/`,
+[real_filing_v3_holdout.py](real_filing_v3_holdout.py), documented in
+[BENCHMARK.md](BENCHMARK.md)). It was selected only after both v3 and the v2
+evaluation contract were merged and frozen, from **official SEC metadata
+only** under a hash-ranked deterministic protocol with a fixed seed: ten new
+issuer pairs — twenty filer-designated FY2024→FY2025 10-Ks across the same
+five closed SIC strata — excluding every CIK and accession of both prior
+corpora, with the parser, unit grammar, detector, workflow, and evaluator
+contract pinned by version and source hash in the manifest. Its filing
+bodies have not been downloaded or inspected: `expected_sha256` is null on
+all twenty sides, and the committed selection report records
+`filing_body_requests = 0`. The remaining next steps, in order of
+dependency, are: source acquisition and SHA-256 verification of those
+twenty bodies **without running extraction**; human diagnostic annotation
+of the ten development pairs; and, if a generalization claim is ever to be
+made, an explicit human sign-off of the v2 holdout evaluation — all without
+changing extraction v2. No issuer may be replaced in a corpus whose bodies
+have been observed, and none may be replaced in the new corpus once its
+bodies are observed.
 
 What still does not exist is any **signed** generalization claim, any v3
 evaluation of any kind (no v3 gold labels, no v3 human annotations, no v3
-holdout, no v3 accuracy number), any diagnostic annotation of the ten
-development pairs, any scheduler, job-processing daemon loop, automatic
-background invocation, external queue, container/cloud deployment
-infrastructure, or multi-node coordination. Maturity therefore remains
-**Stage 3**. Stage 3.5 remains in progress: the blind-extracted holdout
-corpus is human-annotated and evaluated with extraction v2 unchanged, the
-evaluation is unsigned, `generalization_claim_supported` remains false, and
-the v3 unit grammar and v2 evaluation contract are implemented but
-unevaluated on any real corpus.
+accuracy number — the v3 holdout is frozen but metadata-only, unacquired
+and unevaluated), any diagnostic annotation of the ten development pairs,
+any scheduler, job-processing daemon loop, automatic background invocation,
+external queue, container/cloud deployment infrastructure, or multi-node
+coordination. Maturity therefore remains **Stage 3**. Stage 3.5 remains in
+progress: the blind-extracted holdout corpus is human-annotated and
+evaluated with extraction v2 unchanged, the evaluation is unsigned,
+`generalization_claim_supported` remains false, and the v3 unit grammar and
+v2 evaluation contract are implemented but unevaluated on any real corpus —
+the frozen v3 holdout is the corpus a future v3 evaluation must run on.
 
 ### Financial filing comparison workflow (implemented roadmap)
 
