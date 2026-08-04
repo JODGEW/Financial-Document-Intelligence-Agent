@@ -148,6 +148,21 @@ jobs:
       # the frozen contract-v1 evaluation stays identifiable, and neither
       # contract silently accepts the other's artifacts — all over synthetic
       # fixtures, before any new holdout exists.
+      # test_v3_holdout_selection.py and test_v3_holdout_manifest.py freeze
+      # the metadata-only v3 holdout (benchmarks/real_filing_v3_holdout_v1),
+      # selected AFTER unit grammar v3 and the contract-v2 evaluator were
+      # frozen and before any selected body was downloaded: hash-ranked
+      # deterministic selection under a fixed seed over mocked official
+      # metadata, exclusion of BOTH prior corpora by CIK and accession with
+      # recorded source hashes, the closed metadata-endpoint allowlist that
+      # keeps filing bodies structurally unreachable, the committed manifest's
+      # schema and denials (expected_sha256 null, source_verified false, no
+      # evaluation, no generalization claim), live pinning of every frozen
+      # v3/v2 contract identity and source hash, and the future evaluation
+      # config that declares contract v2 but cannot score a metadata-only
+      # corpus. CI validates committed artifacts and mocked metadata only; it
+      # never runs the real selection, never contacts SEC EDGAR, and never
+      # downloads a filing body.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -164,7 +179,9 @@ jobs:
             tests/test_holdout_human_annotation_validation.py \
             tests/test_real_filing_holdout_gold_evaluation.py \
             tests/test_gold_evaluation_signoff.py \
-            tests/test_v3_gold_evaluator_contract.py
+            tests/test_v3_gold_evaluator_contract.py \
+            tests/test_v3_holdout_selection.py \
+            tests/test_v3_holdout_manifest.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no

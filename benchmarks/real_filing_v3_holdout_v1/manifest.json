@@ -1,0 +1,448 @@
+{
+  "benchmark_id": "real_filing_v3_holdout_v1",
+  "benchmark_version": 1,
+  "corpus_role": "extraction_holdout_corpus",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after item1a_units.v3 / item1a_detector.v3 / comparison_workflow.v3 and the contract-v2 gold evaluator (real-filing-benchmark.evaluation.v2 + metrics.v2 + report.v2) were merged and frozen, and before any selected filing body was downloaded or inspected. Neither the parser, the unit grammar, nor the evaluation contract was developed using this corpus. No filing body has been acquired, no extraction or comparison has run, no annotation exists, no evaluation exists, and no generalization claim is supported. Modifying any pinned frozen file in response to future results from this corpus would convert it into development data; the recorded hashes make that detectable.",
+  "description": "Metadata-only v3 extraction holdout: exact issuers and filing pairs frozen from official SEC metadata AFTER the v3 unit representation and the contract-v2 gold evaluator were frozen and BEFORE any selected filing body was downloaded or structurally inspected. Both prior real-filing corpora are excluded by CIK and accession. No filing body has been acquired, no checksum exists, no extraction has run, and no accuracy or generalization result exists. A selected pair is never replaced because of later-observed filing-body structure, extraction outcome, detector output, workflow output, or evaluation result.",
+  "evaluation_contract_developed_using_this_corpus": false,
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": false,
+  "form": "10-K",
+  "frozen_annotation_protocol_version": "real-filing-annotation.v1",
+  "frozen_annotation_schema_version": "real-filing-benchmark.annotation.v1",
+  "frozen_detector_source_path": "comparison_detector.py",
+  "frozen_detector_source_sha256": "0d7cc4d8e5b8a5fa7ff9c280b4d782b979a8be90e77049d6d2fc7209f2719ff4",
+  "frozen_detector_version": "item1a_detector.v3",
+  "frozen_evaluation_contract_version": "real-filing-benchmark.evaluation.v2",
+  "frozen_evaluator_source_path": "scripts/eval_real_filing_benchmark.py",
+  "frozen_evaluator_source_sha256": "651b99710a370ab6564b13925b58dbea29f8cad4de93b24ecebb02bd62875d10",
+  "frozen_extraction_parser_version": "sec_html_item_headings.v2",
+  "frozen_metric_definitions_version": "real-filing-benchmark-metrics.v2",
+  "frozen_parser_source_path": "loaders/sec_headings.py",
+  "frozen_parser_source_sha256": "9114365a2f40ebec4fbdff36c50dc3d31dea8dfd36a6987f08433ae9586a366a",
+  "frozen_report_contract_version": "real-filing-benchmark.report.v2",
+  "frozen_subject_matching": "canonical_unit_identity",
+  "frozen_unit_grammar_version": "item1a_units.v3",
+  "frozen_unit_identity_contract": "side:sequence:unit_key",
+  "frozen_workflow_source_path": "comparison_store.py",
+  "frozen_workflow_source_sha256": "c9ff270260981da0d4abadd856cb8d80b1de7fd6488935de97505e387b2092fb",
+  "frozen_workflow_version": "comparison_workflow.v3",
+  "generalization_claim_supported": false,
+  "metadata_snapshot": {
+    "company_tickers_retrieved_at": "2026-08-04T22:39:37.945562+00:00",
+    "selected_at": "2026-08-04T22:42:10.892949+00:00"
+  },
+  "pairs": [
+    {
+      "cik": "0001425205",
+      "current": {
+        "accession_number": "0001104659-26-018899",
+        "expected_sha256": null,
+        "filing_date": "2026-02-24",
+        "form": "10-K",
+        "primary_document": "iova-20251231x10k.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "IOVANCE BIOTHERAPEUTICS, INC.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001425205.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001425205.json"
+      ],
+      "pair_id": "sic-2000s-01",
+      "previous": {
+        "accession_number": "0001558370-25-001834",
+        "expected_sha256": null,
+        "filing_date": "2025-02-27",
+        "form": "10-K",
+        "primary_document": "iova-20241231x10k.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 2836,
+      "stratum_id": "sic-2000s",
+      "stratum_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001590877",
+      "current": {
+        "accession_number": "0001193125-26-094013",
+        "expected_sha256": null,
+        "filing_date": "2026-03-05",
+        "form": "10-K",
+        "primary_document": "rgnx-20251231.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "REGENXBIO Inc.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001590877.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001590877.json"
+      ],
+      "pair_id": "sic-2000s-02",
+      "previous": {
+        "accession_number": "0000950170-25-038770",
+        "expected_sha256": null,
+        "filing_date": "2025-03-13",
+        "form": "10-K",
+        "primary_document": "rgnx-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 2836,
+      "stratum_id": "sic-2000s",
+      "stratum_label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0000050292",
+      "current": {
+        "accession_number": "0001213900-25-053885",
+        "expected_sha256": null,
+        "filing_date": "2025-06-12",
+        "form": "10-K",
+        "primary_document": "ea0243237-10k_iehcorp.htm",
+        "reporting_period": "2025-03-31",
+        "source_verified": false
+      },
+      "issuer_name": "IEH Corp",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000050292.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000050292.json"
+      ],
+      "pair_id": "sic-3000s-01",
+      "previous": {
+        "accession_number": "0001213900-24-052905",
+        "expected_sha256": null,
+        "filing_date": "2024-06-14",
+        "form": "10-K",
+        "primary_document": "ea0207042-10k_iehcorp.htm",
+        "reporting_period": "2024-03-31",
+        "source_verified": false
+      },
+      "sic": 3678,
+      "stratum_id": "sic-3000s",
+      "stratum_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001104657",
+      "current": {
+        "accession_number": "0001104657-26-000011",
+        "expected_sha256": null,
+        "filing_date": "2026-02-12",
+        "form": "10-K",
+        "primary_document": "mtrn-20251231.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "MATERION Corp",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001104657.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001104657.json"
+      ],
+      "pair_id": "sic-3000s-02",
+      "previous": {
+        "accession_number": "0001104657-25-000024",
+        "expected_sha256": null,
+        "filing_date": "2025-02-19",
+        "form": "10-K",
+        "primary_document": "mtrn-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 3460,
+      "stratum_id": "sic-3000s",
+      "stratum_label": "Manufacturing: industrial, electronic, transportation equipment",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001283699",
+      "current": {
+        "accession_number": "0001283699-26-000010",
+        "expected_sha256": null,
+        "filing_date": "2026-02-11",
+        "form": "10-K",
+        "primary_document": "tmus-20251231.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "T-Mobile US, Inc.",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001283699.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001283699.json"
+      ],
+      "pair_id": "sic-4000s-01",
+      "previous": {
+        "accession_number": "0001283699-25-000012",
+        "expected_sha256": null,
+        "filing_date": "2025-01-31",
+        "form": "10-K",
+        "primary_document": "tmus-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 4812,
+      "stratum_id": "sic-4000s",
+      "stratum_label": "Transportation, communications, and utilities",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001002910",
+      "current": {
+        "accession_number": "0001002910-26-000009",
+        "expected_sha256": null,
+        "filing_date": "2026-02-18",
+        "form": "10-K",
+        "primary_document": "aee-20251231.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "AMEREN CORP",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001002910.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001002910.json"
+      ],
+      "pair_id": "sic-4000s-02",
+      "previous": {
+        "accession_number": "0001002910-25-000055",
+        "expected_sha256": null,
+        "filing_date": "2025-02-18",
+        "form": "10-K",
+        "primary_document": "aee-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 4931,
+      "stratum_id": "sic-4000s",
+      "stratum_label": "Transportation, communications, and utilities",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0000922358",
+      "current": {
+        "accession_number": "0001104659-25-099508",
+        "expected_sha256": null,
+        "filing_date": "2025-10-15",
+        "form": "10-K",
+        "primary_document": "fgp-20250731x10k.htm",
+        "reporting_period": "2025-07-31",
+        "source_verified": false
+      },
+      "issuer_name": "FERRELLGAS PARTNERS L P",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0000922358.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000922358.json"
+      ],
+      "pair_id": "sic-5000s-01",
+      "previous": {
+        "accession_number": "0001558370-24-013059",
+        "expected_sha256": null,
+        "filing_date": "2024-09-27",
+        "form": "10-K",
+        "primary_document": "fgp-20240731x10k.htm",
+        "reporting_period": "2024-07-31",
+        "source_verified": false
+      },
+      "sic": 5900,
+      "stratum_id": "sic-5000s",
+      "stratum_label": "Wholesale and retail trade",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001618673",
+      "current": {
+        "accession_number": "0001618673-25-000012",
+        "expected_sha256": null,
+        "filing_date": "2025-08-13",
+        "form": "10-K",
+        "primary_document": "pfgc-20250628.htm",
+        "reporting_period": "2025-06-28",
+        "source_verified": false
+      },
+      "issuer_name": "Performance Food Group Co",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001618673.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001618673.json"
+      ],
+      "pair_id": "sic-5000s-02",
+      "previous": {
+        "accession_number": "0000950170-24-097033",
+        "expected_sha256": null,
+        "filing_date": "2024-08-14",
+        "form": "10-K",
+        "primary_document": "pfgc-20240629.htm",
+        "reporting_period": "2024-06-29",
+        "source_verified": false
+      },
+      "sic": 5141,
+      "stratum_id": "sic-5000s",
+      "stratum_label": "Wholesale and retail trade",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001042046",
+      "current": {
+        "accession_number": "0001042046-26-000010",
+        "expected_sha256": null,
+        "filing_date": "2026-02-25",
+        "form": "10-K",
+        "primary_document": "afg-20251231.htm",
+        "reporting_period": "2025-12-31",
+        "source_verified": false
+      },
+      "issuer_name": "AMERICAN FINANCIAL GROUP INC",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001042046.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001042046.json"
+      ],
+      "pair_id": "sic-6000s-01",
+      "previous": {
+        "accession_number": "0001042046-25-000011",
+        "expected_sha256": null,
+        "filing_date": "2025-02-25",
+        "form": "10-K",
+        "primary_document": "afg-20241231.htm",
+        "reporting_period": "2024-12-31",
+        "source_verified": false
+      },
+      "sic": 6331,
+      "stratum_id": "sic-6000s",
+      "stratum_label": "Finance, insurance, and real estate",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    },
+    {
+      "cik": "0001729997",
+      "current": {
+        "accession_number": "0001729997-25-000006",
+        "expected_sha256": null,
+        "filing_date": "2025-09-05",
+        "form": "10-K",
+        "primary_document": "gdlc-20250630.htm",
+        "reporting_period": "2025-06-30",
+        "source_verified": false
+      },
+      "issuer_name": "Grayscale CoinDesk Crypto 5 ETF",
+      "metadata_source_references": [
+        "https://data.sec.gov/submissions/CIK0001729997.json",
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0001729997.json"
+      ],
+      "pair_id": "sic-6000s-02",
+      "previous": {
+        "accession_number": "0000950170-24-104237",
+        "expected_sha256": null,
+        "filing_date": "2024-09-06",
+        "form": "10-K",
+        "primary_document": "gdlc-20240630.htm",
+        "reporting_period": "2024-06-30",
+        "source_verified": false
+      },
+      "sic": 6221,
+      "stratum_id": "sic-6000s",
+      "stratum_label": "Finance, insurance, and real estate",
+      "target_current_fiscal_year": 2025,
+      "target_previous_fiscal_year": 2024
+    }
+  ],
+  "prior_corpus_exclusions": {
+    "sources": [
+      {
+        "benchmark_id": "real_filing_v1",
+        "excluded_accessions": [
+          "0000018230-23-000011",
+          "0000018230-24-000009",
+          "0000019617-23-000231",
+          "0000019617-24-000225",
+          "0000034088-23-000020",
+          "0000034088-24-000018",
+          "0000080424-22-000064",
+          "0000080424-23-000073",
+          "0000200406-23-000016",
+          "0000200406-24-000013",
+          "0000320193-22-000108",
+          "0000320193-23-000106",
+          "0000354950-23-000059",
+          "0000354950-24-000062",
+          "0000732712-23-000012",
+          "0000732712-24-000010",
+          "0000753308-23-000019",
+          "0000753308-24-000008",
+          "0000950170-23-035122",
+          "0001564590-22-026876"
+        ],
+        "excluded_ciks": [
+          "0000018230",
+          "0000019617",
+          "0000034088",
+          "0000080424",
+          "0000200406",
+          "0000320193",
+          "0000354950",
+          "0000732712",
+          "0000753308",
+          "0000789019"
+        ],
+        "manifest_path": "benchmarks/real_filing_v1/manifest.json",
+        "manifest_sha256": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+      },
+      {
+        "benchmark_id": "real_filing_holdout_v1",
+        "excluded_accessions": [
+          "0000002969-23-000047",
+          "0000002969-24-000056",
+          "0000003499-24-000007",
+          "0000003499-25-000004",
+          "0000003570-24-000040",
+          "0000003570-25-000033",
+          "0000004962-24-000013",
+          "0000004962-25-000016",
+          "0000008858-23-000029",
+          "0000008858-24-000030",
+          "0000950170-24-027907",
+          "0000950170-25-034843",
+          "0001104659-23-082069",
+          "0001104659-24-080890",
+          "0001558370-24-001018",
+          "0001558370-24-001570",
+          "0001558370-25-000781",
+          "0001558370-25-001875",
+          "0001628280-24-005348",
+          "0001628280-25-007110"
+        ],
+        "excluded_ciks": [
+          "0000001750",
+          "0000001800",
+          "0000002098",
+          "0000002969",
+          "0000003453",
+          "0000003499",
+          "0000003570",
+          "0000004962",
+          "0000007536",
+          "0000008858"
+        ],
+        "manifest_path": "benchmarks/real_filing_holdout_v1/manifest.json",
+        "manifest_sha256": "4797c84553eebb37c3759a37dabe3cd089116b02ec5d7dc3ddc9fe73568f0ce1"
+      }
+    ]
+  },
+  "schema_version": "real-filing-v3-holdout.manifest.v1",
+  "selected_at": "2026-08-04T22:42:10.892949+00:00",
+  "selection_protocol_hash": "baa22b9754ad577659f0f9d47ea21c1b26f1577d2cc811270a59d486dad1c01e",
+  "selection_protocol_version": "real-filing-v3-holdout-selection.v1",
+  "selection_seed_identifier": "real_filing_v3_holdout_v1",
+  "status": "holdout_frozen_metadata_only",
+  "target_current_fiscal_year": 2025,
+  "target_pair_count": 10,
+  "target_previous_fiscal_year": 2024
+}

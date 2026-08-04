@@ -1,0 +1,328 @@
+{
+  "annotation_packets": 0,
+  "benchmark_id": "real_filing_v3_holdout_v1",
+  "benchmark_version": 1,
+  "candidate_universe_size": 7999,
+  "comparison_runs": 0,
+  "corpus_role": "extraction_holdout_corpus",
+  "corpus_role_detail": "Issuers and exact filing pairs were frozen from official SEC metadata only, after item1a_units.v3 / item1a_detector.v3 / comparison_workflow.v3 and the contract-v2 gold evaluator (real-filing-benchmark.evaluation.v2 + metrics.v2 + report.v2) were merged and frozen, and before any selected filing body was downloaded or inspected. Neither the parser, the unit grammar, nor the evaluation contract was developed using this corpus. No filing body has been acquired, no extraction or comparison has run, no annotation exists, no evaluation exists, and no generalization claim is supported. Modifying any pinned frozen file in response to future results from this corpus would convert it into development data; the recorded hashes make that detectable.",
+  "evaluation_contract_developed_using_this_corpus": false,
+  "exclusion_counts": {
+    "sic_missing": 21,
+    "sic_outside_declared_strata": 32,
+    "stratum_full_deferred": 53,
+    "target_fiscal_year_missing": 8
+  },
+  "extraction_holdout_evaluation": false,
+  "extraction_parser_developed_using_this_corpus": false,
+  "extraction_runs": 0,
+  "failures": [],
+  "filing_body_requests": 0,
+  "frozen_detector_source_sha256": "0d7cc4d8e5b8a5fa7ff9c280b4d782b979a8be90e77049d6d2fc7209f2719ff4",
+  "frozen_detector_version": "item1a_detector.v3",
+  "frozen_evaluation_contract_version": "real-filing-benchmark.evaluation.v2",
+  "frozen_evaluator_source_sha256": "651b99710a370ab6564b13925b58dbea29f8cad4de93b24ecebb02bd62875d10",
+  "frozen_extraction_parser_version": "sec_html_item_headings.v2",
+  "frozen_metric_definitions_version": "real-filing-benchmark-metrics.v2",
+  "frozen_parser_source_sha256": "9114365a2f40ebec4fbdff36c50dc3d31dea8dfd36a6987f08433ae9586a366a",
+  "frozen_report_contract_version": "real-filing-benchmark.report.v2",
+  "frozen_subject_matching": "canonical_unit_identity",
+  "frozen_unit_grammar_version": "item1a_units.v3",
+  "frozen_unit_identity_contract": "side:sequence:unit_key",
+  "frozen_workflow_source_sha256": "c9ff270260981da0d4abadd856cb8d80b1de7fd6488935de97505e387b2092fb",
+  "frozen_workflow_version": "comparison_workflow.v3",
+  "generalization_claim_supported": false,
+  "generated_at": "2026-08-04T22:42:10.895158+00:00",
+  "gold_evaluation_runs": 0,
+  "holdout_manifest_sha256": "8c1f5fc52d7dbe4a09bcb07b0d30d408f8844331808ffe72e91a0b644aa7be46",
+  "human_verified_labels": 0,
+  "manifest_status": "holdout_frozen_metadata_only",
+  "metadata_endpoints_contacted": {
+    "company_tickers": 1,
+    "companyfacts": 18,
+    "submissions": 124
+  },
+  "official_hosts_contacted": [
+    "www.sec.gov",
+    "data.sec.gov"
+  ],
+  "prior_corpus_exclusions_applied": [
+    {
+      "benchmark_id": "real_filing_v1",
+      "excluded_accession_count": 20,
+      "excluded_accessions": [
+        "0000018230-23-000011",
+        "0000018230-24-000009",
+        "0000019617-23-000231",
+        "0000019617-24-000225",
+        "0000034088-23-000020",
+        "0000034088-24-000018",
+        "0000080424-22-000064",
+        "0000080424-23-000073",
+        "0000200406-23-000016",
+        "0000200406-24-000013",
+        "0000320193-22-000108",
+        "0000320193-23-000106",
+        "0000354950-23-000059",
+        "0000354950-24-000062",
+        "0000732712-23-000012",
+        "0000732712-24-000010",
+        "0000753308-23-000019",
+        "0000753308-24-000008",
+        "0000950170-23-035122",
+        "0001564590-22-026876"
+      ],
+      "excluded_cik_count": 10,
+      "excluded_ciks": [
+        "0000018230",
+        "0000019617",
+        "0000034088",
+        "0000080424",
+        "0000200406",
+        "0000320193",
+        "0000354950",
+        "0000732712",
+        "0000753308",
+        "0000789019"
+      ],
+      "manifest_path": "benchmarks/real_filing_v1/manifest.json",
+      "manifest_sha256": "d630773f9d69ebba833158f86147b9749b09a98772454994357cd1893a1d6ac0"
+    },
+    {
+      "benchmark_id": "real_filing_holdout_v1",
+      "excluded_accession_count": 20,
+      "excluded_accessions": [
+        "0000002969-23-000047",
+        "0000002969-24-000056",
+        "0000003499-24-000007",
+        "0000003499-25-000004",
+        "0000003570-24-000040",
+        "0000003570-25-000033",
+        "0000004962-24-000013",
+        "0000004962-25-000016",
+        "0000008858-23-000029",
+        "0000008858-24-000030",
+        "0000950170-24-027907",
+        "0000950170-25-034843",
+        "0001104659-23-082069",
+        "0001104659-24-080890",
+        "0001558370-24-001018",
+        "0001558370-24-001570",
+        "0001558370-25-000781",
+        "0001558370-25-001875",
+        "0001628280-24-005348",
+        "0001628280-25-007110"
+      ],
+      "excluded_cik_count": 10,
+      "excluded_ciks": [
+        "0000001750",
+        "0000001800",
+        "0000002098",
+        "0000002969",
+        "0000003453",
+        "0000003499",
+        "0000003570",
+        "0000004962",
+        "0000007536",
+        "0000008858"
+      ],
+      "manifest_path": "benchmarks/real_filing_holdout_v1/manifest.json",
+      "manifest_sha256": "4797c84553eebb37c3759a37dabe3cd089116b02ec5d7dc3ddc9fe73568f0ce1"
+    }
+  ],
+  "report_version": "real-filing-v3-holdout.selection-report.v1",
+  "reproducible_manifest_hash": "49a8a65f9ed8c484ebd0baf1d7ffa984b86423bca71be43380423d994ade4fed",
+  "selected_pair_count": 10,
+  "selected_pairs": [
+    {
+      "cik": "0000050292",
+      "current_accession": "0001213900-25-053885",
+      "fallback_absorbed": false,
+      "issuer_name": "IEH Corp",
+      "previous_accession": "0001213900-24-052905",
+      "sic": 3678,
+      "stratum_id": "sic-3000s"
+    },
+    {
+      "cik": "0000922358",
+      "current_accession": "0001104659-25-099508",
+      "fallback_absorbed": false,
+      "issuer_name": "FERRELLGAS PARTNERS L P",
+      "previous_accession": "0001558370-24-013059",
+      "sic": 5900,
+      "stratum_id": "sic-5000s"
+    },
+    {
+      "cik": "0001104657",
+      "current_accession": "0001104657-26-000011",
+      "fallback_absorbed": false,
+      "issuer_name": "MATERION Corp",
+      "previous_accession": "0001104657-25-000024",
+      "sic": 3460,
+      "stratum_id": "sic-3000s"
+    },
+    {
+      "cik": "0001425205",
+      "current_accession": "0001104659-26-018899",
+      "fallback_absorbed": false,
+      "issuer_name": "IOVANCE BIOTHERAPEUTICS, INC.",
+      "previous_accession": "0001558370-25-001834",
+      "sic": 2836,
+      "stratum_id": "sic-2000s"
+    },
+    {
+      "cik": "0001590877",
+      "current_accession": "0001193125-26-094013",
+      "fallback_absorbed": false,
+      "issuer_name": "REGENXBIO Inc.",
+      "previous_accession": "0000950170-25-038770",
+      "sic": 2836,
+      "stratum_id": "sic-2000s"
+    },
+    {
+      "cik": "0001618673",
+      "current_accession": "0001618673-25-000012",
+      "fallback_absorbed": false,
+      "issuer_name": "Performance Food Group Co",
+      "previous_accession": "0000950170-24-097033",
+      "sic": 5141,
+      "stratum_id": "sic-5000s"
+    },
+    {
+      "cik": "0001042046",
+      "current_accession": "0001042046-26-000010",
+      "fallback_absorbed": false,
+      "issuer_name": "AMERICAN FINANCIAL GROUP INC",
+      "previous_accession": "0001042046-25-000011",
+      "sic": 6331,
+      "stratum_id": "sic-6000s"
+    },
+    {
+      "cik": "0001729997",
+      "current_accession": "0001729997-25-000006",
+      "fallback_absorbed": false,
+      "issuer_name": "Grayscale CoinDesk Crypto 5 ETF",
+      "previous_accession": "0000950170-24-104237",
+      "sic": 6221,
+      "stratum_id": "sic-6000s"
+    },
+    {
+      "cik": "0001283699",
+      "current_accession": "0001283699-26-000010",
+      "fallback_absorbed": false,
+      "issuer_name": "T-Mobile US, Inc.",
+      "previous_accession": "0001283699-25-000012",
+      "sic": 4812,
+      "stratum_id": "sic-4000s"
+    },
+    {
+      "cik": "0001002910",
+      "current_accession": "0001002910-26-000009",
+      "fallback_absorbed": false,
+      "issuer_name": "AMEREN CORP",
+      "previous_accession": "0001002910-25-000055",
+      "sic": 4931,
+      "stratum_id": "sic-4000s"
+    }
+  ],
+  "selection_protocol": {
+    "benchmark_id": "real_filing_v3_holdout_v1",
+    "body_access_rule": "Selection may contact ONLY the closed metadata endpoint allowlist (registrant list, submissions incl. paged history, companyfacts). Filing primary documents, Archives paths, exhibits, inline XBRL documents, and every other filing-body resource are outside it and are never contacted.",
+    "candidate_universe": "Unique CIKs from the official company_tickers.json registrant list, ranked by rank_key ascending (lowercase hex), tie-broken by normalized 10-digit CIK ascending, then normalized registrant title ascending. The ranking is reproducible from the metadata universe alone, independent of any filing body, and replaces the first holdout's ascending-CIK order, which was biased toward the earliest-registered issuers.",
+    "eligibility_check_order": [
+      "prior_corpus_cik",
+      "submissions_unreadable",
+      "sic_missing",
+      "sic_outside_declared_strata",
+      "stratum_full_deferred",
+      "fiscal_year_metadata_unreadable",
+      "target_fiscal_year_missing",
+      "fiscal_year_metadata_ambiguous",
+      "paged_history_unreadable",
+      "no_10k_rows",
+      "target_row_not_form_10k",
+      "row_metadata_incomplete",
+      "prior_corpus_accession",
+      "chronology_inconsistent",
+      "duplicate_selection"
+    ],
+    "fallback_rule": "Deferred candidates (stratum quota already full at probe time) are consumed in rank order to absorb slots their home stratum could not fill; an absorbed slot is recorded under the absorbing candidate's own stratum. If fewer than target_pair_count pairs fill, or fewer than minimum_distinct_strata distinct strata result, the selection FAILS with per-stratum reason codes. The corpus size is never silently reduced and the protocol is never altered after partial resolution.",
+    "fiscal_year_rule": "A target row is the unique form 10-K accession whose official companyfacts fact rows designate fp='FY' and fy=<target year>. The filer's own XBRL designation decides the fiscal year; a period-end-year heuristic is never used. The target years are fixed at FY2024 -> FY2025 and may not be switched, mixed, or widened if the corpus cannot fill: that is a FAILED selection.",
+    "form": "10-K",
+    "max_submissions_probes": 500,
+    "minimum_distinct_strata": 5,
+    "prior_corpus_exclusion_rule": "Every CIK and, independently, every accession appearing in the committed real_filing_v1 development manifest or the committed real_filing_holdout_v1 holdout manifest is excluded. Exclusions are derived from the committed manifests at run time, never retyped, and the sha256 of each source manifest is frozen into the produced manifest so later modification of either exclusion source is detectable. Excluded CIKs are skipped before any metadata probe is spent.",
+    "protocol_version": "real-filing-v3-holdout-selection.v1",
+    "rank_key_definition": "SHA-256 over UTF-8 of '<selection_seed_identifier>|<cik>' where <cik> is the zero-padded 10-digit CIK; digest compared as lowercase hex. The seed identifier is this benchmark's id, fixed before candidate resolution; no runtime seed input exists and no randomness is used.",
+    "replacement_rule": "A selected issuer or filing pair is never replaced, reordered, or dropped because of later-observed filing-body structure, extraction outcome, detector output, workflow output, annotation difficulty, or evaluation result.",
+    "selection_seed_identifier": "real_filing_v3_holdout_v1",
+    "sic_strata": [
+      {
+        "label": "Manufacturing: food, textiles, chemicals, pharmaceuticals",
+        "quota": 2,
+        "sic_range": [
+          2000,
+          2999
+        ],
+        "stratum_id": "sic-2000s"
+      },
+      {
+        "label": "Manufacturing: industrial, electronic, transportation equipment",
+        "quota": 2,
+        "sic_range": [
+          3000,
+          3999
+        ],
+        "stratum_id": "sic-3000s"
+      },
+      {
+        "label": "Transportation, communications, and utilities",
+        "quota": 2,
+        "sic_range": [
+          4000,
+          4999
+        ],
+        "stratum_id": "sic-4000s"
+      },
+      {
+        "label": "Wholesale and retail trade",
+        "quota": 2,
+        "sic_range": [
+          5000,
+          5999
+        ],
+        "stratum_id": "sic-5000s"
+      },
+      {
+        "label": "Finance, insurance, and real estate",
+        "quota": 2,
+        "sic_range": [
+          6000,
+          6999
+        ],
+        "stratum_id": "sic-6000s"
+      }
+    ],
+    "target_current_fiscal_year": 2025,
+    "target_filing_count": 20,
+    "target_pair_count": 10,
+    "target_previous_fiscal_year": 2024
+  },
+  "selection_protocol_hash": "baa22b9754ad577659f0f9d47ea21c1b26f1577d2cc811270a59d486dad1c01e",
+  "selection_protocol_version": "real-filing-v3-holdout-selection.v1",
+  "selection_seed_identifier": "real_filing_v3_holdout_v1",
+  "selection_succeeded": true,
+  "signoff_present": false,
+  "source_checksums_verified": 0,
+  "source_documents_downloaded": 0,
+  "stratum_distribution": {
+    "sic-2000s": 2,
+    "sic-3000s": 2,
+    "sic-4000s": 2,
+    "sic-5000s": 2,
+    "sic-6000s": 2
+  },
+  "submissions_probes": 124,
+  "target_current_fiscal_year": 2025,
+  "target_previous_fiscal_year": 2024
+}

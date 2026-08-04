@@ -1,0 +1,22 @@
+{
+  "config_version": "real-filing-benchmark.evaluation.v2",
+  "benchmark_id": "real_filing_v3_holdout_v1",
+  "metric_definitions_version": "real-filing-benchmark-metrics.v2",
+  "annotation_protocol_version": "real-filing-annotation.v1",
+  "declared_detector_version": "item1a_detector.v3",
+  "declared_workflow_version": "comparison_workflow.v3",
+  "declared_unit_grammar_version": "item1a_units.v3",
+  "declared_section_key": "item_1a_risk_factors",
+  "gold_status_required": "human_verified",
+  "pass_fail_thresholds": null,
+  "generalization_claim_signoff": null,
+  "notes": [
+    "This config describes the v3 extraction holdout corpus (real_filing_v3_holdout_v1) and no other. The evaluator checks benchmark_id against the manifest it was given and refuses a mismatch, so neither prior corpus's config can be used to score this one, or the reverse.",
+    "This is a FUTURE evaluation declaration, committed while the corpus is metadata-only, before any selected filing body was downloaded or inspected. It pins the contract under which a future v3 gold evaluation must run; it is not evidence that any evaluation has happened, and no metric value, label, threshold, or report exists for this corpus.",
+    "The declared contract is the frozen contract v2 (real-filing-benchmark.evaluation.v2 + real-filing-benchmark-metrics.v2, report contract real-filing-benchmark.report.v2): gold subjects and predictions match by the canonical sequence-aware unit identity side:sequence:unit_key over the item1a_units.v3 grammar, exactly as frozen by tests/test_v3_gold_evaluator_contract.py. The declared detector and workflow versions pin the only artifacts that contract may score. If the live detector, workflow, or grammar version differs when an evaluation is attempted, the evaluator REFUSES rather than silently reporting metrics under a version this config does not describe.",
+    "The corpus cannot be scored in its current state: the manifest is metadata-only (holdout_frozen_metadata_only), no filing body has been acquired, no corpus has been built, and no annotation of any status exists. Future labels must use the real-filing-benchmark.annotation.v1 schema under the real-filing-annotation.v1 protocol, and only pairs whose annotation file is human_verified may enter gold numerators and denominators; machine-proposed labels are never mixed in.",
+    "pass_fail_thresholds is null on purpose. No gate exists for real-filing metrics and none may be introduced until an initial human-verified v3 baseline exists and has been explicitly approved. No threshold may be copied or invented from the frozen v2 evaluation of the previous holdout: those metrics describe a different unit granularity and a different corpus. The synthetic comparison-regression suite remains the merge-blocking deterministic gate.",
+    "generalization_claim_signoff is null, so generalization_claim_supported is false. That claim is a human judgement and is never derived from coverage, corpus role, or metric values: setting it requires a person to record signer_id, signed_at_utc, the manifest_sha256 they signed, the acknowledged_pairs_scored they saw, and a non-empty statement they wrote. No tool in this repository writes that block.",
+    "Modifying loaders/sec_headings.py, the item1a_units.v3 grammar, comparison_detector.py, comparison_store.py, or the contract-v2 evaluator in response to results from this corpus would convert it into development data. The manifest freezes each of those identities by version and source sha256 so that conversion is detectable, and would require abandoning this corpus and freezing a new holdout."
+  ]
+}
