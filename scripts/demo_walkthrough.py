@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-"""Guided end-to-end demo: query -> governance report -> held answer -> drift diff.
+"""Guided end-to-end demo: governed RAG plus structured filing comparison.
 
-Runs the full governance story in three acts, in one pass, against the real
-pipeline (Bedrock agent, Chroma retrieval, review queue, eval baseline):
+Runs the current workflow story in four acts:
 
   Act 1  Ask a grounded question. Show the answer plus the governance report
          behind it: context-policy admission (chunks admitted/dropped and why),
@@ -19,16 +18,22 @@ pipeline (Bedrock agent, Chroma retrieval, review queue, eval baseline):
          temp file (the real eval/baseline.json is never touched), producing the
          exact scripts/eval_diff.py output an operator sees when a metric moves,
          a case flips pass/fail, or latency shifts.
+  Act 4  Run the structured Item 1A comparison path over an isolated controlled
+         synthetic filing pair: protected API create/enqueue, durable one-shot
+         worker, deterministic detection, governance hold, authenticated review,
+         and release-gated export.
 
 Staging is explicit: the script prints what it substitutes before each act (the
-ungrounded draft in Act 2, the perturbed baseline copy in Act 3). Policy is
-never touched: thresholds, weights, and the hold mode all run at their shipped
-values. The one persistent side effect is intentional: Act 2 writes a real item
-into review_queue/ (gitignored runtime state). Reset or rebuild local demo
-queue data with: python scripts/review_queue.py seed --reset
+ungrounded draft in Act 2, the perturbed baseline copy in Act 3, and the
+controlled synthetic pair in Act 4). Policy is never touched: thresholds,
+weights, and the hold mode all run at their shipped values. The one persistent
+side effect is intentional: Act 2 writes a real item into review_queue/
+(gitignored runtime state). Reset or rebuild local demo queue data with:
+python scripts/review_queue.py seed --reset
 
 Requirements: AWS credentials for Bedrock (same as cli.py) and an ingested
-corpus (python ingest.py) for Acts 1-2. Act 3 in default mode needs neither.
+corpus (python ingest.py) for Acts 1-2. Acts 3-4 need neither; Act 4 uses only
+temporary state and makes no network or model calls.
 
 Usage:
     python scripts/demo_walkthrough.py               # paused between acts
@@ -335,6 +340,23 @@ def act_3_drift(live_eval: bool) -> None:
           "flipped, and the workflow whose latency shifted.")
 
 
+def act_4_structured_comparison() -> None:
+    banner(
+        "ACT 4 - Filing comparison: durable worker -> governance -> review -> export"
+    )
+    stage_note(
+        "This act uses the tracked controlled synthetic missing-section fixture "
+        "(fictional Corville Freight) in a temporary registry, Chroma collection, "
+        "and SQLite database. It exercises the real protected API, durable "
+        "one-shot worker, governance/review path, and export gate. It uses no "
+        "AWS credentials, model calls, network access, or persistent repo state; "
+        "it demonstrates workflow behavior, not real-SEC-filing accuracy."
+    )
+    from scripts.comparison_demo_walkthrough import run_comparison_demo
+
+    run_comparison_demo(pause_between_steps=PAUSE)
+
+
 def main() -> int:
     global PAUSE
 
@@ -350,10 +372,10 @@ def main() -> int:
     PAUSE = not args.no_pause
 
     banner("Financial Document Intelligence Agent - governance walkthrough")
-    print("Three acts: a grounded answer and its governance report, an ungrounded\n"
-          "answer held for human review under the normal policy, and eval_diff.py\n"
-          "catching an induced drift. Staged inputs are labeled [staging]; policy\n"
-          "thresholds are never modified.")
+    print("Four acts: a grounded answer and governance report, an ungrounded\n"
+          "answer held for human review, eval_diff.py catching induced drift,\n"
+          "and the structured filing-comparison workflow through a durable\n"
+          "worker, review, and export. Staged inputs are labeled [staging].")
 
     if not (_REPO_ROOT / "chroma_db").exists():
         print("\nwarning: chroma_db/ not found - run `python ingest.py` first, "
@@ -368,6 +390,9 @@ def main() -> int:
 
         pause("-- Press Enter to start Act 3 --")
         act_3_drift(live_eval=args.live_eval)
+
+        pause("-- Press Enter to start Act 4 --")
+        act_4_structured_comparison()
     except KeyboardInterrupt:
         print("\n\nDemo stopped. If a held item remains in the queue: "
               "python scripts/review_queue.py list")
@@ -375,7 +400,8 @@ def main() -> int:
 
     banner("Done")
     print("Cleanup: Act 2 appended a real item to review_queue/ (gitignored\n"
-          "runtime state). Reset or rebuild local demo queue data with:\n"
+          "runtime state); Act 4 already removed all of its temporary state.\n"
+          "Reset or rebuild local generic-review demo data with:\n"
           "  python scripts/review_queue.py seed --reset")
     return 0
 
