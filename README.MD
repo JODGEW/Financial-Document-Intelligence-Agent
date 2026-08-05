@@ -1416,8 +1416,8 @@ and refusal codes in
 `tests/test_v3_gold_evaluator_contract.py` in required CI. Evaluator-contract
 correctness says nothing about detector accuracy.
 
-One of those next steps has since happened: a **newly frozen metadata-only
-unseen holdout for unit-grammar v3** now exists
+One of those next steps has since happened: a **newly frozen unseen holdout
+for unit-grammar v3** now exists
 (`benchmarks/real_filing_v3_holdout_v1/`,
 [real_filing_v3_holdout.py](real_filing_v3_holdout.py), documented in
 [BENCHMARK.md](BENCHMARK.md)). It was selected only after both v3 and the v2
@@ -1444,19 +1444,47 @@ later requires the same exact SEC archive bytes. Source verification is not
 parser validation: no Item 1A extraction, no unit-parser v3 execution, no
 comparison, no annotation packet, no human label, and no v3 gold evaluation
 has run, and it is not a claim that all twenty filings contain an
-extractable Item 1A section. The remaining next steps, in order of
-dependency, are: a **blind extraction and comparison run** over these
-verified bytes with every frozen contract unchanged; human diagnostic
+extractable Item 1A section.
+
+**The blind extraction, comparison, and machine-packet run has since happened
+too** (manifest status `source_verified → corpus_built`, one lifecycle step,
+protocol `real-filing-v3-blind-extraction.v1`). The frozen v3 pipeline —
+`sec_html_item_headings.v2` section extraction, `item1a_units.v3`,
+`item1a_detector.v3`, `comparison_workflow.v3` — ran over those exact
+checksum-verified bytes **exactly once, unchanged**, offline and
+credential-free, with every frozen file hashed before and after and found
+byte-identical. The result is recorded exactly as it fell: **16 of 20 sides
+extracted, 2 `missing`, 2 `ambiguous`, 0 `parse_failed`; 8 of 10 pairs
+buildable and all 8 `detected`; 2 pairs blocked because neither side yielded
+an extractable Item 1A section; 8 machine-proposed packets carrying 53
+machine-proposed labels.** Every side and every pair appears in the committed
+reports, including the blocked ones; no filing was replaced, no blocked pair
+was dropped, and no parser rule, unit boundary, detector semantic, workflow
+semantic, evaluator contract, annotation schema, metric definition, or
+threshold was changed in response to what the run showed. Because this corpus
+is now **observed** by the frozen v3 pipeline, any later semantic correction
+requires a new version *and* a separately frozen, unseen holdout — it cannot
+be made here while retaining an unseen-evaluation claim.
+
+Coverage is not correctness: 16/20 extracted is an extraction-coverage count,
+not accuracy, and 8/10 buildable is not a detector-quality result.
+Machine-proposed labels are deterministic detector output, are marked
+`MACHINE-PROPOSED — NOT GROUND TRUTH`, carry a null `annotator_id` and a null
+verification timestamp, and can never enter a metric. The remaining next
+steps, in order of dependency, are: **independent human review and annotation
+admission** of the eight local machine-proposed v3 packets (a person decides
+each change type, edits the annotation file, and only then sets
+`annotation_status` to `human_verified` with their own identity and
+timestamp); a v3 gold evaluation once those labels exist; human diagnostic
 annotation of the ten development pairs; and, if a generalization claim is
-ever to be made, an explicit human sign-off of the v2 holdout evaluation —
-all without changing extraction v2. No issuer may be replaced in a corpus
-whose bodies have been observed, and no selected filing in the v3 holdout
-may be replaced now that its bodies are acquired.
+ever to be made, an explicit human sign-off. No issuer may be replaced in a
+corpus whose bodies have been observed, and no selected filing in the v3
+holdout may be replaced now that its bodies are acquired and processed.
 
 What still does not exist is any **signed** generalization claim, any v3
 evaluation of any kind (no v3 gold labels, no v3 human annotations, no v3
-accuracy number — the v3 holdout is frozen and source-verified, but
-unextracted and unevaluated), any diagnostic annotation of the ten
+accuracy number — the v3 holdout is frozen, source-verified, and blind-run,
+but unannotated and unevaluated), any diagnostic annotation of the ten
 development pairs,
 any scheduler, job-processing daemon loop, automatic background invocation,
 external queue, container/cloud deployment infrastructure, or multi-node

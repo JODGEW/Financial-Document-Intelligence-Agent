@@ -66,17 +66,19 @@ def mutated(manifest, **overrides):
 # --- The committed manifest -----------------------------------------------------
 
 
-def test_committed_manifest_is_valid_and_source_verified(manifest):
-    """The corpus advanced one step: metadata-only -> source_verified.
+def test_committed_manifest_is_valid_and_corpus_built(manifest):
+    """The corpus has taken two documented steps: metadata-only ->
+    source_verified -> corpus_built.
 
-    The twenty frozen bodies were acquired and checksummed; nothing downstream
-    of bytes-on-disk happened. The schema rule that a *metadata-only* manifest
-    may carry no digest is unchanged and still exercised below — see
+    The twenty frozen bodies were acquired and checksummed, and the frozen v3
+    pipeline has since run over them exactly once. The schema rule that a
+    *metadata-only* manifest may carry no digest is unchanged and still
+    exercised below — see
     ``test_verification_claims_are_rejected_while_metadata_only``.
     """
     assert manifest["schema_version"] == "real-filing-v3-holdout.manifest.v1"
     assert manifest["benchmark_id"] == "real_filing_v3_holdout_v1"
-    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
+    assert manifest["status"] == rfb.STATUS_CORPUS_BUILT
     assert manifest["form"] == "10-K"
     assert manifest["target_pair_count"] == 10
     assert manifest["target_previous_fiscal_year"] == 2024
@@ -87,9 +89,10 @@ def test_committed_manifest_denies_every_downstream_claim(manifest):
     assert manifest["corpus_role"] == "extraction_holdout_corpus"
     assert manifest["extraction_parser_developed_using_this_corpus"] is False
     assert manifest["evaluation_contract_developed_using_this_corpus"] is False
-    # Source-verified means bytes were obtained, and nothing more: no
-    # extraction has run, so no holdout evaluation and no generalization claim
-    # exists.
+    # corpus_built means the frozen pipeline ran and every side has a recorded
+    # outcome — NOT that extraction succeeded and not that anything was
+    # verified by a person. No label is human-verified, so no holdout
+    # evaluation and no generalization claim exists.
     assert manifest["extraction_holdout_evaluation"] is False
     assert manifest["generalization_claim_supported"] is False
     for pair in manifest["pairs"]:
@@ -448,10 +451,20 @@ def test_report_matches_manifest_and_records_zero_downstream_activity(
     assert report["holdout_manifest_sha256"] == source_report[
         "prior_manifest_sha256"
     ]
-    assert source_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
-    assert source_report["new_reproducible_manifest_hash"] == (
-        rfv3.reproducible_manifest_hash(manifest)
+    # The blind-extraction report performed the next step and pins the live
+    # bytes; the source-verification report still pins the bytes IT produced.
+    blind_report = json.loads(
+        (V3_DIR / "blind_extraction_report.json").read_text(encoding="utf-8")
     )
+    assert blind_report["prior_manifest_sha256"] == (
+        source_report["new_manifest_sha256"]
+    )
+    assert blind_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
+    # The source-verification report's reproducible hash describes the
+    # source-verified manifest it froze, not the live corpus_built file. The
+    # detailed rewind check lives in the source-verification suite; here it is
+    # enough that the two frozen hashes differ and are well formed.
+    assert rfb._SHA256_RE.match(source_report["new_reproducible_manifest_hash"])
     assert rfb._SHA256_RE.match(report["reproducible_manifest_hash"])
     assert report["reproducible_manifest_hash"] != (
         source_report["new_reproducible_manifest_hash"]

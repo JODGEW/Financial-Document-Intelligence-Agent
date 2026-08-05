@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import config
 import real_filing_acquisition as rfa
 import real_filing_benchmark as rfb
 import real_filing_v3_holdout as rfv3
@@ -71,7 +72,9 @@ def selection_report():
 
 
 def test_manifest_advanced_exactly_one_step(manifest, source_report):
-    assert manifest["status"] == rfb.STATUS_SOURCE_VERIFIED
+    # The source-verification report still records ITS one step; the manifest
+    # has since taken exactly one further documented step (the blind extraction
+    # run, recorded by blind_extraction_report.json).
     assert source_report["prior_manifest_status"] == (
         rfv3.STATUS_HOLDOUT_FROZEN_METADATA_ONLY
     )
@@ -82,10 +85,17 @@ def test_manifest_advanced_exactly_one_step(manifest, source_report):
         - order.index(source_report["prior_manifest_status"])
         == 1
     )
-    # And it is a legal forward step by the shared rule, not just by index.
+    # And each is a legal forward step by the shared rule, not just by index.
     rfv3.validate_v3_holdout_status_transition(
-        source_report["prior_manifest_status"], manifest["status"]
+        source_report["prior_manifest_status"],
+        source_report["new_manifest_status"],
     )
+    rfv3.validate_v3_holdout_status_transition(
+        source_report["new_manifest_status"], manifest["status"]
+    )
+    assert manifest["status"] == rfb.STATUS_CORPUS_BUILT
+    # And nothing beyond it is claimed.
+    assert manifest["status"] != rfb.STATUS_HUMAN_ANNOTATION_COMPLETE
 
 
 def test_committed_manifest_is_schema_valid(manifest):
@@ -95,23 +105,43 @@ def test_committed_manifest_is_schema_valid(manifest):
 def test_manifest_hash_chain_links_the_freeze_to_the_verification(
     source_report, selection_report
 ):
-    """freeze -> selection report -> source report -> advanced manifest."""
+    """freeze -> selection report -> source report -> blind report -> bytes.
+
+    Every link is recorded by the report that performed the step; no report is
+    rewritten when a later step runs.
+    """
     assert selection_report["holdout_manifest_sha256"] == (
         FROZEN_METADATA_ONLY_MANIFEST_SHA256
     )
     assert source_report["prior_manifest_sha256"] == (
         FROZEN_METADATA_ONLY_MANIFEST_SHA256
     )
-    assert source_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
+    blind_report = json.loads(
+        (V3_DIR / "blind_extraction_report.json").read_text(encoding="utf-8")
+    )
+    assert blind_report["prior_manifest_sha256"] == (
+        source_report["new_manifest_sha256"]
+    )
+    assert blind_report["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
     assert source_report["new_manifest_sha256"] != (
         source_report["prior_manifest_sha256"]
     )
     assert rfb._SHA256_RE.match(source_report["new_manifest_sha256"])
 
 
-def test_reproducible_manifest_hash_is_recorded_and_correct(manifest, source_report):
+def test_reproducible_manifest_hash_is_recorded_and_correct(source_report):
+    """The recorded hash describes the SOURCE-VERIFIED manifest it froze.
+
+    Recomputing it against the live corpus_built file would silently accept a
+    rewritten source-verification report; the live bytes are pinned by the
+    blind-extraction report instead.
+    """
+    rewound = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    rewound["status"] = rfb.STATUS_SOURCE_VERIFIED
+    rewound["corpus_role_detail"] = rfv3a.source_verified_corpus_role_detail()
+    rewound["description"] = rfv3a.SOURCE_VERIFIED_DESCRIPTION
     assert source_report["new_reproducible_manifest_hash"] == (
-        rfv3.reproducible_manifest_hash(manifest)
+        rfv3.reproducible_manifest_hash(rewound)
     )
 
 
@@ -160,8 +190,21 @@ def test_every_side_carries_a_real_verified_digest(manifest):
 
 
 def test_committed_manifest_still_passes_the_identity_gate(manifest):
-    rfv3a.verify_frozen_identity(manifest, repo_root=REPO_ROOT)
+    """The frozen identities still hold at corpus_built; the ACQUISITION gate
+    itself now correctly refuses, because acquisition has nothing left to do
+    beyond source verification."""
+    import real_filing_v3_holdout_extraction as rfx
+
+    rfx.verify_blind_run_preconditions(
+        manifest,
+        MANIFEST_PATH,
+        rfb.CorpusLayout(config.REAL_FILING_V3_HOLDOUT_DIR),
+        repo_root=REPO_ROOT,
+    )
     rfv3a.verify_manifest_hash_chain(MANIFEST_PATH)
+    with pytest.raises(rfv3a.V3HoldoutAcquisitionError) as excinfo:
+        rfv3a.verify_frozen_identity(manifest, repo_root=REPO_ROOT)
+    assert excinfo.value.code == rfv3a.FAILURE_MANIFEST_STATUS_INVALID
 
 
 def test_frozen_code_identities_are_live_pinned(manifest):
@@ -257,7 +300,10 @@ def test_report_counters_prove_zero_downstream_activity(source_report):
 
 
 def test_report_digests_match_the_manifest_exactly(manifest, source_report):
-    rfv3a.verify_report_manifest_binding(source_report, manifest)
+    # The binding is checked against the status the report actually produced;
+    # the manifest has since advanced, and the report is never rewritten.
+    at_source_verified = dict(manifest, status=rfb.STATUS_SOURCE_VERIFIED)
+    rfv3a.verify_report_manifest_binding(source_report, at_source_verified)
     reported = {
         (item["pair_id"], item["side"]): item for item in source_report["filings"]
     }
@@ -397,10 +443,14 @@ def test_prose_admits_the_acquisition_but_claims_nothing_downstream(
     assert "acquired" in detail
     assert "checksum-verified" in detail
     assert "No filing body has been acquired" not in detail
-    # ...and everything that has NOT happened is still denied.
-    assert "has NOT run" in detail
+    # ...the manifest has since advanced past source verification, so the
+    # "the frozen parser has NOT run" sentence is gone too, replaced by the
+    # blind run's own prose...
+    assert "run over them exactly once, blind and unchanged" in detail
+    # ...and everything that still has NOT happened is denied.
     assert "no generalization claim is supported" in detail
-    assert "Source verification establishes" in detail
+    assert "not extraction" in detail and "CORRECTNESS" in detail
+    assert "human-verified" in detail
 
     notes = " ".join(source_report["notes"])
     assert "NOT run" in notes
@@ -453,12 +503,19 @@ def test_body_urls_appear_only_in_the_source_verification_report():
 
 
 def test_filing_bodies_are_never_committed():
+    """Acquisition and the blind run happened, so the gitignored corpus tree
+    MAY exist locally now — but filing bodies, extracted sections, unit text,
+    packets, and databases never enter the committed tree: the benchmark
+    directory holds exactly the seven bounded JSON artifacts."""
     committed = {path.name for path in V3_DIR.iterdir()}
     assert committed == {
         "manifest.json",
         "selection_report.json",
         "source_verification_report.json",
         "evaluation_config.json",
+        "blind_extraction_report.json",
+        "execution_report.json",
+        "annotation_packet_inventory.json",
     }
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "benchmark_data/" in gitignore.splitlines()
