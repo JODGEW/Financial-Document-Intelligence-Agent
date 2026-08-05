@@ -621,7 +621,13 @@ python scripts/validate_holdout_human_annotations.py              # after human 
 python scripts/select_real_filing_v3_holdout.py --allow-network   # done: the freeze (metadata only)
 python scripts/acquire_real_filing_v3_holdout.py --allow-network  # done: source verification (bodies + checksums)
 python scripts/run_real_filing_v3_holdout_blind_extraction.py     # done: the blind v3 pipeline run (offline)
+python scripts/prepare_v3_holdout_human_review.py prepare         # done: review workspace prepared (offline; decides nothing)
+python scripts/validate_v3_holdout_human_annotations.py --workspace  # pre-review integrity (read-only)
+python scripts/validate_v3_holdout_human_annotations.py              # after human review: gold-admission gate
 ```
+
+The v3 holdout's human review has **not** begun: the workspace is prepared,
+every label is still `machine_proposed`, and no v3 gold evaluation exists.
 
 **Stage 3 remains current. Stage 3.5 remains in progress** — the holdout is
 frozen, source-verified, blind-extracted, human-annotated on its nine
@@ -959,9 +965,85 @@ unseen-evaluation claim.
   it, and every committed report records those counters as zero. The next
   step is **independent human review**: a reviewer reads the eight local
   machine-proposed packets, decides each change type themselves, edits the
-  annotation file, and only then sets `annotation_status` to `human_verified`
-  with their own `annotator_id` and verification timestamp. Until that
-  happens, no v3 accuracy number exists.
+  human annotation file, and only then sets `annotation_status` to
+  `human_verified` with their own `annotator_id` and verification timestamp.
+  Until that happens, no v3 accuracy number exists.
+
+### Preparing the v3 human review (offline, decides nothing)
+
+The review workspace is prepared; **no human review has begun and no v3 label
+has been decided or admitted.** The preparation and admission tooling is
+generic — it moves no label and asserts no judgement.
+
+```bash
+python scripts/prepare_v3_holdout_human_review.py prepare          # queue + records + empty templates
+python scripts/prepare_v3_holdout_human_review.py status           # live queue
+python scripts/prepare_v3_holdout_human_review.py show <pair_id>   # render ONE packet for review
+python scripts/prepare_v3_holdout_human_review.py complete <pair_id> --confirm-reviewed
+python scripts/validate_v3_holdout_human_annotations.py --workspace        # pre-review integrity
+python scripts/validate_v3_holdout_human_annotations.py --pair <pair_id>   # one completed packet
+python scripts/validate_v3_holdout_human_annotations.py                    # whole-corpus admission gate
+```
+
+**Three artifacts per reviewable pair, in the gitignored workspace:**
+
+| Artifact | Written by | Role |
+|---|---|---|
+| `annotations/<pair_id>.machine_proposed.json` | the blind run | the frozen machine proposal, **immutable** |
+| `review/<pair_id>.human_review.json` | preparation, as an EMPTY template | the human annotation the reviewer fills |
+| `review/<pair_id>.review.json` | preparation, all decisions `null` | provenance bindings + one row per canonical subject |
+
+The machine proposal is pinned twice — by its evaluated-content hash in the
+committed inventory (`$.pairs[*].annotation_sha256`) and by its raw bytes in
+the review record — so any edit to it is detected and the original stays
+independently hash-verifiable. The human artifact lives **outside**
+`annotations/` on purpose: the blind runner's frozen precondition refuses any
+`annotations/*.json` whose status is not `machine_proposed`, and an empty
+template carries a null status, so keeping it there would break that gate on a
+prepared workspace.
+
+**What the tooling will not do.** It never writes `annotation_status`,
+`annotator_id`, `verification_timestamp`, or any label decision field; never
+sets a reviewer decision; never calls a model, an embedding service, a
+heuristic classifier, or the gold evaluator; computes no metric and no
+machine/human agreement; and reads no wall clock, no environment variable, no
+git identity, and no prior corpus's annotations. Reviewer identity and
+timestamp cannot be inferred from anything.
+
+**Machine proposals are not ground truth, and nothing is approved by
+default.** The human template is *empty*, not a copy: a reviewer who agrees
+with a proposal must still type the value. An unchanged value, a present file,
+an omitted field, and a pressed Enter are **never** approval. Admission
+requires all of: an explicit `reviewer_decision` (`retained`, `changed`,
+`undetermined`, or `rejected_malformed`) on every canonical
+`side:sequence:unit_key` subject; an explicit per-packet completion marker;
+and a human annotation that is explicitly `human_verified` with a
+non-placeholder `annotator_id` and an explicit-UTC verification timestamp
+postdating packet generation.
+
+**The review queue** (`review/queue.json`) follows the committed packet
+inventory order and nothing else — never label count, issuer, machine
+confidence, change type, or perceived difficulty. It carries identity, hashes,
+bindings, counts, and a derived status; no packet prose, no filing text, no
+absolute path, no wall-clock value, and no human decision.
+
+**Blocked pairs receive nothing.** The two pairs with no packet get no
+template, no review record, and no fabricated label. They stay in the corpus
+with their stable blocking reason and remain in the evaluator's scoring scope
+under contract v2; they are never replaced or marked `human_verified` to make
+a count come out even.
+
+**Repeated normalized headings stay separate through review.** Each occurrence
+is its own canonical subject with its own row and its own decision. Occurrence
+1 can never satisfy occurrence 2, one decision can never cover two subjects,
+and units are never renumbered or collapsed by `unit_key`.
+
+**Human annotation and gold evaluation are separate phases.** Passing the
+admission gate proves identity, closure, shape, and hygiene — **not that a
+reviewer's judgement is correct.** It computes no metric, advances no manifest
+status, and creates no generalization sign-off. `extraction_holdout_evaluation`
+and `generalization_claim_supported` remain `false`, and no v3 accuracy or
+generalization claim exists.
 
 Tests: `tests/test_v3_holdout_selection.py` (deterministic hash-ranked
 selection, fixed seed, dual-corpus exclusions, strata/eligibility denials,
@@ -990,7 +1072,15 @@ execution, and packet-inventory reports: the one-step transition, the hash
 chain forward from source verification, the pinned 16/2/2/0 side outcomes and
 8/2 pair outcomes, exact-key validation, count reconciliation, frozen-code
 attestation against the live tree, prose overclaim bans, output hygiene, and
-CI pinning) — all in the required `comparison-regression` check.
+CI pinning), and `tests/test_v3_holdout_human_review.py` (the preparation and
+admission contract: committed-inventory bindings, machine-proposal
+immutability by content hash *and* raw bytes, a separate human artifact that
+cannot overwrite it, deterministic committed-inventory queue ordering with no
+prose and no decision, explicit per-subject and per-packet reviewer actions,
+canonical subject closure across repeated normalized headings, admission
+metadata no tool can generate, and the absence of any evaluator call, metric,
+or sign-off — over synthetic fixtures, with no real packet body and no real
+human annotation) — all in the required `comparison-regression` check.
 
 ---
 
