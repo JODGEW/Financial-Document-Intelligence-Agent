@@ -178,6 +178,22 @@ jobs:
       # binding, and the structural zeroes proving no extraction, comparison,
       # annotation, metric, or sign-off exists for this corpus. Mocked
       # transport and synthetic HTML only — CI never acquires a body.
+      # test_v3_holdout_blind_extraction.py and
+      # test_v3_holdout_blind_artifacts.py freeze the step that advanced that
+      # manifest one further notch to corpus_built: the frozen v3 pipeline
+      # (sec_html_item_headings.v2 section extraction, item1a_units.v3,
+      # item1a_detector.v3, comparison_workflow.v3) run unchanged over all
+      # twenty sides in one predeclared offline pass. They pin the preflight
+      # that refuses status, binding, contract-version, source, path, output
+      # identity, and human-annotation drift before a body is read; exactly-once
+      # participation for every side in canonical manifest order; canonical
+      # sequence-aware unit identities that keep repeated normalized headings
+      # separate through units, packet rows, and machine labels; comparison and
+      # packet gating; preserved blocked sides and blocked pairs; deterministic
+      # reproducible payload hashes; and the committed reports, manifest hash
+      # chain, and zero-gold guarantees. Synthetic fictional HTML only — CI
+      # never rebuilds the real v3 corpus, never contacts SEC EDGAR, never
+      # supplies a user agent, and never runs the gold evaluator.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -198,7 +214,9 @@ jobs:
             tests/test_v3_holdout_selection.py \
             tests/test_v3_holdout_manifest.py \
             tests/test_v3_holdout_source_acquisition.py \
-            tests/test_v3_holdout_source_verification.py
+            tests/test_v3_holdout_source_verification.py \
+            tests/test_v3_holdout_blind_extraction.py \
+            tests/test_v3_holdout_blind_artifacts.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no
