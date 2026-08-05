@@ -194,6 +194,21 @@ jobs:
       # chain, and zero-gold guarantees. Synthetic fictional HTML only — CI
       # never rebuilds the real v3 corpus, never contacts SEC EDGAR, never
       # supplies a user agent, and never runs the gold evaluator.
+      # test_v3_holdout_human_review.py freezes the v3 human-review preparation
+      # and admission contract (real_filing_v3_human_review.py plus its two
+      # CLIs): packet, machine-proposal, result, section, and source bindings
+      # taken from the committed inventory; the machine proposal preserved
+      # byte-identically beside a separate human review file; a deterministic
+      # review queue in committed-inventory order carrying no packet prose and
+      # no decision; explicit per-subject reviewer decisions and an explicit
+      # per-packet completion marker, so file presence and unchanged machine
+      # values are never approval; canonical sequence-aware subject closure
+      # that keeps repeated normalized headings separate; and admission
+      # metadata (human_verified, non-placeholder annotator, explicit-UTC
+      # timestamp) that no tool can generate. Synthetic fictional fixtures
+      # only — CI runs no real human-review workflow, reads no real packet
+      # body, contains no real human annotation, and never runs the gold
+      # evaluator.
       - name: Offline real-filing benchmark infrastructure suite
         run: |
           python -m pytest -q \
@@ -216,7 +231,8 @@ jobs:
             tests/test_v3_holdout_source_acquisition.py \
             tests/test_v3_holdout_source_verification.py \
             tests/test_v3_holdout_blind_extraction.py \
-            tests/test_v3_holdout_blind_artifacts.py
+            tests/test_v3_holdout_blind_artifacts.py \
+            tests/test_v3_holdout_human_review.py
 
       # Metrics, denominators, gate results, and version/fixture hashes only.
       # The report carries no source filing text, no evidence excerpts, no
