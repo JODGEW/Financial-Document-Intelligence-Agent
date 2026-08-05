@@ -189,22 +189,133 @@ def test_every_side_carries_a_real_verified_digest(manifest):
     assert len(set(digests)) == 20  # twenty distinct filings, never merged
 
 
-def test_committed_manifest_still_passes_the_identity_gate(manifest):
-    """The frozen identities still hold at corpus_built; the ACQUISITION gate
-    itself now correctly refuses, because acquisition has nothing left to do
-    beyond source verification."""
+def test_committed_manifest_still_passes_the_identity_gate(
+    manifest, source_report, selection_report
+):
+    """The frozen identities still hold at corpus_built.
+
+    Deliberately the IDENTITY gate, not the runtime one. The blind runner's
+    ``verify_blind_run_preconditions`` is a sequence of these same public
+    helpers followed by ``verify_holdout_sources``, which opens all twenty real
+    filing bodies — a runtime readiness check that has no place in a body-free
+    suite. The required workflow never has those bodies, and it must not: they
+    are gitignored, 87 MB of real filings, and acquiring them needs the
+    network. So this test calls the pure prefix directly, and the source gate
+    keeps its own dedicated synthetic coverage in
+    ``tests/test_v3_holdout_blind_extraction.py`` (missing body, digest
+    mismatch, empty body, traversal, duplicate path, duplicate identity,
+    tracked root, and zero-bodies-processed on refusal).
+
+    The ACQUISITION gate, by contrast, now correctly refuses: acquisition has
+    nothing left to do beyond source verification.
+    """
     import real_filing_v3_holdout_extraction as rfx
 
-    rfx.verify_blind_run_preconditions(
-        manifest,
-        MANIFEST_PATH,
-        rfb.CorpusLayout(config.REAL_FILING_V3_HOLDOUT_DIR),
-        repo_root=REPO_ROOT,
+    layout = rfb.CorpusLayout(config.REAL_FILING_V3_HOLDOUT_DIR)
+
+    # Schema, lifecycle, and every frozen contract string.
+    rfv3.validate_v3_holdout_manifest(manifest)
+    assert manifest["status"] == rfb.STATUS_CORPUS_BUILT
+    assert manifest["benchmark_id"] == rfv3.V3_HOLDOUT_BENCHMARK_ID
+    assert manifest["benchmark_version"] == rfv3.V3_HOLDOUT_BENCHMARK_VERSION
+    assert len(manifest["pairs"]) == rfv3.TARGET_PAIR_COUNT == 10
+
+    # Twenty sides, each carrying a real frozen digest and a verified flag.
+    sides = [
+        payload for pair in manifest["pairs"] for _side, payload in rfb.pair_sides(pair)
+    ]
+    assert len(sides) == 20
+    assert all(rfb._SHA256_RE.match(payload["expected_sha256"]) for payload in sides)
+    assert all(payload["source_verified"] is True for payload in sides)
+
+    # Provenance: pinned source files, prior-corpus exclusions, live versions.
+    rfv3.verify_frozen_code_identities(manifest, REPO_ROOT)
+    rfv3.verify_exclusion_provenance(manifest, REPO_ROOT)
+    contract = rfx.verify_contract_bindings(manifest)
+    assert contract["detector_version"] == manifest["frozen_detector_version"]
+    assert contract["workflow_version"] == manifest["frozen_workflow_version"]
+    assert contract["unit_grammar_version"] == manifest["frozen_unit_grammar_version"]
+    assert manifest["frozen_extraction_parser_version"] == (
+        rfv3.FROZEN_EXTRACTION_PARSER_VERSION
     )
+    assert manifest["frozen_evaluation_contract_version"] == (
+        rfv3.FROZEN_EVALUATION_CONTRACT_VERSION
+    )
+
+    # Report bindings: selection -> source verification -> blind run -> bytes.
+    bound = rfx.verify_source_verification_binding(manifest, MANIFEST_PATH)
+    assert bound["report_version"] == source_report["report_version"]
+    assert selection_report["holdout_manifest_sha256"] == (
+        source_report["prior_manifest_sha256"]
+    )
+    blind = json.loads(
+        (V3_DIR / "blind_extraction_report.json").read_text(encoding="utf-8")
+    )
+    execution = json.loads(
+        (V3_DIR / "execution_report.json").read_text(encoding="utf-8")
+    )
+    inventory = json.loads(
+        (V3_DIR / "annotation_packet_inventory.json").read_text(encoding="utf-8")
+    )
+    assert blind["prior_manifest_sha256"] == source_report["new_manifest_sha256"]
+    assert blind["new_manifest_sha256"] == rfb.sha256_file(MANIFEST_PATH)
+    for document in (execution, inventory):
+        assert document["run_hash"] == blind["run_hash"]
+    rfx.verify_manifest_hash_chain(MANIFEST_PATH, manifest["status"])
+
+    # No human decision is available as an input, and none was invented.
+    assert rfx.verify_no_human_annotation(layout) >= 0
+    assert manifest["extraction_holdout_evaluation"] is False
+    assert manifest["generalization_claim_supported"] is False
+    assert blind["human_verified_label_count"] == 0
+    assert blind["gold_evaluation_runs"] == 0
+    assert blind["signoff_present"] is False
+
+    # Path resolution is pure: twenty canonical identities in manifest pair
+    # order, previous side before current, resolved from frozen fields alone.
+    # Whether those files are PRESENT is the runtime question this gate does
+    # not ask.
+    resolved = rfx.resolve_source_paths(manifest, layout)
+    assert len(resolved) == 20
+    assert [(entry["pair_id"], entry["side"]) for entry in resolved] == [
+        (pair["pair_id"], side)
+        for pair in manifest["pairs"]
+        for side in ("previous", "current")
+    ]
+    assert all(
+        entry["expected_sha256"] == payload["expected_sha256"]
+        for entry, payload in zip(resolved, sides)
+    )
+
     rfv3a.verify_manifest_hash_chain(MANIFEST_PATH)
     with pytest.raises(rfv3a.V3HoldoutAcquisitionError) as excinfo:
         rfv3a.verify_frozen_identity(manifest, repo_root=REPO_ROOT)
     assert excinfo.value.code == rfv3a.FAILURE_MANIFEST_STATUS_INVALID
+
+
+def test_the_runtime_preflight_still_refuses_missing_local_bodies(tmp_path):
+    """The correction above must not weaken the real gate.
+
+    Same committed manifest, same canonical resolution, an empty local corpus:
+    the runtime source gate refuses with a bounded code and names the exact
+    pair and side, and no acquisition path is reachable from here.
+    """
+    import real_filing_v3_holdout_extraction as rfx
+
+    empty = tmp_path / "benchmark_data" / "real_filing_v3_holdout_v1"
+    empty.mkdir(parents=True)
+    layout = rfb.CorpusLayout(empty)
+    resolved = rfx.resolve_source_paths(manifest_document(), layout)
+    assert len(resolved) == 20
+    with pytest.raises(rfx.V3BlindExtractionError) as excinfo:
+        rfx.verify_holdout_sources(resolved)
+    assert excinfo.value.code == rfx.FAILURE_SOURCE_MISSING
+    assert "sic-2000s-01/previous" in excinfo.value.message
+    assert "never downloads" in excinfo.value.message
+
+
+def manifest_document() -> dict:
+    return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def test_frozen_code_identities_are_live_pinned(manifest):
